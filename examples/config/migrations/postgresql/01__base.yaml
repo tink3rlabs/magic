@@ -1,0 +1,12 @@
+---
+description: Add basic schema structure
+migrations:
+  - migrate: >
+      CREATE TABLE IF NOT EXISTS items (
+        id TEXT PRIMARY KEY,
+        tenant TEXT,
+        kind TEXT,
+        name TEXT,
+        description TEXT
+      )
+    rollback: DROP TABLE IF EXISTS items

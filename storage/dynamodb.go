@@ -2,38 +2,36 @@ package storage
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
 
-	"github.com/spf13/viper"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/tink3rlabs/magic/logger"
 )
 
 type DynamoDBAdapter struct {
-	DB *dynamodb.Client
+	DB     *dynamodb.Client
+	config map[string]string
 }
 
 var dynamoDBAdapterLock = &sync.Mutex{}
 var dynamoDBAdapterInstance *DynamoDBAdapter
 
-func GetDynamoDBAdapterInstance() *DynamoDBAdapter {
+func GetDynamoDBAdapterInstance(config map[string]string) *DynamoDBAdapter {
 	if dynamoDBAdapterInstance == nil {
 		dynamoDBAdapterLock.Lock()
 		defer dynamoDBAdapterLock.Unlock()
 		if dynamoDBAdapterInstance == nil {
-			dynamoDBAdapterInstance = &DynamoDBAdapter{}
+			dynamoDBAdapterInstance = &DynamoDBAdapter{config: config}
 			dynamoDBAdapterInstance.OpenConnection()
 		}
 	}
@@ -41,10 +39,9 @@ func GetDynamoDBAdapterInstance() *DynamoDBAdapter {
 }
 
 func (s *DynamoDBAdapter) OpenConnection() {
-	props := viper.GetStringMapString("storage.config")
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(props["region"]),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(props["access_key"], props["secret_key"], "")),
+		config.WithRegion(s.config["region"]),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(s.config["access_key"], s.config["secret_key"], "")),
 	)
 
 	if err != nil {
@@ -52,8 +49,8 @@ func (s *DynamoDBAdapter) OpenConnection() {
 	}
 
 	s.DB = dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
-		if props["endpoint"] != "" {
-			o.BaseEndpoint = aws.String(props["endpoint"])
+		if s.config["endpoint"] != "" {
+			o.BaseEndpoint = aws.String(s.config["endpoint"])
 		}
 	})
 }
@@ -70,6 +67,18 @@ func (s *DynamoDBAdapter) Ping() error {
 	// dynamodb is a managed service so as long as it responds to api calls we can consider it up
 	_, err := s.DB.ListTables(context.TODO(), &dynamodb.ListTablesInput{})
 	return err
+}
+
+func (s *DynamoDBAdapter) GetType() StorageAdapterType {
+	return DYNAMODB
+}
+
+func (s *DynamoDBAdapter) GetProvider() StorageProviders {
+	return ""
+}
+
+func (s *DynamoDBAdapter) GetSchemaName() string {
+	return ""
 }
 
 func (s *DynamoDBAdapter) Create(item any) error {
@@ -90,8 +99,8 @@ func (s *DynamoDBAdapter) Create(item any) error {
 	return nil
 }
 
-func (s *DynamoDBAdapter) Get(dest any, itemKey string, itemValue string) error {
-	key, err := attributevalue.MarshalMap(map[string]string{strings.ToLower(itemKey): itemValue})
+func (s *DynamoDBAdapter) Get(dest any, filter map[string]any) error {
+	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
 	}
@@ -117,12 +126,12 @@ func (s *DynamoDBAdapter) Get(dest any, itemKey string, itemValue string) error 
 	}
 }
 
-func (s *DynamoDBAdapter) Update(item any, itemKey string, itemValue string) error {
+func (s *DynamoDBAdapter) Update(item any, filter map[string]any) error {
 	return s.Create(item)
 }
 
-func (s *DynamoDBAdapter) Delete(item any, itemKey string, itemValue string) error {
-	key, err := attributevalue.MarshalMap(map[string]string{strings.ToLower(itemKey): itemValue})
+func (s *DynamoDBAdapter) Delete(item any, filter map[string]any) error {
+	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
 	}
@@ -139,58 +148,43 @@ func (s *DynamoDBAdapter) Delete(item any, itemKey string, itemValue string) err
 	return nil
 }
 
-func (s *DynamoDBAdapter) List(items any, itemKey string, limit int, cursor string) (string, error) {
-	nextId := ""
-
-	input := &dynamodb.ScanInput{
-		TableName: aws.String(s.getTableName(items)),
-		Limit:     aws.Int32(int32(limit)),
-	}
-
-	id, err := base64.StdEncoding.DecodeString(cursor)
+func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
+	nextToken := ""
+	params, err := s.buildParams(filter)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode next cursor: %v", err)
+		return "", err
 	}
 
-	if len(id) > 0 {
-		m := map[string]string{}
-		err = json.Unmarshal(id, &m)
-		if err != nil {
-			return nextId, fmt.Errorf("failed to Unmarshal cursor, %v", err)
-		}
-
-		startKey, err := attributevalue.MarshalMap(m)
-		if err != nil {
-			return nextId, fmt.Errorf("failed to marshal next cursor into dynamodb StartKey, %v", err)
-		}
-
-		input.ExclusiveStartKey = startKey
+	query := fmt.Sprintf(`SELECT * FROM "%v"`, s.getTableName(dest))
+	if len(filter) > 0 {
+		query = query + fmt.Sprintf(` WHERE %s`, s.buildFilter(filter))
+	}
+	input := dynamodb.ExecuteStatementInput{
+		Statement:  aws.String(query),
+		Parameters: params,
+		Limit:      aws.Int32(int32(limit)),
 	}
 
-	response, err := s.DB.Scan(context.TODO(), input)
+	if cursor != "" {
+		input.NextToken = &cursor
+	}
+
+	response, err := s.DB.ExecuteStatement(context.TODO(), &input)
 
 	if err != nil {
-		return nextId, fmt.Errorf("failed to list todos, %v", err)
+		return nextToken, fmt.Errorf("failed to list items, %v", err)
 	}
 
-	err = attributevalue.UnmarshalListOfMaps(response.Items, items)
+	err = attributevalue.UnmarshalListOfMaps(response.Items, dest)
 	if err != nil {
-		return nextId, fmt.Errorf("failed to marshal scan response into item list, %v", err)
+		return nextToken, fmt.Errorf("failed to marshal scan response into item list, %v", err)
 	}
 
-	if len(response.LastEvaluatedKey) != 0 {
-		m := map[string]string{}
-		err := attributevalue.UnmarshalMap(response.LastEvaluatedKey, &m)
-		if err != nil {
-			return nextId, fmt.Errorf("failed to unmarshal LastEvaluatedKey, %v", err)
-		}
-		j, err := json.Marshal(m)
-		if err != nil {
-			return nextId, fmt.Errorf("failed to encode LastEvaluatedKey into nextId cursor, %v", err)
-		}
-		nextId = base64.StdEncoding.EncodeToString([]byte(j))
+	if response.NextToken != nil {
+		nextToken = *response.NextToken
 	}
-	return nextId, err
+
+	return nextToken, nil
 }
 
 func (s *DynamoDBAdapter) getTableName(items any) string {
@@ -200,4 +194,26 @@ func (s *DynamoDBAdapter) getTableName(items any) string {
 	tableName = strings.ToLower(tableName)
 	tableName += "s"
 	return tableName
+}
+
+func (s *DynamoDBAdapter) buildFilter(filter map[string]any) string {
+	clauses := []string{}
+	for key := range filter {
+		clauses = append(clauses, fmt.Sprintf("%s=?", key))
+	}
+	return strings.Join(clauses, " AND ")
+}
+
+func (s *DynamoDBAdapter) buildParams(filter map[string]any) ([]types.AttributeValue, error) {
+	values := make([]types.AttributeValue, 0, len(filter))
+
+	for _, value := range filter {
+		v, err := attributevalue.Marshal(value)
+		if err != nil {
+			return values, err
+		}
+		values = append(values, v)
+	}
+
+	return values, nil
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
-	"github.com/spf13/viper"
 
 	"github.com/tink3rlabs/magic/logger"
 	"github.com/tink3rlabs/magic/storage"
@@ -34,6 +33,7 @@ type LeaderElection struct {
 	storageProvider   string
 	storage           storage.StorageAdapter
 	heartbeatInterval time.Duration
+	props             LeaderElectionProps
 }
 
 // Member represents a leadership eligible cluster node
@@ -43,28 +43,31 @@ type Member struct {
 	Heartbeat    int64
 }
 
+// LeaderElectionProps represents the properties required to instantiate new leader election
+type LeaderElectionProps struct {
+	HeartbeatInterval time.Duration
+	StorageAdapter    storage.StorageAdapter
+	AdditionalProps   map[string]any
+}
+
 // NewLeaderElection creates an instance of a LeaderElection struct
-func NewLeaderElection() *LeaderElection {
+func NewLeaderElection(props LeaderElectionProps) *LeaderElection {
 	if leaderElectionInstance == nil {
 		leaderElectionLock.Lock()
 		defer leaderElectionLock.Unlock()
 		if leaderElectionInstance == nil {
-			s := storage.StorageAdapterFactory{}
-			storageAdapter, err := s.GetInstance(storage.DEFAULT)
-			if err != nil {
-				logger.Fatal("failed to create LeaderElection instance", slog.Any("error", err.Error()))
-			}
-			heartbeatInterval := viper.GetDuration("leadership.heartbeat")
+			heartbeatInterval := props.HeartbeatInterval
 			if heartbeatInterval == 0 {
 				heartbeatInterval = DEFAULT_HEARTBEAT
 			}
 			leaderElectionInstance = &LeaderElection{
 				Id:                uuid.NewString(),
 				Results:           make(chan string),
-				storage:           storageAdapter,
-				storageType:       viper.GetString("storage.type"),
-				storageProvider:   viper.GetString("storage.provider"),
+				storage:           props.StorageAdapter,
+				storageType:       string(props.StorageAdapter.GetType()),
+				storageProvider:   string(props.StorageAdapter.GetProvider()),
 				heartbeatInterval: heartbeatInterval,
+				props:             props,
 			}
 		}
 	}
@@ -105,7 +108,7 @@ func (l *LeaderElection) createLeadershipTable() error {
 		}
 
 		// Create table
-		a := storage.GetDynamoDBAdapterInstance()
+		a := l.storage.(*storage.DynamoDBAdapter)
 		_, err := a.DB.CreateTable(context.TODO(), input)
 		tableExistsError := new(types.ResourceInUseException)
 		if (err != nil) && (!errors.As(err, &tableExistsError)) {
@@ -118,10 +121,10 @@ func (l *LeaderElection) createLeadershipTable() error {
 				return err
 			} else {
 				// check if this needs to be a global table
-				global := viper.GetBool("storage.config.global")
+				global := l.props.AdditionalProps["global"].(bool)
 				if global {
-					region := viper.GetString("storage.config.region")
-					regions := viper.GetStringSlice("storage.config.regions")
+					region := l.props.AdditionalProps["region"].(string)
+					regions := l.props.AdditionalProps["regions"].([]string)
 					replicationGroup := []types.Replica{}
 
 					for _, v := range regions {
@@ -254,7 +257,7 @@ func (l *LeaderElection) getLeader() (Member, error) {
 	switch l.storageType {
 	case string(storage.SQL):
 		statement := fmt.Sprintf(`SELECT * FROM members WHERE id='%s'`, l.Leader.Id)
-		a := storage.GetSQLAdapterInstance()
+		a := l.storage.(*storage.SQLAdapter)
 		result := a.DB.Raw(statement).Scan(&member)
 		if result.Error != nil {
 			err = fmt.Errorf("failed to get leader: %v", result.Error)
@@ -264,7 +267,7 @@ func (l *LeaderElection) getLeader() (Member, error) {
 		if marshalErr != nil {
 			err = fmt.Errorf("failed to get leader: %v", marshalErr)
 		} else {
-			a := storage.GetDynamoDBAdapterInstance()
+			a := l.storage.(*storage.DynamoDBAdapter)
 			response, getItemErr := a.DB.GetItem(context.TODO(), &dynamodb.GetItemInput{
 				TableName: aws.String("members"),
 				Key:       key,
@@ -287,14 +290,14 @@ func (l *LeaderElection) Members() ([]Member, error) {
 	statement := "SELECT * FROM members"
 	switch l.storageType {
 	case string(storage.SQL):
-		a := storage.GetSQLAdapterInstance()
+		a := l.storage.(*storage.SQLAdapter)
 		result := a.DB.Raw(statement).Scan(&members)
 		if result.Error != nil {
 			err = fmt.Errorf("failed to list cluster members: %v", result.Error)
 		}
 	case string(storage.DYNAMODB):
 		statement := "SELECT * FROM members"
-		a := storage.GetDynamoDBAdapterInstance()
+		a := l.storage.(*storage.DynamoDBAdapter)
 		result, execErr := a.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{Statement: &statement})
 		if execErr != nil {
 			err = fmt.Errorf("failed to list cluster members: %v", execErr)

@@ -2,10 +2,8 @@ package health
 
 import (
 	"fmt"
-	"log/slog"
 	"net/http"
 
-	"github.com/tink3rlabs/magic/logger"
 	"github.com/tink3rlabs/magic/storage"
 )
 
@@ -13,12 +11,7 @@ type HealthChecker struct {
 	storage storage.StorageAdapter
 }
 
-func NewHealthChecker() *HealthChecker {
-	s := storage.StorageAdapterFactory{}
-	storageAdapter, err := s.GetInstance(storage.DEFAULT)
-	if err != nil {
-		logger.Fatal("failed to create HealthChecker instance", slog.Any("error", err.Error()))
-	}
+func NewHealthChecker(storageAdapter storage.StorageAdapter) *HealthChecker {
 	return &HealthChecker{storage: storageAdapter}
 }
 

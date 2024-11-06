@@ -3,8 +3,6 @@ package storage
 import (
 	"embed"
 	"errors"
-
-	"github.com/spf13/viper"
 )
 
 var ConfigFs embed.FS
@@ -13,11 +11,14 @@ var ErrNotFound = errors.New("the requested resource was not found")
 type StorageAdapter interface {
 	Execute(statement string) error
 	Ping() error
+	GetType() StorageAdapterType
+	GetProvider() StorageProviders
+	GetSchemaName() string
 	Create(item any) error
-	Get(dest any, itemKey string, itemValue string) error
-	Update(item any, itemKey string, itemValue string) error
-	Delete(item any, itemKey string, itemValue string) error
-	List(items any, itemKey string, limit int, cursor string) (string, error)
+	Get(dest any, filter map[string]any) error
+	Update(item any, filter map[string]any) error
+	Delete(item any, filter map[string]any) error
+	List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error)
 }
 
 type StorageAdapterType string
@@ -25,7 +26,6 @@ type StorageProviders string
 type StorageAdapterFactory struct{}
 
 const (
-	DEFAULT  StorageAdapterType = "default"
 	MEMORY   StorageAdapterType = "memory"
 	SQL      StorageAdapterType = "sql"
 	DYNAMODB StorageAdapterType = "dynamodb"
@@ -37,17 +37,17 @@ const (
 	SQLITE     StorageProviders = "sqlite"
 )
 
-func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType) (StorageAdapter, error) {
-	if adapterType == DEFAULT {
-		adapterType = StorageAdapterType(viper.GetString("storage.type"))
+func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, config any) (StorageAdapter, error) {
+	if config == nil {
+		config = make(map[string]string)
 	}
 	switch adapterType {
 	case MEMORY:
 		return GetMemoryAdapterInstance(), nil
 	case SQL:
-		return GetSQLAdapterInstance(), nil
+		return GetSQLAdapterInstance(config.(map[string]string)), nil
 	case DYNAMODB:
-		return GetDynamoDBAdapterInstance(), nil
+		return GetDynamoDBAdapterInstance(config.(map[string]string)), nil
 	default:
 		return nil, errors.New("this storage adapter type isn't supported")
 	}

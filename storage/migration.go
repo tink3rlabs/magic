@@ -12,7 +12,6 @@ import (
 
 	"github.com/tink3rlabs/magic/logger"
 
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,21 +26,16 @@ type Migration struct {
 }
 
 type DatabaseMigration struct {
-	storageType     string
-	storageProvider string
+	storageType     StorageAdapterType
+	storageProvider StorageProviders
 	storage         StorageAdapter
 }
 
-func NewDatabaseMigration() *DatabaseMigration {
-	s := StorageAdapterFactory{}
-	storageAdapter, err := s.GetInstance(DEFAULT)
-	if err != nil {
-		logger.Fatal("failed to create DatabaseMigration instance", slog.Any("error", err.Error()))
-	}
+func NewDatabaseMigration(storageAdapter StorageAdapter) *DatabaseMigration {
 	m := DatabaseMigration{
 		storage:         storageAdapter,
-		storageType:     viper.GetString("storage.type"),
-		storageProvider: viper.GetString("storage.provider"),
+		storageType:     storageAdapter.GetType(),
+		storageProvider: storageAdapter.GetProvider(),
 	}
 	return &m
 }
@@ -69,8 +63,8 @@ func (m *DatabaseMigration) getMigrationFiles() (map[string]MigrationFile, error
 }
 
 func (m *DatabaseMigration) createSchema() error {
-	if m.storageProvider != string(SQLITE) {
-		statement := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", viper.GetString("storage.config.schema"))
+	if m.storageProvider != SQLITE {
+		statement := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", m.storage.GetSchemaName())
 		return m.storage.Execute(statement)
 	}
 	return nil
@@ -79,11 +73,11 @@ func (m *DatabaseMigration) createSchema() error {
 func (m *DatabaseMigration) createMigrationTable() error {
 	var statement string
 	switch m.storageProvider {
-	case string(POSTGRESQL):
+	case POSTGRESQL:
 		statement = "CREATE TABLE IF NOT EXISTS migrations (id NUMERIC PRIMARY KEY, name TEXT, description TEXT, timestamp NUMERIC)"
-	case string(MYSQL):
+	case MYSQL:
 		statement = "CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY, name TEXT, description TEXT, timestamp BIGINT)"
-	case string(SQLITE):
+	case SQLITE:
 		statement = "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY, name TEXT, description TEXT, timestamp INTEGER)"
 	}
 	return m.storage.Execute(statement)
@@ -98,16 +92,28 @@ func (m *DatabaseMigration) getLatestMigration() (int, error) {
 	var statement string
 	var latestMigration int
 	switch m.storageType {
-	case string(SQL):
+	case SQL:
 		statement = "SELECT max(id) from migrations"
-		a := GetSQLAdapterInstance()
+		a := GetSQLAdapterInstance(nil)
 		result := a.DB.Raw(statement).Scan(&latestMigration)
 		if result.Error != nil {
 			//either a real issue or there are no migrations yet check if we can query the migration table
 			var count int
 			statement = "SELECT count(*) from migrations"
-			a := GetSQLAdapterInstance()
 			countResult := a.DB.Raw(statement).Scan(&count)
+			if countResult.Error != nil {
+				return latestMigration, result.Error
+			}
+		}
+	case MEMORY:
+		statement = "SELECT max(id) from migrations"
+		a := GetMemoryAdapterInstance()
+		result := a.DB.DB.Raw(statement).Scan(&latestMigration)
+		if result.Error != nil {
+			//either a real issue or there are no migrations yet check if we can query the migration table
+			var count int
+			statement = "SELECT count(*) from migrations"
+			countResult := a.DB.DB.Raw(statement).Scan(&count)
 			if countResult.Error != nil {
 				return latestMigration, result.Error
 			}
@@ -177,10 +183,10 @@ func (m *DatabaseMigration) runMigrations(migrations map[string]MigrationFile) {
 }
 
 func (m *DatabaseMigration) Migrate() {
-	if (m.storageType == string(MEMORY)) || (m.storageType == string(DYNAMODB)) {
+	if m.storageType == DYNAMODB {
 		slog.Info(fmt.Sprintf(`using %s storage adapter, migrations are not supported`, m.storageType))
 	} else {
-		slog.Info("using a persistent storage adapter, executing migrations")
+		slog.Info(fmt.Sprintf(`using %s storage adapter, executing migrations`, m.storageType))
 		migrations, err := m.getMigrationFiles()
 		if err != nil {
 			logger.Fatal("failed to get migration files", slog.Any("error", err))

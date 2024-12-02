@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -175,7 +176,7 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 		return nextToken, fmt.Errorf("failed to list items, %v", err)
 	}
 
-	err = attributevalue.UnmarshalListOfMaps(response.Items, dest)
+	err = attributevalue.UnmarshalListOfMapsWithOptions(response.Items, dest, func(eo *attributevalue.DecoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return nextToken, fmt.Errorf("failed to marshal scan response into item list, %v", err)
 	}
@@ -187,10 +188,18 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 	return nextToken, nil
 }
 
-func (s *DynamoDBAdapter) getTableName(items any) string {
+func (s *DynamoDBAdapter) getTableName(obj any) string {
+	// Get the type of obj
 	tableName := ""
-	tableName = reflect.TypeOf(items).String()
+	tableName = reflect.TypeOf(obj).String()
 	tableName = tableName[strings.LastIndex(tableName, ".")+1:]
+
+	// Convert the table name to snake case
+	matchFirstCap := regexp.MustCompile("(.)([A-Z][a-z]+)")
+	matchAllCap := regexp.MustCompile("([a-z0-9])([A-Z])")
+	tableName = matchFirstCap.ReplaceAllString(tableName, "${1}_${2}")
+	tableName = matchAllCap.ReplaceAllString(tableName, "${1}_${2}")
+
 	tableName = strings.ToLower(tableName)
 	tableName += "s"
 	return tableName

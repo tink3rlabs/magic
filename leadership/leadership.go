@@ -175,7 +175,7 @@ func (l *LeaderElection) heartbeat() {
 	for {
 		time.Sleep(l.heartbeatInterval)
 		now := time.Now().UnixMilli()
-		slog.Info("updating heartbeat", slog.Int64("heartbeat", now))
+		slog.Debug("updating heartbeat", slog.Int64("heartbeat", now))
 		statement := fmt.Sprintf(`UPDATE members SET heartbeat=%v WHERE id='%s'`, now, l.Id)
 		err := l.storage.Execute(statement)
 		if err != nil {

@@ -1,27 +1,59 @@
+name: Release
+
 on:
   workflow_run:
-    workflows: [Lint and Test]
+    workflows: [CI]
     branches: [main]
     types: 
       - completed
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
-name: Release
 defaults:
   run:
     shell: bash
 
 jobs:
-  release:
+  check-commit:
+    name: Check Release Commit
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      is_release: ${{ steps.check.outputs.is_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: check
+        name: Check commit message
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          if [[ $COMMIT_MSG == release:* ]] || [[ $COMMIT_MSG == release(*) ]]; then
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
+
+  release:
+    name: Create Release
+    needs: check-commit
+    if: needs.check-commit.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22.4'
-      - uses: go-semantic-release/action@v1
+          cache: true
+      - name: Create Release
+        uses: go-semantic-release/action@v1
         with:
           hooks: goreleaser
           changelog-file: CHANGELOG.md

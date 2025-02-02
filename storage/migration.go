@@ -74,7 +74,7 @@ func (m *DatabaseMigration) createMigrationTable() error {
 	var statement string
 	switch m.storageProvider {
 	case POSTGRESQL:
-		statement = "CREATE TABLE IF NOT EXISTS migrations (id NUMERIC PRIMARY KEY, name TEXT, description TEXT, timestamp NUMERIC)"
+		statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.migrations (id NUMERIC PRIMARY KEY, name TEXT, description TEXT, timestamp NUMERIC)", m.storage.GetSchemaName())
 	case MYSQL:
 		statement = "CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY, name TEXT, description TEXT, timestamp BIGINT)"
 	case SQLITE:

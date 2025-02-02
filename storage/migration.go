@@ -84,7 +84,7 @@ func (m *DatabaseMigration) createMigrationTable() error {
 }
 
 func (m *DatabaseMigration) updateMigrationTable(id int, name string, desc string) error {
-	statement := fmt.Sprintf(`INSERT INTO migrations VALUES(%v, '%v', '%v', %v)`, id, name, desc, time.Now().UnixMilli())
+	statement := fmt.Sprintf(`INSERT INTO %s.migrations VALUES(%v, '%v', '%v', %v)`, m.storage.GetSchemaName(), id, name, desc, time.Now().UnixMilli())
 	return m.storage.Execute(statement)
 }
 
@@ -93,13 +93,13 @@ func (m *DatabaseMigration) getLatestMigration() (int, error) {
 	var latestMigration int
 	switch m.storageType {
 	case SQL:
-		statement = "SELECT max(id) from migrations"
+		statement = fmt.Sprintf("SELECT max(id) from %s.migrations", m.storage.GetSchemaName())
 		a := GetSQLAdapterInstance(nil)
 		result := a.DB.Raw(statement).Scan(&latestMigration)
 		if result.Error != nil {
 			//either a real issue or there are no migrations yet check if we can query the migration table
 			var count int
-			statement = "SELECT count(*) from migrations"
+			statement = fmt.Sprintf("SELECT count(*) from %s.migrations", m.storage.GetSchemaName())
 			countResult := a.DB.Raw(statement).Scan(&count)
 			if countResult.Error != nil {
 				return latestMigration, result.Error

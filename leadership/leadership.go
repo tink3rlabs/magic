@@ -83,7 +83,7 @@ func (l *LeaderElection) createLeadershipTable() error {
 		var statement string
 		switch l.storageProvider {
 		case string(storage.POSTGRESQL):
-			statement = "CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, registration NUMERIC, heartbeat NUMERIC)"
+			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.members (id TEXT PRIMARY KEY, registration NUMERIC, heartbeat NUMERIC)", l.storage.GetSchemaName())
 		case string(storage.MYSQL):
 			statement = "CREATE TABLE IF NOT EXISTS members (id VARCHAR(50) PRIMARY KEY, registration BIGINT, heartbeat BIGINT)"
 		case string(storage.SQLITE):
@@ -156,7 +156,7 @@ func (l *LeaderElection) updateMembershipTable() error {
 
 	switch l.storageType {
 	case string(storage.SQL):
-		statement = fmt.Sprintf(`INSERT INTO members VALUES('%v', %v, %v)`, l.Id, now, now)
+		statement = fmt.Sprintf(`INSERT INTO %s.members VALUES('%v', %v, %v)`, l.storage.GetSchemaName(), l.Id, now, now)
 	case string(storage.DYNAMODB):
 		statement = fmt.Sprintf(`INSERT INTO members VALUE {'id': '%v', 'registration': %v, 'heartbeat': %v}`, l.Id, now, now)
 	}
@@ -166,7 +166,7 @@ func (l *LeaderElection) updateMembershipTable() error {
 
 // removeMember removes a cluster node from the database table used for leader election
 func (l *LeaderElection) removeMember(memberId string) error {
-	statement := fmt.Sprintf(`DELETE FROM members WHERE id='%v'`, memberId)
+	statement := fmt.Sprintf(`DELETE FROM %s.members WHERE id='%v'`, l.storage.GetSchemaName(), memberId)
 	return l.storage.Execute(statement)
 }
 
@@ -176,7 +176,7 @@ func (l *LeaderElection) heartbeat() {
 		time.Sleep(l.heartbeatInterval)
 		now := time.Now().UnixMilli()
 		slog.Debug("updating heartbeat", slog.Int64("heartbeat", now))
-		statement := fmt.Sprintf(`UPDATE members SET heartbeat=%v WHERE id='%s'`, now, l.Id)
+		statement := fmt.Sprintf(`UPDATE %s.members SET heartbeat=%v WHERE id='%s'`, l.storage.GetSchemaName(), now, l.Id)
 		err := l.storage.Execute(statement)
 		if err != nil {
 			slog.Error("failed to update heartbeat", slog.Any("error", err))
@@ -256,7 +256,7 @@ func (l *LeaderElection) getLeader() (Member, error) {
 	var err error
 	switch l.storageType {
 	case string(storage.SQL):
-		statement := fmt.Sprintf(`SELECT * FROM members WHERE id='%s'`, l.Leader.Id)
+		statement := fmt.Sprintf(`SELECT * FROM %s.members WHERE id='%s'`, l.storage.GetSchemaName(), l.Leader.Id)
 		a := l.storage.(*storage.SQLAdapter)
 		result := a.DB.Raw(statement).Scan(&member)
 		if result.Error != nil {
@@ -287,9 +287,9 @@ func (l *LeaderElection) getLeader() (Member, error) {
 func (l *LeaderElection) Members() ([]Member, error) {
 	var members []Member
 	var err error
-	statement := "SELECT * FROM members"
 	switch l.storageType {
 	case string(storage.SQL):
+		statement := fmt.Sprintf("SELECT * FROM %s.members", l.storage.GetSchemaName())
 		a := l.storage.(*storage.SQLAdapter)
 		result := a.DB.Raw(statement).Scan(&members)
 		if result.Error != nil {

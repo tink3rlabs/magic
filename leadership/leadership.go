@@ -152,22 +152,27 @@ func (l *LeaderElection) createLeadershipTable() error {
 // updateMembershipTable updates the database table used for leader election
 func (l *LeaderElection) updateMembershipTable() error {
 	now := time.Now().UnixMilli()
-	var statement string
 
 	switch l.storageType {
 	case string(storage.SQL):
-		statement = fmt.Sprintf(`INSERT INTO %s.members VALUES('%v', %v, %v)`, l.storage.GetSchemaName(), l.Id, now, now)
+		member := Member{
+			Id:           l.Id,
+			Registration: now,
+			Heartbeat:    now,
+		}
+		return l.storage.Create(&member)
 	case string(storage.DYNAMODB):
-		statement = fmt.Sprintf(`INSERT INTO members VALUE {'id': '%v', 'registration': %v, 'heartbeat': %v}`, l.Id, now, now)
+		// Keep the DynamoDB implementation as is for now
+		statement := fmt.Sprintf(`INSERT INTO members VALUE {'id': '%v', 'registration': %v, 'heartbeat': %v}`, l.Id, now, now)
+		return l.storage.Execute(statement)
+	default:
+		return fmt.Errorf("unsupported storage type: %s", l.storageType)
 	}
-
-	return l.storage.Execute(statement)
 }
 
 // removeMember removes a cluster node from the database table used for leader election
 func (l *LeaderElection) removeMember(memberId string) error {
-	statement := fmt.Sprintf(`DELETE FROM %s.members WHERE id='%v'`, l.storage.GetSchemaName(), memberId)
-	return l.storage.Execute(statement)
+	return l.storage.Delete(&Member{}, map[string]any{"id": memberId})
 }
 
 // heartbeat is used by cluster members to indicate they are still alive
@@ -176,8 +181,16 @@ func (l *LeaderElection) heartbeat() {
 		time.Sleep(l.heartbeatInterval)
 		now := time.Now().UnixMilli()
 		slog.Debug("updating heartbeat", slog.Int64("heartbeat", now))
-		statement := fmt.Sprintf(`UPDATE %s.members SET heartbeat=%v WHERE id='%s'`, l.storage.GetSchemaName(), now, l.Id)
-		err := l.storage.Execute(statement)
+
+		member := Member{
+			Id:           l.Id,
+			Heartbeat:    now,
+			Registration: l.Leader.Registration,
+		}
+
+		filter := map[string]any{"id": l.Id}
+		err := l.storage.Update(&member, filter)
+
 		if err != nil {
 			slog.Error("failed to update heartbeat", slog.Any("error", err))
 		}
@@ -256,9 +269,9 @@ func (l *LeaderElection) getLeader() (Member, error) {
 	var err error
 	switch l.storageType {
 	case string(storage.SQL):
-		statement := fmt.Sprintf(`SELECT * FROM %s.members WHERE id='%s'`, l.storage.GetSchemaName(), l.Leader.Id)
 		a := l.storage.(*storage.SQLAdapter)
-		result := a.DB.Raw(statement).Scan(&member)
+		result := a.DB.First(&member, "id = ?", l.Leader.Id)
+
 		if result.Error != nil {
 			err = fmt.Errorf("failed to get leader: %v", result.Error)
 		}
@@ -289,9 +302,8 @@ func (l *LeaderElection) Members() ([]Member, error) {
 	var err error
 	switch l.storageType {
 	case string(storage.SQL):
-		statement := fmt.Sprintf("SELECT * FROM %s.members", l.storage.GetSchemaName())
 		a := l.storage.(*storage.SQLAdapter)
-		result := a.DB.Raw(statement).Scan(&members)
+		result := a.DB.Find(&members)
 		if result.Error != nil {
 			err = fmt.Errorf("failed to list cluster members: %v", result.Error)
 		}

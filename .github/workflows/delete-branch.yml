@@ -13,5 +13,5 @@ jobs:
         uses: SvanBoxel/delete-merged-branch@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+        continue-on-error: true
 

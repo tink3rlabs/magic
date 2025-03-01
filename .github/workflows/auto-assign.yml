@@ -11,6 +11,8 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
+      contents: read
+      id-token: write
     steps:
     - name: 'Auto-assign issue or pull request'
       uses: pozil/auto-assign-issue@v2.1.2
@@ -18,4 +20,3 @@ jobs:
         repo-token: ${{ secrets.GITHUB_TOKEN }}
         assignees: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
         numOfAssignee: 2
-

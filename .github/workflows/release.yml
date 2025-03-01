@@ -4,8 +4,8 @@ on:
   workflow_run:
     workflows: [CI]
     branches: [main]
-    # types: 
-    #   - completed
+    types: 
+      - completed
 
 concurrency:
   group: release-${{ github.ref }}
@@ -30,13 +30,12 @@ jobs:
         with:
           go-version: '1.22.4'
           cache: true
-      - name: Install GoReleaser
-        run: |
-          curl -sfL https://install.goreleaser.com/github.com/goreleaser/goreleaser | sh
-          echo $PATH
-          export PATH=$PATH:/go/bin
-      - name: Run GoReleaser
-        run: |
-          goreleaser release --config .github/.goreleaser.yaml --release-notes CHANGELOG.md --allow-initial-development-versions --release-notes-mode prepend
+      - name: Create Release
+        uses: go-semantic-release/action@v1
+        with:
+          hooks: goreleaser
+          changelog-file: CHANGELOG.md
+          allow-initial-development-versions: true
+          prepend: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

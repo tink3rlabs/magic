@@ -38,9 +38,9 @@ type LeaderElection struct {
 
 // Member represents a leadership eligible cluster node
 type Member struct {
-	Id           string
-	Registration int64
-	Heartbeat    int64
+	Id           string `json:"id"`
+	Registration int64  `json:"registration"`
+	Heartbeat    int64  `json:"heartbeat"`
 }
 
 // LeaderElectionProps represents the properties required to instantiate new leader election

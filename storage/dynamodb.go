@@ -207,8 +207,21 @@ func (s *DynamoDBAdapter) getTableName(obj any) string {
 
 func (s *DynamoDBAdapter) buildFilter(filter map[string]any) string {
 	clauses := []string{}
-	for key := range filter {
-		clauses = append(clauses, fmt.Sprintf("%s=?", key))
+	for key, value := range filter {
+		if reflect.ValueOf(value).Kind() == reflect.Slice {
+			c := "IN ("
+			len := reflect.ValueOf(value).Len()
+			for i := 0; i < len; i++ {
+				if i < len-1 {
+					c += "?,"
+				} else {
+					c += "?)"
+				}
+			}
+			clauses = append(clauses, fmt.Sprintf("%s %s", key, c))
+		} else {
+			clauses = append(clauses, fmt.Sprintf("%s=?", key))
+		}
 	}
 	return strings.Join(clauses, " AND ")
 }
@@ -217,11 +230,23 @@ func (s *DynamoDBAdapter) buildParams(filter map[string]any) ([]types.AttributeV
 	values := make([]types.AttributeValue, 0, len(filter))
 
 	for _, value := range filter {
-		v, err := attributevalue.Marshal(value)
-		if err != nil {
-			return values, err
+		if reflect.ValueOf(value).Kind() == reflect.Slice {
+			len := reflect.ValueOf(value).Len()
+			for i := 0; i < len; i++ {
+				t := reflect.ValueOf(value).Index(i).Interface()
+				v, err := attributevalue.Marshal(t)
+				if err != nil {
+					return values, err
+				}
+				values = append(values, v)
+			}
+		} else {
+			v, err := attributevalue.Marshal(value)
+			if err != nil {
+				return values, err
+			}
+			values = append(values, v)
 		}
-		values = append(values, v)
 	}
 
 	return values, nil

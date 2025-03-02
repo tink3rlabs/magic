@@ -85,7 +85,7 @@ func (s *DynamoDBAdapter) GetSchemaName() string {
 func (s *DynamoDBAdapter) Create(item any) error {
 	i, err := attributevalue.MarshalMapWithOptions(item, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
-		return fmt.Errorf("failed to marshal inpu item into dynamodb item, %v", err)
+		return fmt.Errorf("failed to marshal input item into dynamodb item, %v", err)
 	}
 
 	_, err = s.DB.PutItem(context.TODO(), &dynamodb.PutItemInput{

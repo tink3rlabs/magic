@@ -34,13 +34,14 @@ type LeaderElection struct {
 	storage           storage.StorageAdapter
 	heartbeatInterval time.Duration
 	props             LeaderElectionProps
+	tableName         string
 }
 
 // Member represents a leadership eligible cluster node
 type Member struct {
-	Id           string
-	Registration int64
-	Heartbeat    int64
+	Id           string `json:"id"`
+	Registration int64  `json:"registration"`
+	Heartbeat    int64  `json:"heartbeat"`
 }
 
 // LeaderElectionProps represents the properties required to instantiate new leader election
@@ -60,6 +61,10 @@ func NewLeaderElection(props LeaderElectionProps) *LeaderElection {
 			if heartbeatInterval == 0 {
 				heartbeatInterval = DEFAULT_HEARTBEAT
 			}
+			var tableName = "members"
+			if props.AdditionalProps["table_name"] != "" {
+				tableName = props.AdditionalProps["table_name"].(string)
+			}
 			leaderElectionInstance = &LeaderElection{
 				Id:                uuid.NewString(),
 				Results:           make(chan string),
@@ -68,6 +73,7 @@ func NewLeaderElection(props LeaderElectionProps) *LeaderElection {
 				storageProvider:   string(props.StorageAdapter.GetProvider()),
 				heartbeatInterval: heartbeatInterval,
 				props:             props,
+				tableName:         tableName,
 			}
 		}
 	}
@@ -83,18 +89,18 @@ func (l *LeaderElection) createLeadershipTable() error {
 		var statement string
 		switch l.storageProvider {
 		case string(storage.POSTGRESQL):
-			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.members (id TEXT PRIMARY KEY, registration NUMERIC, heartbeat NUMERIC)", l.storage.GetSchemaName())
+			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (id TEXT PRIMARY KEY, registration NUMERIC, heartbeat NUMERIC)", l.storage.GetSchemaName(), l.tableName)
 		case string(storage.MYSQL):
-			statement = "CREATE TABLE IF NOT EXISTS members (id VARCHAR(50) PRIMARY KEY, registration BIGINT, heartbeat BIGINT)"
+			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (id VARCHAR(50) PRIMARY KEY, registration BIGINT, heartbeat BIGINT)", l.storage.GetSchemaName(), l.tableName)
 		case string(storage.SQLITE):
-			statement = "CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, registration INTEGER, heartbeat INTEGER)"
+			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (id TEXT PRIMARY KEY, registration INTEGER, heartbeat INTEGER)", l.storage.GetSchemaName(), l.tableName)
 		}
 		return l.storage.Execute(statement)
 
 	// DynamoDB Adapter
 	case string(storage.DYNAMODB):
 		input := &dynamodb.CreateTableInput{
-			TableName: aws.String("members"),
+			TableName: aws.String(l.tableName),
 			AttributeDefinitions: []types.AttributeDefinition{
 				{AttributeName: aws.String("id"), AttributeType: types.ScalarAttributeTypeS},
 			},
@@ -116,7 +122,7 @@ func (l *LeaderElection) createLeadershipTable() error {
 		} else {
 			waiter := dynamodb.NewTableExistsWaiter(a.DB)
 			err = waiter.Wait(context.TODO(), &dynamodb.DescribeTableInput{
-				TableName: aws.String("members")}, 1*time.Minute)
+				TableName: aws.String(l.tableName)}, 1*time.Minute)
 			if err != nil {
 				return err
 			} else {
@@ -134,7 +140,7 @@ func (l *LeaderElection) createLeadershipTable() error {
 					}
 					_, err := a.DB.CreateGlobalTable(
 						context.TODO(),
-						&dynamodb.CreateGlobalTableInput{GlobalTableName: aws.String("membership"), ReplicationGroup: replicationGroup},
+						&dynamodb.CreateGlobalTableInput{GlobalTableName: aws.String(l.tableName), ReplicationGroup: replicationGroup},
 					)
 					if err != nil {
 						return err
@@ -162,8 +168,7 @@ func (l *LeaderElection) updateMembershipTable() error {
 		}
 		return l.storage.Create(&member)
 	case string(storage.DYNAMODB):
-		// Keep the DynamoDB implementation as is for now
-		statement := fmt.Sprintf(`INSERT INTO members VALUE {'id': '%v', 'registration': %v, 'heartbeat': %v}`, l.Id, now, now)
+		statement := fmt.Sprintf(`INSERT INTO %s VALUE {'id': '%v', 'registration': %v, 'heartbeat': %v}`, l.tableName, l.Id, now, now)
 		return l.storage.Execute(statement)
 	default:
 		return fmt.Errorf("unsupported storage type: %s", l.storageType)
@@ -172,7 +177,13 @@ func (l *LeaderElection) updateMembershipTable() error {
 
 // removeMember removes a cluster node from the database table used for leader election
 func (l *LeaderElection) removeMember(memberId string) error {
-	return l.storage.Delete(&Member{}, map[string]any{"id": memberId})
+	switch l.storageType {
+	case string(storage.DYNAMODB):
+		statement := fmt.Sprintf(`DELETE FROM %s WHERE id='%v'`, l.tableName, memberId)
+		return l.storage.Execute(statement)
+	default:
+		return l.storage.Delete(&Member{}, map[string]any{"id": memberId})
+	}
 }
 
 // heartbeat is used by cluster members to indicate they are still alive
@@ -180,17 +191,15 @@ func (l *LeaderElection) heartbeat() {
 	for {
 		time.Sleep(l.heartbeatInterval)
 		now := time.Now().UnixMilli()
+		var statement string
+
 		slog.Debug("updating heartbeat", slog.Int64("heartbeat", now))
-
-		member := Member{
-			Id:           l.Id,
-			Heartbeat:    now,
-			Registration: l.Leader.Registration,
+		if l.storageType == string(storage.DYNAMODB) {
+			statement = fmt.Sprintf(`UPDATE %s SET heartbeat=%v WHERE id='%s'`, l.tableName, now, l.Id)
+		} else {
+			statement = fmt.Sprintf(`UPDATE %s.%s SET heartbeat=%v WHERE id='%s'`, l.storage.GetSchemaName(), l.tableName, now, l.Id)
 		}
-
-		filter := map[string]any{"id": l.Id}
-		err := l.storage.Update(&member, filter)
-
+		err := l.storage.Execute(statement)
 		if err != nil {
 			slog.Error("failed to update heartbeat", slog.Any("error", err))
 		}
@@ -209,7 +218,7 @@ func (l *LeaderElection) monitorLeader() {
 		} else {
 			diff := time.Until(time.UnixMilli(leader.Heartbeat))
 			if diff >= acceptableInterval {
-				slog.Info("leader is healthy", slog.String("leader_id", l.Leader.Id))
+				slog.Debug("leader is healthy", slog.String("leader_id", l.Leader.Id))
 			} else {
 				slog.Info("Starting re-election due to leader inactivity", slog.String("leader_id", l.Leader.Id), slog.Duration("inactivity_duration", diff))
 				err = l.electLeader(true)
@@ -282,7 +291,7 @@ func (l *LeaderElection) getLeader() (Member, error) {
 		} else {
 			a := l.storage.(*storage.DynamoDBAdapter)
 			response, getItemErr := a.DB.GetItem(context.TODO(), &dynamodb.GetItemInput{
-				TableName: aws.String("members"),
+				TableName: aws.String(l.tableName),
 				Key:       key,
 			})
 
@@ -300,6 +309,7 @@ func (l *LeaderElection) getLeader() (Member, error) {
 func (l *LeaderElection) Members() ([]Member, error) {
 	var members []Member
 	var err error
+
 	switch l.storageType {
 	case string(storage.SQL):
 		a := l.storage.(*storage.SQLAdapter)
@@ -308,7 +318,7 @@ func (l *LeaderElection) Members() ([]Member, error) {
 			err = fmt.Errorf("failed to list cluster members: %v", result.Error)
 		}
 	case string(storage.DYNAMODB):
-		statement := "SELECT * FROM members"
+		statement := fmt.Sprintf("SELECT * FROM %s", l.tableName)
 		a := l.storage.(*storage.DynamoDBAdapter)
 		result, execErr := a.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{Statement: &statement})
 		if execErr != nil {

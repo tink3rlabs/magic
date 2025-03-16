@@ -62,7 +62,7 @@ func NewLeaderElection(props LeaderElectionProps) *LeaderElection {
 				heartbeatInterval = DEFAULT_HEARTBEAT
 			}
 			var tableName = "members"
-			if props.AdditionalProps["table_name"] != "" {
+			if (props.AdditionalProps["table_name"] != "") && (props.AdditionalProps["table_name"] != nil) {
 				tableName = props.AdditionalProps["table_name"].(string)
 			}
 			leaderElectionInstance = &LeaderElection{
@@ -161,12 +161,8 @@ func (l *LeaderElection) updateMembershipTable() error {
 
 	switch l.storageType {
 	case string(storage.SQL):
-		member := Member{
-			Id:           l.Id,
-			Registration: now,
-			Heartbeat:    now,
-		}
-		return l.storage.Create(&member)
+		statement := fmt.Sprintf(`INSERT INTO %s.%s VALUES('%v', %v, %v)`, l.storage.GetSchemaName(), l.tableName, l.Id, now, now)
+		return l.storage.Execute(statement)
 	case string(storage.DYNAMODB):
 		statement := fmt.Sprintf(`INSERT INTO %s VALUE {'id': '%v', 'registration': %v, 'heartbeat': %v}`, l.tableName, l.Id, now, now)
 		return l.storage.Execute(statement)
@@ -182,7 +178,8 @@ func (l *LeaderElection) removeMember(memberId string) error {
 		statement := fmt.Sprintf(`DELETE FROM %s WHERE id='%v'`, l.tableName, memberId)
 		return l.storage.Execute(statement)
 	default:
-		return l.storage.Delete(&Member{}, map[string]any{"id": memberId})
+		statement := fmt.Sprintf(`DELETE FROM %s.%s WHERE id='%v'`, l.storage.GetSchemaName(), l.tableName, memberId)
+		return l.storage.Execute(statement)
 	}
 }
 
@@ -279,7 +276,8 @@ func (l *LeaderElection) getLeader() (Member, error) {
 	switch l.storageType {
 	case string(storage.SQL):
 		a := l.storage.(*storage.SQLAdapter)
-		result := a.DB.First(&member, "id = ?", l.Leader.Id)
+		statement := fmt.Sprintf(`SELECT * FROM %s.%s WHERE id='%s'`, l.storage.GetSchemaName(), l.tableName, l.Leader.Id)
+		result := a.DB.Raw(statement).Scan(&member)
 
 		if result.Error != nil {
 			err = fmt.Errorf("failed to get leader: %v", result.Error)
@@ -312,8 +310,9 @@ func (l *LeaderElection) Members() ([]Member, error) {
 
 	switch l.storageType {
 	case string(storage.SQL):
+		statement := fmt.Sprintf("SELECT * FROM %s.%s", l.storage.GetSchemaName(), l.tableName)
 		a := l.storage.(*storage.SQLAdapter)
-		result := a.DB.Find(&members)
+		result := a.DB.Raw(statement).Scan(&members)
 		if result.Error != nil {
 			err = fmt.Errorf("failed to list cluster members: %v", result.Error)
 		}

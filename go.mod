@@ -52,7 +52,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.27.43
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.15.12
 	github.com/aws/smithy-go v1.22.1 // indirect
-	github.com/go-chi/chi/v5 v5.1.0
+	github.com/go-chi/chi/v5 v5.2.1
 	github.com/go-chi/render v1.0.3
 	github.com/google/uuid v1.6.0
 	github.com/xeipuuv/gojsonschema v1.2.0

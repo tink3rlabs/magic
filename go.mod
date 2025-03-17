@@ -1,6 +1,7 @@
 module github.com/tink3rlabs/magic
 
 go 1.22.4
+toolchain go1.24.1
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.32.6
@@ -47,7 +48,7 @@ require (
 )
 
 require (
-	github.com/TwiN/deepmerge v0.2.1
+	github.com/TwiN/deepmerge v0.2.2
 	github.com/aws/aws-sdk-go-v2/config v1.27.43
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.15.12
 	github.com/aws/smithy-go v1.22.1 // indirect

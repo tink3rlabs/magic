@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
 filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
-github.com/TwiN/deepmerge v0.2.1 h1:GowJr9O4THTVW4awX63x1BVg1hgr4q+35XKKCYbwsSs=
-github.com/TwiN/deepmerge v0.2.1/go.mod h1:LVBmCEBQvibYSF8Gyl/NqhHXH7yIiT7Ozqf9dHxGPW0=
+github.com/TwiN/deepmerge v0.2.2 h1:FUG9QMIYg/j2aQyPPhA3XTFJwXSNHI/swaR4Lbyxwg4=
+github.com/TwiN/deepmerge v0.2.2/go.mod h1:4OHvjV3pPNJCJZBHswYAwk6rxiD8h8YZ+9cPo7nu4oI=
 github.com/ajg/form v1.5.1 h1:t9c7v8JUKu/XxOGBU0yjNpaMloxGEJhUkqFRq0ibGeU=
 github.com/ajg/form v1.5.1/go.mod h1:uL1WgH+h2mgNtvBq0339dVnzXdBETtL2LeUXaIv25UY=
 github.com/aws/aws-sdk-go-v2 v1.32.6 h1:7BokKRgRPuGmKkFMhEg/jSul+tB9VvXhcViILtfG8b4=

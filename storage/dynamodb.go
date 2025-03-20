@@ -41,10 +41,20 @@ func GetDynamoDBAdapterInstance(config map[string]string) *DynamoDBAdapter {
 }
 
 func (s *DynamoDBAdapter) OpenConnection() {
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(s.config["region"]),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(s.config["access_key"], s.config["secret_key"], "")),
-	)
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+
+	if s.config["region"] != "" {
+		slog.Debug(fmt.Sprintf("using region override: %s", s.config["region"]))
+		cfg.Region = s.config["region"]
+	}
+	if (s.config["access_key"] != "") && s.config["secret_key"] != "" {
+		slog.Debug("using credentials from config file")
+		cfg.Credentials = aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(
+			s.config["access_key"],
+			s.config["secret_key"],
+			"",
+		))
+	}
 
 	if err != nil {
 		logger.Fatal("failed to open a database connection", slog.Any("error", err.Error()))
@@ -52,6 +62,7 @@ func (s *DynamoDBAdapter) OpenConnection() {
 
 	s.DB = dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
 		if s.config["endpoint"] != "" {
+			slog.Debug(fmt.Sprintf("using endpoint override: %s", s.config["endpoint"]))
 			o.BaseEndpoint = aws.String(s.config["endpoint"])
 		}
 	})

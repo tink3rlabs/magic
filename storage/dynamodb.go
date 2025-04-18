@@ -67,14 +67,6 @@ func (s *DynamoDBAdapter) OpenConnection() {
 	})
 }
 
-func (s *DynamoDBAdapter) Execute(statement string) error {
-	_, err := s.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{Statement: &statement})
-	if err != nil {
-		return fmt.Errorf("failed to execute statement %s: %v", statement, err)
-	}
-	return nil
-}
-
 func (s *DynamoDBAdapter) Ping() error {
 	// dynamodb is a managed service so as long as it responds to api calls we can consider it up
 	_, err := s.DB.ListTables(context.TODO(), &dynamodb.ListTablesInput{})
@@ -197,6 +189,26 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 	}
 
 	return nextToken, nil
+}
+
+func (s *DynamoDBAdapter) Execute(statement string) error {
+	_, err := s.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{Statement: &statement})
+	if err != nil {
+		return fmt.Errorf("failed to execute statement %s: %v", statement, err)
+	}
+	return nil
+}
+
+func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+	resp, err := s.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{
+		Statement: aws.String(statement),
+		Limit:     aws.Int32(int32(limit)),
+		NextToken: aws.String(cursor),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to execute query %s: %v", statement, err)
+	}
+	return *resp.NextToken, nil
 }
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {

@@ -84,14 +84,6 @@ func (s *SQLAdapter) OpenConnection() {
 	}
 }
 
-func (s *SQLAdapter) Execute(statement string) error {
-	result := s.DB.Exec(statement)
-	if result.Error != nil {
-		return fmt.Errorf("failed to execute statement %s: %v", statement, result.Error)
-	}
-	return nil
-}
-
 func (s *SQLAdapter) Ping() error {
 	db, err := s.DB.DB()
 	if err != nil {
@@ -172,6 +164,22 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 	}
 
 	return nextId, result.Error
+}
+
+func (s *SQLAdapter) Execute(statement string) error {
+	result := s.DB.Exec(statement)
+	if result.Error != nil {
+		return fmt.Errorf("failed to execute statement %s: %v", statement, result.Error)
+	}
+	return nil
+}
+
+func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+	// result := s.DB.Raw(statement).Scan(dest)
+	// if result.Error != nil {
+	// 	return fmt.Errorf("failed to run query %s: %v", statement, result.Error)
+	// }
+	return "", fmt.Errorf("not implemented yet")
 }
 
 func (s *SQLAdapter) buildQuery(filter map[string]any) string {

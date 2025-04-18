@@ -9,7 +9,6 @@ var ConfigFs embed.FS
 var ErrNotFound = errors.New("the requested resource was not found")
 
 type StorageAdapter interface {
-	Execute(statement string) error
 	Ping() error
 	GetType() StorageAdapterType
 	GetProvider() StorageProviders
@@ -19,6 +18,8 @@ type StorageAdapter interface {
 	Update(item any, filter map[string]any) error
 	Delete(item any, filter map[string]any) error
 	List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error)
+	Execute(statement string) error
+	Query(dest any, statement string, limit int, cursor string) (string, error)
 }
 
 type StorageAdapterType string

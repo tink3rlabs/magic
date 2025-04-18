@@ -29,10 +29,6 @@ func GetMemoryAdapterInstance() *MemoryAdapter {
 	return memoryAdapterInstance
 }
 
-func (m *MemoryAdapter) Execute(s string) error {
-	return m.DB.Execute(s)
-}
-
 func (m *MemoryAdapter) Ping() error {
 	return m.DB.Ping()
 }
@@ -67,4 +63,12 @@ func (m *MemoryAdapter) Delete(item any, filter map[string]any) error {
 
 func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
 	return m.DB.List(dest, sortKey, filter, limit, cursor)
+}
+
+func (m *MemoryAdapter) Execute(s string) error {
+	return m.DB.Execute(s)
+}
+
+func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+	return m.DB.Query(dest, statement, limit, cursor)
 }

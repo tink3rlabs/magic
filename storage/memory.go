@@ -78,3 +78,7 @@ func (s *MemoryAdapter) Count(dest any) (int64, error) {
 	var total int64
 	return total, nil
 }
+
+func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+	return m.DB.Query(dest, statement, limit, cursor)
+}

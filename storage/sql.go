@@ -88,14 +88,6 @@ func (s *SQLAdapter) OpenConnection() {
 	}
 }
 
-func (s *SQLAdapter) buildQuery(filter map[string]any) string {
-	clauses := []string{}
-	for key := range filter {
-		clauses = append(clauses, fmt.Sprintf("%s = @%s", key, key))
-	}
-	return strings.Join(clauses, " AND ")
-}
-
 func (s *SQLAdapter) Execute(statement string) error {
 	result := s.DB.Exec(statement)
 	if result.Error != nil {
@@ -254,4 +246,16 @@ func (s *SQLAdapter) Count(dest any) (int64, error) {
 		return 0, err
 	}
 	return total, nil
+}
+
+func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {	
+	return "", fmt.Errorf("not implemented yet")
+}
+
+func (s *SQLAdapter) buildQuery(filter map[string]any) string {
+	clauses := []string{}
+	for key := range filter {
+		clauses = append(clauses, fmt.Sprintf("%s = @%s", key, key))
+	}
+	return strings.Join(clauses, " AND ")
 }

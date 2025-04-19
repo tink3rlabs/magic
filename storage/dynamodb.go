@@ -255,15 +255,30 @@ func (s *DynamoDBAdapter) Count(dest any) (int64, error) {
 }
 
 func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
-	resp, err := s.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{
+	next := ""
+	input := &dynamodb.ExecuteStatementInput{
 		Statement: aws.String(statement),
 		Limit:     aws.Int32(int32(limit)),
-		NextToken: aws.String(cursor),
-	})
+	}
+	if cursor != "" {
+		input.NextToken = aws.String(cursor)
+	}
+
+	resp, err := s.DB.ExecuteStatement(context.TODO(), input)
 	if err != nil {
 		return "", fmt.Errorf("failed to execute query %s: %v", statement, err)
 	}
-	return *resp.NextToken, nil
+
+	err = attributevalue.UnmarshalListOfMapsWithOptions(resp.Items, dest, func(eo *attributevalue.DecoderOptions) { eo.TagKey = "json" })
+	if err != nil {
+		return next, fmt.Errorf("failed to marshal query response items into destination, %v", err)
+	}
+
+	if resp.NextToken != nil {
+		next = *resp.NextToken
+	}
+
+	return next, nil
 }
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {

@@ -19,7 +19,7 @@ type SNSPublisher struct {
 }
 
 func GetSNSPublisher(config map[string]string) *SNSPublisher {
-	s := SNSPublisher{}
+	s := SNSPublisher{config: config}
 	cfg, err := awsconfig.LoadDefaultConfig(context.TODO())
 
 	if s.config["region"] != "" {
@@ -39,7 +39,6 @@ func GetSNSPublisher(config map[string]string) *SNSPublisher {
 		logger.Fatal("failed to create SNS publisher", slog.Any("error", err.Error()))
 	}
 
-	s.config = config
 	s.Client = sns.NewFromConfig(cfg, func(o *sns.Options) {
 		if config["endpoint"] != "" {
 			slog.Debug(fmt.Sprintf("using endpoint override: %s", config["endpoint"]))

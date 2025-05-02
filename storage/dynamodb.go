@@ -159,6 +159,10 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 		return "", err
 	}
 
+	if len(params) == 0 {
+		params = nil
+	}
+	
 	query := fmt.Sprintf(`SELECT * FROM "%v"`, s.getTableName(dest))
 	if len(filter) > 0 {
 		query = query + fmt.Sprintf(` WHERE %s`, s.buildFilter(filter))

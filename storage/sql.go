@@ -18,7 +18,11 @@ import (
 	"gorm.io/gorm/schema"
 
 	slogger "github.com/tink3rlabs/magic/logger"
+
+	"github.com/tink3rlabs/magic/storage/search/lucene"
 )
+
+type queryBuilder func(*gorm.DB) *gorm.DB
 
 type SQLAdapter struct {
 	DB       *gorm.DB
@@ -84,6 +88,14 @@ func (s *SQLAdapter) OpenConnection() {
 	}
 }
 
+func (s *SQLAdapter) buildQuery(filter map[string]any) string {
+	clauses := []string{}
+	for key := range filter {
+		clauses = append(clauses, fmt.Sprintf("%s = @%s", key, key))
+	}
+	return strings.Join(clauses, " AND ")
+}
+
 func (s *SQLAdapter) Execute(statement string) error {
 	result := s.DB.Exec(statement)
 	if result.Error != nil {
@@ -144,40 +156,89 @@ func (s *SQLAdapter) Delete(item any, filter map[string]any) error {
 	return result.Error
 }
 
-func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
-	nextId := ""
-
-	id, err := base64.StdEncoding.DecodeString(cursor)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode next cursor: %v", err)
+func (s *SQLAdapter) executePaginatedQuery(
+	dest any,
+	sortKey string,
+	limit int,
+	cursor string,
+	builder queryBuilder,
+) (string, error) {
+	var cursorValue string
+	if cursor != "" {
+		bytes, err := base64.StdEncoding.DecodeString(cursor)
+		if err != nil {
+			return "", fmt.Errorf("invalid cursor: %w", err)
+		}
+		cursorValue = string(bytes)
 	}
 
-	// Get one extra item to be able to set that item's Id as the cursor for the next request
-	// result := s.DB.Limit(limit+1).Where(s.buildQuery(filter), filter).Where(sortKey+" >= ?", string(id)).Find(dest)
-	q := s.DB.Limit(limit+1).Where(sortKey+" >= ?", string(id))
-	if len(filter) > 0 {
-		q.Where(s.buildQuery(filter), filter)
-	}
-	result := q.Find(dest)
+	q := s.DB.Model(dest).
+		Limit(limit + 1).
+		Order(fmt.Sprintf("%s ASC", sortKey)).
+		Scopes(builder)
 
-	// If we have a full list, set the Id of the extra last item as the next cursor and remove it from the list of items to return
-	v := reflect.ValueOf(dest)
-	if (v.Elem().Len()) == limit+1 {
-		lastItem := v.Elem().Index(v.Elem().Len() - 1)
-		nextId = base64.StdEncoding.EncodeToString([]byte(lastItem.FieldByName(sortKey).String()))
-		// Check if the value is a pointer and if it's settable
-		if v.Kind() == reflect.Ptr && v.Elem().CanSet() {
-			v.Elem().Set(v.Elem().Slice(0, v.Elem().Len()-1))
+	if cursorValue != "" {
+		q = q.Where(fmt.Sprintf("%s > ?", sortKey), cursorValue)
+	}
+
+	if result := q.Find(dest); result.Error != nil {
+		slog.Error("Query execution failed", "error", result.Error)
+		return "", result.Error
+	}
+
+	destSlice := reflect.ValueOf(dest).Elem()
+	if destSlice.Len() == 0 {
+		return "", nil
+	}
+
+	nextCursor := ""
+	if destSlice.Len() == limit+1 {
+		lastItem := destSlice.Index(destSlice.Len() - 1)
+		field := reflect.Indirect(lastItem).FieldByName(sortKey)
+
+		if field.IsValid() && field.Kind() == reflect.String {
+			nextCursor = base64.StdEncoding.EncodeToString([]byte(field.String()))
+			destSlice.Set(destSlice.Slice(0, destSlice.Len()-1))
 		}
 	}
 
-	return nextId, result.Error
+	return nextCursor, nil
 }
 
-func (s *SQLAdapter) buildQuery(filter map[string]any) string {
-	clauses := []string{}
-	for key := range filter {
-		clauses = append(clauses, fmt.Sprintf("%s = @%s", key, key))
-	}
-	return strings.Join(clauses, " AND ")
+func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
+	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
+		if len(filter) > 0 {
+			return q.Where(s.buildQuery(filter), filter)
+		}
+		return q
+	})
+}
+
+func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
+	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
+		if query == "" {
+			return q
+		}
+
+		destType := reflect.TypeOf(dest).Elem().Elem()
+		model := reflect.New(destType).Elem().Interface()
+
+		parser, err := lucene.NewParserFromType(model)
+		if err != nil {
+			slog.Error("Parser creation failed", "error", err)
+			return q
+		}
+
+		whereClause, params, err := parser.ParseToSQL(query)
+		if err != nil {
+			slog.Error("Filter parsing failed", "error", err)
+			return q
+		}
+
+		if whereClause != "" {
+			return q.Where(whereClause, params...)
+		}
+
+		return q
+	})
 }

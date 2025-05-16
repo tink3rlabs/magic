@@ -187,6 +187,10 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 
 	return nextToken, nil
 }
+func (s *DynamoDBAdapter) Search(dest any, sortKey string, filter string, limit int, cursor string) (string, error) {
+	// TODO: Finish implementation
+	return "", nil
+}
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {
 	// Get the type of obj

@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/tink3rlabs/magic/logger"
+	"github.com/tink3rlabs/magic/storage/search/lucene"
 )
 
 type DynamoDBAdapter struct {
@@ -55,6 +56,8 @@ func (s *DynamoDBAdapter) OpenConnection() {
 		}
 	})
 }
+
+type dynamoQueryBuilder func(*dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput
 
 func (s *DynamoDBAdapter) Execute(statement string) error {
 	_, err := s.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{Statement: &statement})
@@ -149,43 +152,89 @@ func (s *DynamoDBAdapter) Delete(item any, filter map[string]any) error {
 	return nil
 }
 
-func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
-	nextToken := ""
-	params, err := s.buildParams(filter)
-	if err != nil {
-		return "", err
-	}
-
-	query := fmt.Sprintf(`SELECT * FROM "%v"`, s.getTableName(dest))
-	if len(filter) > 0 {
-		query = query + fmt.Sprintf(` WHERE %s`, s.buildFilter(filter))
-	}
-	input := dynamodb.ExecuteStatementInput{
-		Statement:  aws.String(query),
-		Parameters: params,
-		Limit:      aws.Int32(int32(limit)),
+func (s *DynamoDBAdapter) executePaginatedQuery(
+	dest any,
+	limit int,
+	cursor string,
+	builder dynamoQueryBuilder,
+) (string, error) {
+	input := &dynamodb.ExecuteStatementInput{
+		Limit: aws.Int32(int32(limit + 1)), // Get one extra for cursor
 	}
 
 	if cursor != "" {
-		input.NextToken = &cursor
+		input.NextToken = aws.String(cursor)
 	}
 
-	response, err := s.DB.ExecuteStatement(context.TODO(), &input)
+	input = builder(input)
 
+	response, err := s.DB.ExecuteStatement(context.TODO(), input)
 	if err != nil {
-		return nextToken, fmt.Errorf("failed to list items, %v", err)
+		slog.Error("Query execution failed", "error", err)
+		return "", err
 	}
 
-	err = attributevalue.UnmarshalListOfMapsWithOptions(response.Items, dest, func(eo *attributevalue.DecoderOptions) { eo.TagKey = "json" })
-	if err != nil {
-		return nextToken, fmt.Errorf("failed to marshal scan response into item list, %v", err)
-	}
-
+	nextToken := ""
 	if response.NextToken != nil {
 		nextToken = *response.NextToken
 	}
 
+	if len(response.Items) > limit {
+		response.Items = response.Items[:limit]
+	}
+
+	err = attributevalue.UnmarshalListOfMapsWithOptions(
+		response.Items,
+		dest,
+		func(eo *attributevalue.DecoderOptions) { eo.TagKey = "json" },
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
 	return nextToken, nil
+}
+
+func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
+	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
+		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
+
+		if len(filter) > 0 {
+			params, _ := s.buildParams(filter)
+			input.Parameters = params
+			query += fmt.Sprintf(` WHERE %s`, s.buildFilter(filter))
+		}
+
+		if sortKey != "" {
+			query += fmt.Sprintf(` ORDER BY %s`, sortKey)
+		}
+
+		input.Statement = aws.String(query)
+		return input
+	})
+}
+
+func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
+	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
+		// Parse Lucene query
+		destType := reflect.TypeOf(dest).Elem().Elem()
+		model := reflect.New(destType).Elem().Interface()
+		parser, _ := lucene.NewParserFromType(model)
+		whereClause, params, _ := parser.ParseToDynamoDBPartiQL(query)
+
+		// Build query
+		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
+		if whereClause != "" {
+			query += fmt.Sprintf(` WHERE %s`, whereClause)
+		}
+		if sortKey != "" {
+			query += fmt.Sprintf(` ORDER BY %s`, sortKey)
+		}
+
+		input.Statement = aws.String(query)
+		input.Parameters = params
+		return input
+	})
 }
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {

@@ -68,3 +68,7 @@ func (m *MemoryAdapter) Delete(item any, filter map[string]any) error {
 func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
 	return m.DB.List(dest, sortKey, filter, limit, cursor)
 }
+
+func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
+	return m.DB.Search(dest, sortKey, query, limit, cursor)
+}

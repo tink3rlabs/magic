@@ -1,0 +1,393 @@
+package lucene
+
+import (
+	"fmt"
+	"log/slog"
+	"reflect"
+	"regexp"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+)
+
+type FieldInfo struct {
+	Name    string
+	IsJSONB bool
+}
+
+func NewParserFromType(model any) (*Parser, error) {
+	fields, err := getStructFields(model)
+	if err != nil {
+		return nil, err
+	}
+	return NewParser(fields), nil
+}
+
+func getStructFields(model any) ([]FieldInfo, error) {
+	t := reflect.TypeOf(model)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("expected struct, got %s", t.Kind())
+	}
+
+	var fields []FieldInfo
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+
+		if commaIdx := strings.Index(jsonTag, ","); commaIdx != -1 {
+			jsonTag = jsonTag[:commaIdx]
+		}
+
+		gormTag := field.Tag.Get("gorm")
+		isJSONB := strings.Contains(gormTag, "type:jsonb")
+
+		fields = append(fields, FieldInfo{
+			Name:    jsonTag,
+			IsJSONB: isJSONB,
+		})
+	}
+
+	return fields, nil
+}
+
+type Parser struct {
+	DefaultFields []FieldInfo
+}
+
+func NewParser(defaultFields []FieldInfo) *Parser {
+	return &Parser{DefaultFields: defaultFields}
+}
+
+type NodeType int
+
+const (
+	NodeTerm NodeType = iota
+	NodeWildcard
+	NodeLogical
+)
+
+type LogicalOperator string
+
+const (
+	AND LogicalOperator = "AND"
+	OR  LogicalOperator = "OR"
+	NOT LogicalOperator = "NOT"
+)
+
+type MatchType int
+
+const (
+	matchExact MatchType = iota
+	matchStartsWith
+	matchEndsWith
+	matchContains
+)
+
+type Node struct {
+	Type      NodeType
+	Field     string
+	Value     string
+	Operator  LogicalOperator
+	Children  []*Node
+	Negate    bool
+	MatchType MatchType
+}
+
+func (p *Parser) ParseToMap(query string) (map[string]any, error) {
+	node, err := p.parse(query)
+	if err != nil {
+		return nil, err
+	}
+	return p.nodeToMap(node), nil
+}
+
+func (p *Parser) ParseToSQL(query string) (string, []any, error) {
+	slog.Debug(fmt.Sprintf(`Parsing query to sql: %s`, query))
+	re := regexp.MustCompile(`(\w+):"([^"]+)"`)
+	query = re.ReplaceAllString(query, `$1:$2`)
+	node, err := p.parse(query)
+	if err != nil {
+		return "", nil, err
+	}
+	return p.nodeToSQL(node, 1)
+}
+
+func (p *Parser) parse(query string) (*Node, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+
+	if strings.HasPrefix(query, "(") && strings.HasSuffix(query, ")") {
+		return p.parse(query[1 : len(query)-1])
+	}
+
+	if andParts := splitByOperator(query, "AND"); len(andParts) > 1 {
+		return p.createLogicalNode(AND, andParts)
+	}
+	if orParts := splitByOperator(query, "OR"); len(orParts) > 1 {
+		return p.createLogicalNode(OR, orParts)
+	}
+	if notParts := splitByOperator(query, "NOT"); len(notParts) > 1 {
+		return p.createLogicalNode(NOT, notParts)
+	}
+
+	if parts := strings.SplitN(query, ":", 2); len(parts) == 2 {
+		field := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		return p.createTermNode(field, value)
+	}
+
+	return p.createImplicitNode(query)
+}
+
+func splitByOperator(input string, op string) []string {
+	re := regexp.MustCompile(fmt.Sprintf(`(?i)\s+%s\s+`, op))
+	parts := re.Split(input, -1)
+	if len(parts) > 1 {
+		return parts
+	}
+	return nil
+}
+
+func (p *Parser) createImplicitNode(term string) (*Node, error) {
+	slog.Debug(fmt.Sprintf(`Handling implicit: %s`, term))
+	node := &Node{
+		Type:     NodeLogical,
+		Operator: OR,
+	}
+
+	for _, field := range p.DefaultFields {
+		child, err := p.createTermNode(field.Name, term)
+		if err != nil {
+			return nil, err
+		}
+
+		if child.Type == NodeTerm {
+			child.Type = NodeWildcard
+			child.MatchType = matchContains
+		}
+
+		node.Children = append(node.Children, child)
+	}
+
+	return node, nil
+}
+
+func (p *Parser) formatFieldName(fieldName string) string {
+	if parts := strings.SplitN(fieldName, ".", 2); len(parts) == 2 {
+		baseField := parts[0]
+		subField := parts[1]
+
+		for _, field := range p.DefaultFields {
+			if field.IsJSONB && field.Name == baseField {
+				return fmt.Sprintf("%s->>'%s'", baseField, subField)
+			}
+		}
+	}
+	return fieldName
+}
+
+func (p *Parser) createTermNode(field, value string) (*Node, error) {
+	formattedField := p.formatFieldName(field)
+
+	node := &Node{
+		Type:  NodeTerm,
+		Field: formattedField,
+		Value: strings.Trim(value, `"`),
+	}
+
+	if strings.Contains(value, "*") {
+		node.Type = NodeWildcard
+		switch {
+		case strings.HasPrefix(value, "*") && strings.HasSuffix(value, "*"):
+			node.MatchType = matchContains
+			node.Value = strings.Trim(value, "*")
+		case strings.HasPrefix(value, "*"):
+			node.MatchType = matchEndsWith
+			node.Value = strings.TrimPrefix(value, "*")
+		case strings.HasSuffix(value, "*"):
+			node.MatchType = matchStartsWith
+			node.Value = strings.TrimSuffix(value, "*")
+		default:
+			node.MatchType = matchContains
+		}
+	}
+
+	return node, nil
+}
+
+func (p *Parser) createLogicalNode(op LogicalOperator, parts []string) (*Node, error) {
+	node := &Node{
+		Type:     NodeLogical,
+		Operator: op,
+	}
+
+	for _, part := range parts {
+		child, err := p.parse(part)
+		if err != nil {
+			return nil, err
+		}
+		if child != nil {
+			node.Children = append(node.Children, child)
+		}
+	}
+
+	return node, nil
+}
+
+func (p *Parser) nodeToMap(node *Node) map[string]any {
+	if node == nil {
+		return nil
+	}
+
+	switch node.Type {
+	case NodeTerm:
+		return map[string]any{node.Field: node.Value}
+	case NodeWildcard:
+		return map[string]any{node.Field: map[string]string{
+			"$like": wildcardToPattern(node.Value, node.MatchType),
+		}}
+	case NodeLogical:
+		result := make(map[string]any)
+		children := make([]map[string]any, 0, len(node.Children))
+		for _, child := range node.Children {
+			children = append(children, p.nodeToMap(child))
+		}
+		result[string(node.Operator)] = children
+		return result
+	}
+	return nil
+}
+func (p *Parser) nodeToSQL(node *Node, paramIndex int) (string, []any, error) {
+	switch node.Type {
+	case NodeTerm:
+		if strings.Contains(node.Field, "->>") {
+			return fmt.Sprintf("%s = $%d", node.Field, paramIndex), []any{node.Value}, nil
+		}
+		return fmt.Sprintf("%s = $%d", node.Field, paramIndex), []any{node.Value}, nil
+	case NodeWildcard:
+		pattern := wildcardToPattern(node.Value, node.MatchType)
+		if strings.Contains(node.Field, "->>") {
+			return fmt.Sprintf("%s ILIKE $%d", node.Field, paramIndex), []any{pattern}, nil
+		} else {
+			return fmt.Sprintf("%s::text ILIKE $%d", node.Field, paramIndex), []any{pattern}, nil
+		}
+	case NodeLogical:
+		var parts []string
+		var params []any
+		currentParam := paramIndex
+
+		for _, child := range node.Children {
+			sqlPart, childParams, err := p.nodeToSQL(child, currentParam)
+			if err != nil {
+				return "", nil, err
+			}
+			if sqlPart != "" {
+				parts = append(parts, sqlPart)
+				params = append(params, childParams...)
+				currentParam += len(childParams)
+			}
+		}
+
+		if len(parts) == 0 {
+			return "", nil, nil
+		}
+
+		operator := string(node.Operator)
+		if node.Negate {
+			operator = "NOT " + operator
+		}
+
+		return fmt.Sprintf("(%s)", strings.Join(parts, fmt.Sprintf(" %s ", operator))), params, nil
+	}
+
+	return "", nil, fmt.Errorf("unsupported node type")
+}
+
+func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.AttributeValue, error) {
+	slog.Debug(fmt.Sprintf(`Parsing query to DynamoDB PartiQL: %s`, query))
+	node, err := p.parse(query)
+	if err != nil {
+		return "", nil, err
+	}
+	return p.nodeToDynamoDBPartiQL(node)
+}
+
+func (p *Parser) nodeToDynamoDBPartiQL(node *Node) (string, []types.AttributeValue, error) {
+	if node == nil {
+		return "", nil, nil
+	}
+
+	switch node.Type {
+	case NodeTerm:
+		// For term node, create an exact match condition
+		return fmt.Sprintf("%s = ?", node.Field), []types.AttributeValue{
+			&types.AttributeValueMemberS{Value: node.Value},
+		}, nil
+	case NodeWildcard:
+		// For wildcard node, use begins_with or contains based on the match type
+		switch node.MatchType {
+		case matchStartsWith:
+			return fmt.Sprintf("begins_with(%s, ?)", node.Field), []types.AttributeValue{
+				&types.AttributeValueMemberS{Value: node.Value},
+			}, nil
+		case matchEndsWith, matchContains:
+			return fmt.Sprintf("contains(%s, ?)", node.Field), []types.AttributeValue{
+				&types.AttributeValueMemberS{Value: node.Value},
+			}, nil
+		default:
+			return fmt.Sprintf("%s = ?", node.Field), []types.AttributeValue{
+				&types.AttributeValueMemberS{Value: node.Value},
+			}, nil
+		}
+	case NodeLogical:
+		// For logical node, combine conditions with appropriate operator
+		var parts []string
+		var params []types.AttributeValue
+
+		for _, child := range node.Children {
+			part, childParams, err := p.nodeToDynamoDBPartiQL(child)
+			if err != nil {
+				return "", nil, err
+			}
+			if part != "" {
+				parts = append(parts, part)
+				params = append(params, childParams...)
+			}
+		}
+
+		if len(parts) == 0 {
+			return "", nil, nil
+		}
+
+		operator := string(node.Operator)
+		if node.Negate {
+			operator = "NOT " + operator
+		}
+
+		return fmt.Sprintf("(%s)", strings.Join(parts, fmt.Sprintf(" %s ", operator))), params, nil
+	}
+
+	return "", nil, fmt.Errorf("unsupported node type")
+}
+
+func wildcardToPattern(value string, matchType MatchType) string {
+	switch matchType {
+	case matchStartsWith:
+		return value + "%"
+	case matchEndsWith:
+		return "%" + value
+	case matchContains:
+		return "%" + value + "%"
+	default:
+		return value
+	}
+}

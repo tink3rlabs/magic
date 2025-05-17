@@ -18,6 +18,8 @@ import (
 	"gorm.io/gorm/schema"
 
 	slogger "github.com/tink3rlabs/magic/logger"
+
+	"github.com/tink3rlabs/magic/storage/search/lucene"
 )
 
 type SQLAdapter struct {
@@ -172,6 +174,70 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 	}
 
 	return nextId, result.Error
+}
+
+func (s *SQLAdapter) Search(dest any, sortKey string, filter string, limit int, cursor string) (string, error) {
+	slog.Debug(fmt.Sprintf(`Searching in sql with filter: %s`, filter))
+	// Get model type from destination slice
+	destType := reflect.TypeOf(dest).Elem().Elem()
+	model := reflect.New(destType).Elem().Interface()
+
+	// Create Lucene parser from model type
+	parser, err := lucene.NewParserFromType(model)
+	if err != nil {
+		slog.Error(`There was an error creating parser from model`)
+		return "", fmt.Errorf("failed to create parser: %w", err)
+	}
+
+	// Parse Lucene query to SQL
+	whereClause, params, err := parser.ParseToSQL(filter)
+	if err != nil {
+		slog.Error(`There was an error parsing filter to sql`)
+		return "", fmt.Errorf("invalid filter: %w", err)
+	}
+	slog.Debug(fmt.Sprintf(`Where clause: %s`, whereClause))
+
+	// Decode cursor
+	var cursorValue string
+	if cursor != "" {
+		bytes, err := base64.StdEncoding.DecodeString(cursor)
+		if err != nil {
+			return "", fmt.Errorf("invalid cursor: %w", err)
+		}
+		cursorValue = string(bytes)
+	}
+
+	// Build query
+	q := s.DB.Limit(limit + 1).Order(sortKey)
+	if whereClause != "" {
+		q = q.Where(whereClause, params...)
+	}
+	if cursorValue != "" {
+		q = q.Where(fmt.Sprintf("%s >= ?", sortKey), cursorValue)
+	}
+
+	// Execute query
+	result := q.Find(dest)
+	if result.Error != nil {
+		slog.Error(fmt.Sprintf(`There was an error executing query: %s`, result.Error))
+		return "", result.Error
+	}
+
+	// Calculate next cursor
+	next := ""
+	destSlice := reflect.ValueOf(dest).Elem()
+	if destSlice.Len() == limit+1 {
+		lastItem := destSlice.Index(destSlice.Len() - 1)
+		field := reflect.Indirect(lastItem).FieldByName(sortKey)
+
+		if field.IsValid() && field.Kind() == reflect.String {
+			next = base64.StdEncoding.EncodeToString([]byte(field.String()))
+			destSlice.Set(destSlice.Slice(0, destSlice.Len()-1))
+		}
+	}
+	slog.Debug(fmt.Sprintf(`Next token: %s`, next))
+
+	return next, nil
 }
 
 func (s *SQLAdapter) buildQuery(filter map[string]any) string {

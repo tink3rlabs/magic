@@ -59,5 +59,5 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0
 	gorm.io/driver/mysql v1.5.7
 	gorm.io/driver/postgres v1.5.9
-	gorm.io/driver/sqlite v1.5.6
+	gorm.io/driver/sqlite v1.5.7
 )

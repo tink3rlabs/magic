@@ -58,6 +58,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/xeipuuv/gojsonschema v1.2.0
 	gorm.io/driver/mysql v1.5.7
-	gorm.io/driver/postgres v1.5.9
+	gorm.io/driver/postgres v1.5.11
 	gorm.io/driver/sqlite v1.5.6
 )

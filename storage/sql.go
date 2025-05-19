@@ -171,11 +171,9 @@ func (s *SQLAdapter) executePaginatedQuery(
 		}
 		cursorValue = string(bytes)
 	}
+	q := s.DB.Model(dest).Scopes(builder)
 
-	q := s.DB.Model(dest).
-		Limit(limit + 1).
-		Order(fmt.Sprintf("%s ASC", sortKey)).
-		Scopes(builder)
+	q = q.Limit(limit + 1).Order(fmt.Sprintf("%s ASC", sortKey))
 
 	if cursorValue != "" {
 		q = q.Where(fmt.Sprintf("%s > ?", sortKey), cursorValue)
@@ -241,4 +239,15 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 
 		return q
 	})
+}
+
+func (s *SQLAdapter) Count(dest any) (int64, error) {
+	q := s.DB.Model(dest)
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		slog.Error("Error finding count")
+		return 0, err
+	}
+	return total, nil
 }

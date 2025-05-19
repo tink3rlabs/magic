@@ -72,3 +72,9 @@ func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, li
 func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
 	return m.DB.Search(dest, sortKey, query, limit, cursor)
 }
+
+func (s *MemoryAdapter) Count(dest any) (int64, error) {
+	//TODO: Implement
+	var total int64
+	return total, nil
+}

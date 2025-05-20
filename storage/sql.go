@@ -190,14 +190,15 @@ func (s *SQLAdapter) executePaginatedQuery(
 	}
 
 	nextCursor := ""
-	if destSlice.Len() == limit+1 {
-		lastItem := destSlice.Index(destSlice.Len() - 1)
+	if destSlice.Len() > limit {
+		lastItem := destSlice.Index(limit - 1)
 		field := reflect.Indirect(lastItem).FieldByName(sortKey)
-
 		if field.IsValid() && field.Kind() == reflect.String {
 			nextCursor = base64.StdEncoding.EncodeToString([]byte(field.String()))
-			destSlice.Set(destSlice.Slice(0, destSlice.Len()-1))
 		}
+		destSlice.Set(destSlice.Slice(0, limit))
+	} else {
+		nextCursor = ""
 	}
 
 	return nextCursor, nil

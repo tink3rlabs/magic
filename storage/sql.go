@@ -214,32 +214,33 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 }
 
 func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
+	if query == "" {
+		return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
+			return q
+		})
+	}
+
+	destType := reflect.TypeOf(dest).Elem().Elem()
+	model := reflect.New(destType).Elem().Interface()
+
+	parser, err := lucene.NewParserFromType(model)
+	if err != nil {
+		slog.Error("Parser creation failed", "error", err)
+		return "", err
+	}
+
+	whereClause, params, err := parser.ParseToSQL(query)
+	if err != nil {
+		slog.Error("Filter parsing failed", "error", err)
+		return "", err
+	}
+
+	slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, params))
+
 	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
-		if query == "" {
-			return q
-		}
-
-		destType := reflect.TypeOf(dest).Elem().Elem()
-		model := reflect.New(destType).Elem().Interface()
-
-		parser, err := lucene.NewParserFromType(model)
-		if err != nil {
-			slog.Error("Parser creation failed", "error", err)
-			return q
-		}
-
-		whereClause, params, err := parser.ParseToSQL(query)
-
-		if err != nil {
-			slog.Error("Filter parsing failed", "error", err)
-			return q
-		}
-		slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, params))
-
 		if whereClause != "" {
 			return q.Where(whereClause, params...)
 		}
-
 		return q
 	})
 }

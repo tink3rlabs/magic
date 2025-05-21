@@ -19,6 +19,8 @@ type StorageAdapter interface {
 	Update(item any, filter map[string]any) error
 	Delete(item any, filter map[string]any) error
 	List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error)
+	Search(dest any, sortKey string, query string, limit int, cursor string) (string, error)
+	Count(dest any) (int64, error)
 }
 
 type StorageAdapterType string

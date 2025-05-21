@@ -116,7 +116,7 @@ func (p *Parser) ParseToSQL(query string) (string, []any, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	return p.nodeToSQL(node, 1)
+	return p.nodeToSQL(node)
 }
 
 func (p *Parser) parse(query string) (*Node, error) {
@@ -142,18 +142,45 @@ func (p *Parser) parse(query string) (*Node, error) {
 	if parts := strings.SplitN(query, ":", 2); len(parts) == 2 {
 		field := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
+		// Skip empty fields or values
+		if field == "" || value == "" {
+			return nil, nil
+		}
 		return p.createTermNode(field, value)
+	}
+
+	// Skip empty implicit terms
+	if query = strings.TrimSpace(query); query == "" {
+		return nil, nil
 	}
 
 	return p.createImplicitNode(query)
 }
 
 func splitByOperator(input string, op string) []string {
+	// Handle case where the operator is at the beginning of the string
+	trimmedInput := strings.TrimSpace(input)
+	lowerInput := strings.ToLower(trimmedInput)
+	lowerOp := strings.ToLower(op)
+
+	if strings.HasPrefix(lowerInput, lowerOp) {
+		// Check if it's a standalone word (followed by space or end of string)
+		opLength := len(op)
+		if len(trimmedInput) == opLength || (len(trimmedInput) > opLength && trimmedInput[opLength] == ' ') {
+			afterOp := strings.TrimSpace(trimmedInput[opLength:])
+			if afterOp != "" {
+				return []string{"", afterOp}
+			}
+		}
+	}
+
+	// Original logic for operators in the middle
 	re := regexp.MustCompile(fmt.Sprintf(`(?i)\s+%s\s+`, op))
 	parts := re.Split(input, -1)
 	if len(parts) > 1 {
 		return parts
 	}
+
 	return nil
 }
 
@@ -192,6 +219,14 @@ func (p *Parser) createImplicitNode(term string) (*Node, error) {
 }
 
 func (p *Parser) createWildcardNode(field, value string) (*Node, error) {
+	// Skip empty fields or values
+	field = strings.TrimSpace(field)
+	value = strings.TrimSpace(value)
+
+	if field == "" || value == "" {
+		return nil, nil
+	}
+
 	formattedField := p.formatFieldName(field)
 
 	node := &Node{
@@ -223,6 +258,11 @@ func (p *Parser) createWildcardNode(field, value string) (*Node, error) {
 		node.MatchType = matchContains
 	}
 
+	// Skip if the value becomes empty after processing
+	if node.Value == "" {
+		return nil, nil
+	}
+
 	return node, nil
 }
 
@@ -241,7 +281,20 @@ func (p *Parser) formatFieldName(fieldName string) string {
 }
 
 func (p *Parser) createTermNode(field, value string) (*Node, error) {
+	field = strings.TrimSpace(field)
+	value = strings.TrimSpace(value)
+
+	if field == "" || value == "" {
+		return nil, nil
+	}
 	formattedField := p.formatFieldName(field)
+
+	trimmedValue := strings.TrimSpace(strings.Trim(value, `"`))
+
+	// Skip if the value becomes empty after trimming
+	if trimmedValue == "" {
+		return nil, nil
+	}
 
 	node := &Node{
 		Type:  NodeTerm,
@@ -268,6 +321,11 @@ func (p *Parser) createTermNode(field, value string) (*Node, error) {
 			// For SQL LIKE, convert * to % and ? to _
 			node.Value = strings.Replace(strings.Replace(value, "*", "%", -1), "?", "_", -1)
 		}
+
+		// Skip if the value becomes empty after processing wildcards
+		if node.Value == "" {
+			return nil, nil
+		}
 	}
 
 	return node, nil
@@ -280,6 +338,9 @@ func (p *Parser) createLogicalNode(op LogicalOperator, parts []string) (*Node, e
 	}
 
 	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
 		child, err := p.parse(part)
 		if err != nil {
 			return nil, err
@@ -287,6 +348,11 @@ func (p *Parser) createLogicalNode(op LogicalOperator, parts []string) (*Node, e
 		if child != nil {
 			node.Children = append(node.Children, child)
 		}
+	}
+
+	// If no valid children were found, return nil
+	if len(node.Children) == 0 {
+		return nil, nil
 	}
 
 	return node, nil
@@ -316,7 +382,7 @@ func (p *Parser) nodeToMap(node *Node) map[string]any {
 	return nil
 }
 
-func (p *Parser) nodeToSQL(node *Node, paramIndex int) (string, []any, error) {
+func (p *Parser) nodeToSQL(node *Node) (string, []any, error) {
 	if node == nil {
 		return "", nil, nil
 	}
@@ -324,35 +390,37 @@ func (p *Parser) nodeToSQL(node *Node, paramIndex int) (string, []any, error) {
 	switch node.Type {
 	case NodeTerm:
 		if strings.Contains(node.Field, "->>") {
-			return fmt.Sprintf("%s = $%d", node.Field, paramIndex), []any{node.Value}, nil
+			return fmt.Sprintf("%s = ?", node.Field), []any{node.Value}, nil
 		}
-		return fmt.Sprintf("%s = $%d", node.Field, paramIndex), []any{node.Value}, nil
+		return fmt.Sprintf("%s = ?", node.Field), []any{node.Value}, nil
 	case NodeWildcard:
 		pattern := wildcardToPattern(node.Value, node.MatchType)
 		if strings.Contains(node.Field, "->>") {
-			return fmt.Sprintf("%s ILIKE $%d", node.Field, paramIndex), []any{pattern}, nil
+			return fmt.Sprintf("%s ILIKE ?", node.Field), []any{pattern}, nil
 		} else {
-			return fmt.Sprintf("%s::text ILIKE $%d", node.Field, paramIndex), []any{pattern}, nil
+			return fmt.Sprintf("%s::text ILIKE ?", node.Field), []any{pattern}, nil
 		}
 	case NodeLogical:
 		var parts []string
 		var params []any
-		currentParam := paramIndex
 
 		for _, child := range node.Children {
-			sqlPart, childParams, err := p.nodeToSQL(child, currentParam)
+			sqlPart, childParams, err := p.nodeToSQL(child)
 			if err != nil {
 				return "", nil, err
 			}
 			if sqlPart != "" {
 				parts = append(parts, sqlPart)
 				params = append(params, childParams...)
-				currentParam += len(childParams)
 			}
 		}
 
 		if len(parts) == 0 {
 			return "", nil, nil
+		}
+
+		if len(parts) == 1 {
+			return parts[0], params, nil
 		}
 
 		operator := string(node.Operator)

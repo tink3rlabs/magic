@@ -15,54 +15,8 @@ type FieldInfo struct {
 	IsJSONB bool
 }
 
-func NewParserFromType(model any) (*Parser, error) {
-	fields, err := getStructFields(model)
-	if err != nil {
-		return nil, err
-	}
-	return NewParser(fields), nil
-}
-
-func getStructFields(model any) ([]FieldInfo, error) {
-	t := reflect.TypeOf(model)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	if t.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("expected struct, got %s", t.Kind())
-	}
-
-	var fields []FieldInfo
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		jsonTag := field.Tag.Get("json")
-		if jsonTag == "" || jsonTag == "-" {
-			continue
-		}
-
-		if commaIdx := strings.Index(jsonTag, ","); commaIdx != -1 {
-			jsonTag = jsonTag[:commaIdx]
-		}
-
-		gormTag := field.Tag.Get("gorm")
-		isJSONB := strings.Contains(gormTag, "type:jsonb")
-
-		fields = append(fields, FieldInfo{
-			Name:    jsonTag,
-			IsJSONB: isJSONB,
-		})
-	}
-
-	return fields, nil
-}
-
 type Parser struct {
 	DefaultFields []FieldInfo
-}
-
-func NewParser(defaultFields []FieldInfo) *Parser {
-	return &Parser{DefaultFields: defaultFields}
 }
 
 type NodeType int
@@ -98,6 +52,52 @@ type Node struct {
 	Children  []*Node
 	Negate    bool
 	MatchType MatchType
+}
+
+func NewParserFromType(model any) (*Parser, error) {
+	fields, err := getStructFields(model)
+	if err != nil {
+		return nil, err
+	}
+	return NewParser(fields), nil
+}
+
+func NewParser(defaultFields []FieldInfo) *Parser {
+	return &Parser{DefaultFields: defaultFields}
+}
+
+func getStructFields(model any) ([]FieldInfo, error) {
+	t := reflect.TypeOf(model)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("expected struct, got %s", t.Kind())
+	}
+
+	var fields []FieldInfo
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+
+		if commaIdx := strings.Index(jsonTag, ","); commaIdx != -1 {
+			jsonTag = jsonTag[:commaIdx]
+		}
+
+		gormTag := field.Tag.Get("gorm")
+		isJSONB := strings.Contains(gormTag, "type:jsonb")
+
+		fields = append(fields, FieldInfo{
+			Name:    jsonTag,
+			IsJSONB: isJSONB,
+		})
+	}
+
+	return fields, nil
 }
 
 func (p *Parser) ParseToMap(query string) (map[string]any, error) {
@@ -159,23 +159,68 @@ func splitByOperator(input string, op string) []string {
 
 func (p *Parser) createImplicitNode(term string) (*Node, error) {
 	slog.Debug(fmt.Sprintf(`Handling implicit: %s`, term))
+	term = strings.Trim(term, `"`)
+
+	containsWildcard := strings.Contains(term, "*") || strings.Contains(term, "?")
+
 	node := &Node{
 		Type:     NodeLogical,
 		Operator: OR,
 	}
 
 	for _, field := range p.DefaultFields {
-		child, err := p.createTermNode(field.Name, term)
+		var child *Node
+		var err error
+
+		if containsWildcard {
+			child, err = p.createWildcardNode(field.Name, term)
+		} else {
+			child, err = p.createTermNode(field.Name, term)
+
+			if child.Type == NodeTerm {
+				child.Type = NodeWildcard
+				child.MatchType = matchContains
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
-
-		if child.Type == NodeTerm {
-			child.Type = NodeWildcard
-			child.MatchType = matchContains
-		}
-
 		node.Children = append(node.Children, child)
+	}
+
+	return node, nil
+}
+
+func (p *Parser) createWildcardNode(field, value string) (*Node, error) {
+	formattedField := p.formatFieldName(field)
+
+	node := &Node{
+		Type:  NodeWildcard,
+		Field: formattedField,
+		Value: value,
+	}
+
+	// Process the wildcard pattern
+	if strings.HasPrefix(value, "*") && strings.HasSuffix(value, "*") {
+		// For *term* pattern
+		node.MatchType = matchContains
+		node.Value = strings.Trim(value, "*")
+	} else if strings.HasPrefix(value, "*") {
+		// For *term pattern
+		node.MatchType = matchEndsWith
+		node.Value = strings.TrimPrefix(value, "*")
+	} else if strings.HasSuffix(value, "*") {
+		// For term* pattern
+		node.MatchType = matchStartsWith
+		node.Value = strings.TrimSuffix(value, "*")
+	} else if strings.Contains(value, "*") {
+		// For patterns like te*rm
+		node.MatchType = matchContains
+		// Replace wildcards with % for SQL LIKE
+		node.Value = strings.Replace(value, "*", "%", -1)
+	} else {
+		// Default to contains match for other patterns
+		node.MatchType = matchContains
 	}
 
 	return node, nil
@@ -204,20 +249,24 @@ func (p *Parser) createTermNode(field, value string) (*Node, error) {
 		Value: strings.Trim(value, `"`),
 	}
 
-	if strings.Contains(value, "*") {
+	if strings.Contains(value, "*") || strings.Contains(value, "?") {
 		node.Type = NodeWildcard
-		switch {
-		case strings.HasPrefix(value, "*") && strings.HasSuffix(value, "*"):
+
+		// Determine the match type based on wildcard position
+		if strings.HasPrefix(value, "*") && strings.HasSuffix(value, "*") {
 			node.MatchType = matchContains
 			node.Value = strings.Trim(value, "*")
-		case strings.HasPrefix(value, "*"):
+		} else if strings.HasPrefix(value, "*") {
 			node.MatchType = matchEndsWith
 			node.Value = strings.TrimPrefix(value, "*")
-		case strings.HasSuffix(value, "*"):
+		} else if strings.HasSuffix(value, "*") {
 			node.MatchType = matchStartsWith
 			node.Value = strings.TrimSuffix(value, "*")
-		default:
+		} else {
+			// For patterns like te*rm or te?rm
 			node.MatchType = matchContains
+			// For SQL LIKE, convert * to % and ? to _
+			node.Value = strings.Replace(strings.Replace(value, "*", "%", -1), "?", "_", -1)
 		}
 	}
 
@@ -266,7 +315,12 @@ func (p *Parser) nodeToMap(node *Node) map[string]any {
 	}
 	return nil
 }
+
 func (p *Parser) nodeToSQL(node *Node, paramIndex int) (string, []any, error) {
+	if node == nil {
+		return "", nil, nil
+	}
+
 	switch node.Type {
 	case NodeTerm:
 		if strings.Contains(node.Field, "->>") {

@@ -229,10 +229,12 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 		}
 
 		whereClause, params, err := parser.ParseToSQL(query)
+
 		if err != nil {
 			slog.Error("Filter parsing failed", "error", err)
 			return q
 		}
+		slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, params))
 
 		if whereClause != "" {
 			return q.Where(whereClause, params...)

@@ -1,0 +1,73 @@
+name: Bug Report
+description: Create a detailed bug report to help ups improve magic
+title: 'issue: '
+labels: ['bug', 'triage']
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Bug Report
+
+        ## Important Notes
+
+        - **Before submitting a bug report**: Please check the [Issues](https://github.com/tink3rlabs/magic/issues) or [Discussions](https://github.com/tink3rlabs/magic/discussions) sections to see if a similar issue has already been reported. If unsure, start a discussion first, as this helps us efficiently focus on improving the project.
+
+        - **Contributing**: If you encounter an issue, consider submitting a pull request or forking the project.
+
+        - **Bug Reproducibility**: If a bug cannot be reproduced community assistance may be required.
+
+  - type: checkboxes
+    id: issue-check
+    attributes:
+      label: Check Existing Issues
+      description: Confirm that you’ve checked for existing reports before submitting a new one.
+      options:
+        - label: I have searched the existing issues and discussions.
+          required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: Describe how it should've been
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior
+      description: Describe how it actually was
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to Reproduce
+      description: Providing clear, step-by-step instructions helps us reproduce and fix the issue faster. If we can't reproduce it, we can't fix it.
+      placeholder: |
+        1. Conjourne this '...'
+        2. Read this scroll '...'
+        3. Cast this spell '...'
+        4. See the chanting spell dust settling '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs-screenshots
+    attributes:
+      label: Logs & Screenshots
+      description: Include relevant logs, errors, screenshots, magic dust or anything that might help us identify the bug.
+      placeholder: 'Attach logs from the browser console or error messages.'
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-info
+    attributes:
+      label: Additional Information
+      description: Provide any extra details that may assist in understanding the issue.
+    validations:
+      required: false

@@ -1,6 +1,6 @@
 {
 	"name": "Go",
-	"image": "mcr.microsoft.com/devcontainers/go:1-1.23-bookworm",
+	"image": "mcr.microsoft.com/devcontainers/go:1-1.24-bookworm",
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -9,5 +9,12 @@
 				"DavidAnson.vscode-markdownlint"
 			]
 		}
-	}
+	},
+	"mounts": [
+		{
+			"source": "${localEnv:HOME}/.ssh",
+			"target": "/home/vscode/.ssh",
+			"type": "bind"
+		}
+	]
 }

@@ -41,10 +41,20 @@ func GetDynamoDBAdapterInstance(config map[string]string) *DynamoDBAdapter {
 }
 
 func (s *DynamoDBAdapter) OpenConnection() {
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(s.config["region"]),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(s.config["access_key"], s.config["secret_key"], "")),
-	)
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+
+	if s.config["region"] != "" {
+		slog.Debug(fmt.Sprintf("using region override: %s", s.config["region"]))
+		cfg.Region = s.config["region"]
+	}
+	if (s.config["access_key"] != "") && s.config["secret_key"] != "" {
+		slog.Debug("using credentials from config file")
+		cfg.Credentials = aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(
+			s.config["access_key"],
+			s.config["secret_key"],
+			"",
+		))
+	}
 
 	if err != nil {
 		logger.Fatal("failed to open a database connection", slog.Any("error", err.Error()))
@@ -52,6 +62,7 @@ func (s *DynamoDBAdapter) OpenConnection() {
 
 	s.DB = dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
 		if s.config["endpoint"] != "" {
+			slog.Debug(fmt.Sprintf("using endpoint override: %s", s.config["endpoint"]))
 			o.BaseEndpoint = aws.String(s.config["endpoint"])
 		}
 	})
@@ -159,7 +170,7 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	builder dynamoQueryBuilder,
 ) (string, error) {
 	input := &dynamodb.ExecuteStatementInput{
-		Limit: aws.Int32(int32(limit + 1)), // Get one extra for cursor
+		Limit: aws.Int32(int32(limit)),
 	}
 
 	if cursor != "" {
@@ -177,10 +188,6 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	nextToken := ""
 	if response.NextToken != nil {
 		nextToken = *response.NextToken
-	}
-
-	if len(response.Items) > limit {
-		response.Items = response.Items[:limit]
 	}
 
 	err = attributevalue.UnmarshalListOfMapsWithOptions(
@@ -241,6 +248,13 @@ func (s *DynamoDBAdapter) Count(dest any) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil
+}
+
+func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
+		input.Statement = aws.String(statement)
+		return input
+	})
 }
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {

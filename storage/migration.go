@@ -84,7 +84,13 @@ func (m *DatabaseMigration) createMigrationTable() error {
 }
 
 func (m *DatabaseMigration) updateMigrationTable(id int, name string, desc string) error {
-	statement := fmt.Sprintf(`INSERT INTO %s.migrations VALUES(%v, '%v', '%v', %v)`, m.storage.GetSchemaName(), id, name, desc, time.Now().UnixMilli())
+	var statement string
+	switch m.storageProvider {
+	case SQLITE:
+		statement = fmt.Sprintf(`INSERT INTO migrations VALUES(%v, '%v', '%v', %v)`, id, name, desc, time.Now().UnixMilli())
+	default:
+		statement = fmt.Sprintf(`INSERT INTO %s.migrations VALUES(%v, '%v', '%v', %v)`, m.storage.GetSchemaName(), id, name, desc, time.Now().UnixMilli())
+	}
 	return m.storage.Execute(statement)
 }
 

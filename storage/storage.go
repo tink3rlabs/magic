@@ -21,6 +21,7 @@ type StorageAdapter interface {
 	List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error)
 	Search(dest any, sortKey string, query string, limit int, cursor string) (string, error)
 	Count(dest any) (int64, error)
+	Query(dest any, statement string, limit int, cursor string) (string, error)
 }
 
 type StorageAdapterType string

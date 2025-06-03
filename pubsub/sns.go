@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,19 +19,29 @@ type SNSPublisher struct {
 }
 
 func GetSNSPublisher(config map[string]string) *SNSPublisher {
-	s := SNSPublisher{}
-	cfg, err := awsconfig.LoadDefaultConfig(context.TODO(),
-		awsconfig.WithRegion(config["region"]),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(config["access_key"], config["secret_key"], "")),
-	)
+	s := SNSPublisher{config: config}
+	cfg, err := awsconfig.LoadDefaultConfig(context.TODO())
+
+	if s.config["region"] != "" {
+		slog.Debug(fmt.Sprintf("using region override: %s", s.config["region"]))
+		cfg.Region = s.config["region"]
+	}
+	if (s.config["access_key"] != "") && s.config["secret_key"] != "" {
+		slog.Debug("using credentials from config file")
+		cfg.Credentials = aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(
+			s.config["access_key"],
+			s.config["secret_key"],
+			"",
+		))
+	}
 
 	if err != nil {
 		logger.Fatal("failed to create SNS publisher", slog.Any("error", err.Error()))
 	}
 
-	s.config = config
 	s.Client = sns.NewFromConfig(cfg, func(o *sns.Options) {
 		if config["endpoint"] != "" {
+			slog.Debug(fmt.Sprintf("using endpoint override: %s", config["endpoint"]))
 			o.BaseEndpoint = aws.String(config["endpoint"])
 		}
 	})

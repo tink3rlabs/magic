@@ -170,7 +170,7 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	builder dynamoQueryBuilder,
 ) (string, error) {
 	input := &dynamodb.ExecuteStatementInput{
-		Limit: aws.Int32(int32(limit + 1)), // Get one extra for cursor
+		Limit: aws.Int32(int32(limit)),
 	}
 
 	if cursor != "" {
@@ -188,10 +188,6 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	nextToken := ""
 	if response.NextToken != nil {
 		nextToken = *response.NextToken
-	}
-
-	if len(response.Items) > limit {
-		response.Items = response.Items[:limit]
 	}
 
 	err = attributevalue.UnmarshalListOfMapsWithOptions(
@@ -255,30 +251,10 @@ func (s *DynamoDBAdapter) Count(dest any) (int64, error) {
 }
 
 func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
-	next := ""
-	input := &dynamodb.ExecuteStatementInput{
-		Statement: aws.String(statement),
-		Limit:     aws.Int32(int32(limit)),
-	}
-	if cursor != "" {
-		input.NextToken = aws.String(cursor)
-	}
-
-	resp, err := s.DB.ExecuteStatement(context.TODO(), input)
-	if err != nil {
-		return "", fmt.Errorf("failed to execute query %s: %v", statement, err)
-	}
-
-	err = attributevalue.UnmarshalListOfMapsWithOptions(resp.Items, dest, func(eo *attributevalue.DecoderOptions) { eo.TagKey = "json" })
-	if err != nil {
-		return next, fmt.Errorf("failed to marshal query response items into destination, %v", err)
-	}
-
-	if resp.NextToken != nil {
-		next = *resp.NextToken
-	}
-
-	return next, nil
+	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
+		input.Statement = aws.String(statement)
+		return input
+	})
 }
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {

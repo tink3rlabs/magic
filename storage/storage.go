@@ -33,12 +33,14 @@ type StorageProviders string
 type StorageAdapterFactory struct{}
 
 const (
+	NOSQL    StorageAdapterType = "nosql"
 	MEMORY   StorageAdapterType = "memory"
 	SQL      StorageAdapterType = "sql"
 	DYNAMODB StorageAdapterType = "dynamodb"
 )
 
 const (
+	CASSANDRA  StorageProviders = "cassandra"
 	POSTGRESQL StorageProviders = "postgresql"
 	MYSQL      StorageProviders = "mysql"
 	SQLITE     StorageProviders = "sqlite"
@@ -51,6 +53,8 @@ func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, confi
 	switch adapterType {
 	case MEMORY:
 		return GetMemoryAdapterInstance(), nil
+	case NOSQL:
+		return GetSQLAdapterInstance(config.(map[string]string)), nil
 	case SQL:
 		return GetSQLAdapterInstance(config.(map[string]string)), nil
 	case DYNAMODB:

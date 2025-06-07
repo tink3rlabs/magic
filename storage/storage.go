@@ -29,9 +29,10 @@ type StorageProviders string
 type StorageAdapterFactory struct{}
 
 const (
-	MEMORY   StorageAdapterType = "memory"
-	SQL      StorageAdapterType = "sql"
-	DYNAMODB StorageAdapterType = "dynamodb"
+	CASSANDRA StorageAdapterType = "cassandra"
+	MEMORY    StorageAdapterType = "memory"
+	SQL       StorageAdapterType = "sql"
+	DYNAMODB  StorageAdapterType = "dynamodb"
 )
 
 const (

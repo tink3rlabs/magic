@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.43.1
 	github.com/aws/aws-sdk-go-v2/service/sns v1.34.4
 	gopkg.in/yaml.v3 v3.0.1
-	gorm.io/gorm v1.26.1
+	gorm.io/gorm v1.30.0
 )
 
 require (
@@ -54,7 +54,7 @@ require (
 	github.com/go-chi/render v1.0.3
 	github.com/google/uuid v1.6.0
 	github.com/xeipuuv/gojsonschema v1.2.0
-	gorm.io/driver/mysql v1.5.7
+	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.5.7
 )

@@ -14,6 +14,10 @@ type StorageAdapter interface {
 	GetType() StorageAdapterType
 	GetProvider() StorageProviders
 	GetSchemaName() string
+	createSchema() error
+	createMigrationTable() error
+	updateMigrationTable(id int, name string, desc string) error
+	getLatestMigration() (int, error)
 	Create(item any) error
 	Get(dest any, filter map[string]any) error
 	Update(item any, filter map[string]any) error

@@ -49,6 +49,33 @@ func (m *MemoryAdapter) GetSchemaName() string {
 	return ""
 }
 
+func (m *MemoryAdapter) createSchema() error {
+	return m.DB.createSchema()
+}
+
+func (m *MemoryAdapter) createMigrationTable() error {
+	return m.DB.createMigrationTable()
+}
+func (m *MemoryAdapter) updateMigrationTable(id int, name string, desc string) error {
+	return m.DB.updateMigrationTable(id, name, desc)
+}
+func (m *MemoryAdapter) getLatestMigration() (int, error) {
+	statement := "SELECT max(id) from migrations"
+	var latestMigration int
+
+	result := m.DB.DB.Raw(statement).Scan(&latestMigration)
+	if result.Error != nil {
+		//either a real issue or there are no migrations yet check if we can query the migration table
+		var count int
+		statement = "SELECT count(*) from migrations"
+		countResult := m.DB.DB.Raw(statement).Scan(&count)
+		if countResult.Error != nil {
+			return latestMigration, result.Error
+		}
+	}
+	return latestMigration, nil
+}
+
 func (m *MemoryAdapter) Create(item any) error {
 	return m.DB.Create(item)
 }

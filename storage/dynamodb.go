@@ -96,6 +96,11 @@ func (s *DynamoDBAdapter) GetSchemaName() string {
 	return ""
 }
 
+func (s *DynamoDBAdapter) createSchema() error                                         { return nil }
+func (s *DynamoDBAdapter) createMigrationTable() error                                 { return nil }
+func (s *DynamoDBAdapter) updateMigrationTable(id int, name string, desc string) error { return nil }
+func (s *DynamoDBAdapter) getLatestMigration() (int, error)                            { return -1, nil }
+
 func (s *DynamoDBAdapter) Create(item any) error {
 	i, err := attributevalue.MarshalMapWithOptions(item, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {

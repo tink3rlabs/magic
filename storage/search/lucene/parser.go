@@ -252,7 +252,7 @@ func (p *Parser) createWildcardNode(field, value string) (*Node, error) {
 		// For patterns like te*rm
 		node.MatchType = matchContains
 		// Replace wildcards with % for SQL LIKE
-		node.Value = strings.Replace(value, "*", "%", -1)
+		node.Value = strings.ReplaceAll(value, "*", "%")
 	} else {
 		// Default to contains match for other patterns
 		node.MatchType = matchContains
@@ -319,7 +319,7 @@ func (p *Parser) createTermNode(field, value string) (*Node, error) {
 			// For patterns like te*rm or te?rm
 			node.MatchType = matchContains
 			// For SQL LIKE, convert * to % and ? to _
-			node.Value = strings.Replace(strings.Replace(value, "*", "%", -1), "?", "_", -1)
+			node.Value = strings.ReplaceAll(strings.ReplaceAll(value, "*", "%"), "?", "_")
 		}
 
 		// Skip if the value becomes empty after processing wildcards

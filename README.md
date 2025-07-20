@@ -50,6 +50,7 @@ storage.NewDatabaseMigration(s).Migrate()
 - **Memory**: In-memory storage for development and testing
 - **SQL**: Support for PostgreSQL, MySQL, and SQLite with GORM integration
 - **DynamoDB**: AWS DynamoDB integration with attribute value marshaling
+- **Cassandra**: Apache Cassandra (using ScyllaDB gocql fork and gocqlx)
 - **Search**: Full-text search capabilities
 
 **Features:**

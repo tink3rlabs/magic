@@ -96,6 +96,19 @@ func (s *DynamoDBAdapter) GetSchemaName() string {
 	return ""
 }
 
+func (s *DynamoDBAdapter) CreateSchema() error {
+	return fmt.Errorf("DynamoDB CreateSchema is not supported")
+}
+func (s *DynamoDBAdapter) CreateMigrationTable() error {
+	return fmt.Errorf("DynamoDB CreateMigrationTable is not supported")
+}
+func (s *DynamoDBAdapter) UpdateMigrationTable(id int, name string, desc string) error {
+	return fmt.Errorf("DynamoDB UpgradeMigrationTable is not supported")
+}
+func (s *DynamoDBAdapter) GetLatestMigration() (int, error) {
+	return -1, fmt.Errorf("DynamoDB GetLatestMigration is not supported")
+}
+
 func (s *DynamoDBAdapter) Create(item any) error {
 	i, err := attributevalue.MarshalMapWithOptions(item, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {

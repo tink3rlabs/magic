@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -114,6 +115,56 @@ func (s *SQLAdapter) GetProvider() StorageProviders {
 
 func (s *SQLAdapter) GetSchemaName() string {
 	return s.config["schema"]
+}
+
+func (s *SQLAdapter) CreateSchema() error {
+	if s.GetProvider() != SQLITE {
+		statement := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", s.GetSchemaName())
+		return s.Execute(statement)
+	}
+	return nil
+}
+func (s *SQLAdapter) CreateMigrationTable() error {
+	var statement string
+	switch s.GetProvider() {
+	case POSTGRESQL:
+		statement = fmt.Sprintf(
+			"CREATE TABLE IF NOT EXISTS %s.migrations (id NUMERIC PRIMARY KEY, name TEXT, description TEXT, timestamp NUMERIC)",
+			s.GetSchemaName())
+	case MYSQL:
+		statement = "CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY, name TEXT, description TEXT, timestamp BIGINT)"
+	case SQLITE:
+		statement = "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY, name TEXT, description TEXT, timestamp INTEGER)"
+	}
+	return s.Execute(statement)
+
+}
+func (s *SQLAdapter) UpdateMigrationTable(id int, name string, desc string) error {
+	var statement string
+	switch s.GetProvider() {
+	case SQLITE:
+		statement = fmt.Sprintf(`INSERT INTO migrations VALUES(%v, '%v', '%v', %v)`, id, name, desc, time.Now().UnixMilli())
+	default:
+		statement = fmt.Sprintf(`INSERT INTO %s.migrations VALUES(%v, '%v', '%v', %v)`, s.GetSchemaName(), id, name, desc, time.Now().UnixMilli())
+	}
+	return s.Execute(statement)
+
+}
+func (s *SQLAdapter) GetLatestMigration() (int, error) {
+	var statement string
+	var latestMigration int
+	statement = fmt.Sprintf("SELECT max(id) from %s.migrations", s.GetSchemaName())
+	result := s.DB.Raw(statement).Scan(&latestMigration)
+	if result.Error != nil {
+		//either a real issue or there are no migrations yet check if we can query the migration table
+		var count int
+		statement = fmt.Sprintf("SELECT count(*) from %s.migrations", s.GetSchemaName())
+		countResult := s.DB.Raw(statement).Scan(&count)
+		if countResult.Error != nil {
+			return latestMigration, result.Error
+		}
+	}
+	return latestMigration, nil
 }
 
 func (s *SQLAdapter) Create(item any) error {
@@ -248,7 +299,7 @@ func (s *SQLAdapter) Count(dest any) (int64, error) {
 	return total, nil
 }
 
-func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {	
+func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
 	return "", fmt.Errorf("not implemented yet")
 }
 

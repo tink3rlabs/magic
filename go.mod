@@ -47,7 +47,7 @@ require (
 
 require (
 	github.com/TwiN/deepmerge v0.2.2
-	github.com/aws/aws-sdk-go-v2/config v1.29.14
+	github.com/aws/aws-sdk-go-v2/config v1.29.18
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.19.0
 	github.com/aws/smithy-go v1.22.4 // indirect
 	github.com/go-chi/chi/v5 v5.2.1

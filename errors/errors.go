@@ -23,3 +23,19 @@ type ServiceUnavailable struct {
 func (e *ServiceUnavailable) Error() string {
 	return e.Message
 }
+
+type Forbidden struct {
+	Message string
+}
+
+func (e *Forbidden) Error() string {
+	return e.Message
+}
+
+type Unauthorized struct {
+	Message string
+}
+
+func (e *Unauthorized) Error() string {
+	return e.Message
+}

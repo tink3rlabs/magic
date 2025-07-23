@@ -18,6 +18,8 @@ func (e *ErrorHandler) Wrap(handler func(w http.ResponseWriter, r *http.Request)
 		var notFoundError *serviceErrors.NotFound
 		var badRequestError *serviceErrors.BadRequest
 		var serviceUnavailable *serviceErrors.ServiceUnavailable
+		var forbiddenError *serviceErrors.Forbidden
+		var unauthorizedError *serviceErrors.Unauthorized
 
 		err := handler(w, r)
 
@@ -45,6 +47,26 @@ func (e *ErrorHandler) Wrap(handler func(w http.ResponseWriter, r *http.Request)
 			render.Status(r, http.StatusServiceUnavailable)
 			response := types.ErrorResponse{
 				Status: http.StatusText(http.StatusServiceUnavailable),
+				Error:  err.Error(),
+			}
+			render.JSON(w, r, response)
+			return
+		}
+
+		if errors.As(err, &forbiddenError) {
+			render.Status(r, http.StatusForbidden)
+			response := types.ErrorResponse{
+				Status: http.StatusText(http.StatusForbidden),
+				Error:  err.Error(),
+			}
+			render.JSON(w, r, response)
+			return
+		}
+
+		if errors.As(err, &unauthorizedError) {
+			render.Status(r, http.StatusUnauthorized)
+			response := types.ErrorResponse{
+				Status: http.StatusText(http.StatusUnauthorized),
 				Error:  err.Error(),
 			}
 			render.JSON(w, r, response)

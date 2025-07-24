@@ -175,7 +175,9 @@ func EnsureValidToken(cfg EnsureValidTokenConfig) func(http.Handler) http.Handle
 
 	errorHandler := func(w http.ResponseWriter, r *http.Request, err error) {
 		slog.Error("JWT validation failed", slog.Any("error", err.Error()))
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"status":"Unauthorized","error":"authentication required"}`))
 	}
 
 	middleware := jwtmiddleware.New(jwtValidator.ValidateToken, jwtmiddleware.WithErrorHandler(errorHandler))
@@ -246,6 +248,7 @@ func RequireRole(roleName string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			claims := getValidatedClaims(r.Context())
 			if claims == nil || claims.CustomClaims == nil {
+				rw.Header().Set("Content-Type", "application/json")
 				rw.WriteHeader(http.StatusUnauthorized)
 				_, _ = rw.Write([]byte(`{"status":"Unauthorized","error":"authentication required"}`))
 				return
@@ -257,6 +260,7 @@ func RequireRole(roleName string) func(http.Handler) http.Handler {
 					return
 				}
 			}
+			rw.Header().Set("Content-Type", "application/json")
 			rw.WriteHeader(http.StatusForbidden)
 			_, _ = rw.Write([]byte(`{"status":"Forbidden","error":"you are not allowed to perform this action"}`))
 		})

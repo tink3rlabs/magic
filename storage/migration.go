@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tink3rlabs/magic/logger"
 
@@ -62,72 +61,6 @@ func (m *DatabaseMigration) getMigrationFiles() (map[string]MigrationFile, error
 	return migrations, nil
 }
 
-func (m *DatabaseMigration) createSchema() error {
-	if m.storageProvider != SQLITE {
-		statement := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", m.storage.GetSchemaName())
-		return m.storage.Execute(statement)
-	}
-	return nil
-}
-
-func (m *DatabaseMigration) createMigrationTable() error {
-	var statement string
-	switch m.storageProvider {
-	case POSTGRESQL:
-		statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.migrations (id NUMERIC PRIMARY KEY, name TEXT, description TEXT, timestamp NUMERIC)", m.storage.GetSchemaName())
-	case MYSQL:
-		statement = "CREATE TABLE IF NOT EXISTS migrations (id INT PRIMARY KEY, name TEXT, description TEXT, timestamp BIGINT)"
-	case SQLITE:
-		statement = "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY, name TEXT, description TEXT, timestamp INTEGER)"
-	}
-	return m.storage.Execute(statement)
-}
-
-func (m *DatabaseMigration) updateMigrationTable(id int, name string, desc string) error {
-	var statement string
-	switch m.storageProvider {
-	case SQLITE:
-		statement = fmt.Sprintf(`INSERT INTO migrations VALUES(%v, '%v', '%v', %v)`, id, name, desc, time.Now().UnixMilli())
-	default:
-		statement = fmt.Sprintf(`INSERT INTO %s.migrations VALUES(%v, '%v', '%v', %v)`, m.storage.GetSchemaName(), id, name, desc, time.Now().UnixMilli())
-	}
-	return m.storage.Execute(statement)
-}
-
-func (m *DatabaseMigration) getLatestMigration() (int, error) {
-	var statement string
-	var latestMigration int
-	switch m.storageType {
-	case SQL:
-		statement = fmt.Sprintf("SELECT max(id) from %s.migrations", m.storage.GetSchemaName())
-		a := GetSQLAdapterInstance(nil)
-		result := a.DB.Raw(statement).Scan(&latestMigration)
-		if result.Error != nil {
-			//either a real issue or there are no migrations yet check if we can query the migration table
-			var count int
-			statement = fmt.Sprintf("SELECT count(*) from %s.migrations", m.storage.GetSchemaName())
-			countResult := a.DB.Raw(statement).Scan(&count)
-			if countResult.Error != nil {
-				return latestMigration, result.Error
-			}
-		}
-	case MEMORY:
-		statement = "SELECT max(id) from migrations"
-		a := GetMemoryAdapterInstance()
-		result := a.DB.DB.Raw(statement).Scan(&latestMigration)
-		if result.Error != nil {
-			//either a real issue or there are no migrations yet check if we can query the migration table
-			var count int
-			statement = "SELECT count(*) from migrations"
-			countResult := a.DB.DB.Raw(statement).Scan(&count)
-			if countResult.Error != nil {
-				return latestMigration, result.Error
-			}
-		}
-	}
-	return latestMigration, nil
-}
-
 func (m *DatabaseMigration) rollbackMigration(migration MigrationFile) error {
 	var err error
 	slices.Reverse(migration.Migrations)
@@ -143,7 +76,7 @@ func (m *DatabaseMigration) rollbackMigration(migration MigrationFile) error {
 func (m *DatabaseMigration) runMigrations(migrations map[string]MigrationFile) {
 	slog.Info("Getting last migration applied")
 	rollback := false
-	latestMigrationId, err := m.getLatestMigration()
+	latestMigrationId, err := m.storage.GetLatestMigration()
 	if err != nil {
 		logger.Fatal("failed to get latest migration", slog.Any("error", err))
 	}
@@ -180,7 +113,7 @@ func (m *DatabaseMigration) runMigrations(migrations map[string]MigrationFile) {
 				break
 			}
 			slog.Info("updating migration table for", slog.String("key", k))
-			err = m.updateMigrationTable(migrationId, k, mf.Description)
+			err = m.storage.UpdateMigrationTable(migrationId, k, mf.Description)
 			if err != nil {
 				logger.Fatal("failed to update migration table", slog.Any("error", err))
 			}
@@ -198,12 +131,12 @@ func (m *DatabaseMigration) Migrate() {
 			logger.Fatal("failed to get migration files", slog.Any("error", err))
 		}
 		slog.Info("creating schema")
-		err = m.createSchema()
+		err = m.storage.CreateSchema()
 		if err != nil {
 			logger.Fatal("failed to create schema", slog.Any("error", err))
 		}
 		slog.Info("creating migration table")
-		err = m.createMigrationTable()
+		err = m.storage.CreateMigrationTable()
 		if err != nil {
 			logger.Fatal("failed to create migration table", slog.Any("error", err))
 		}

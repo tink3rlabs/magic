@@ -45,27 +45,348 @@ fmt.Println(s.Ping())
 storage.NewDatabaseMigration(s).Migrate()
 ```
 
+**Supported Storage Providers:**
+
+- **Memory**: In-memory storage for development and testing
+- **SQL**: Support for PostgreSQL, MySQL, and SQLite with GORM integration
+- **DynamoDB**: AWS DynamoDB integration with attribute value marshaling
+- **Search**: Full-text search capabilities
+
+**Features:**
+
+- CRUD operations (Create, Read, Update, Delete)
+- Database migrations
+- Connection pooling and health checks
+- Multi-tenant support
+- Automatic schema management
+
 See more detailed examples in the examples folder
 
 ### Leadership
 
-TODO
+The leadership package provides distributed leader election capabilities for microservices running in clusters.
+
+```go
+import (
+  "time"
+  "github.com/tink3rlabs/magic/leadership"
+  "github.com/tink3rlabs/magic/storage"
+)
+
+// Create leader election with storage backend
+props := leadership.LeaderElectionProps{
+  HeartbeatInterval: 60 * time.Second,
+  StorageAdapter:    storageAdapter,
+  AdditionalProps:   map[string]any{"table_name": "leadership"},
+}
+
+leaderElection := leadership.NewLeaderElection(props)
+
+// Start leader election process
+go leaderElection.Start()
+
+// Check if this node is the leader
+if leaderElection.IsLeader() {
+  // Perform leader-only operations
+}
+```
+
+**Features:**
+
+- Distributed leader election using storage backends
+- Configurable heartbeat intervals
+- Automatic failover when leader becomes unavailable
+- Support for multiple storage providers (SQL, DynamoDB)
+- Thread-safe singleton pattern
 
 ### Health
 
-TODO
+The health package provides health checking capabilities for microservices and their dependencies.
+
+```go
+import (
+  "github.com/tink3rlabs/magic/health"
+  "github.com/tink3rlabs/magic/storage"
+)
+
+// Create health checker with storage backend
+healthChecker := health.NewHealthChecker(storageAdapter)
+
+// Check health including storage and external dependencies
+err := healthChecker.Check(true, []string{
+  "https://api.external-service.com/health",
+  "https://cache-service.com/health",
+})
+
+if err != nil {
+  // Handle health check failure
+}
+```
+
+**Features:**
+
+- Storage health verification
+- External dependency health checks via HTTP
+- Configurable health check parameters
+- Error reporting with detailed failure information
 
 ### Logger
 
-TODO
+The logger package provides structured logging with support for both text and JSON formats.
+
+```go
+import (
+  "github.com/tink3rlabs/magic/logger"
+)
+
+// Configure logger
+config := &logger.Config{
+  Level: logger.MapLogLevel("info"),
+  JSON:  true, // Use JSON format for production
+}
+
+// Initialize global logger
+logger.Init(config)
+
+// Use standard slog functions
+slog.Info("Application started", "version", "1.0.0")
+slog.Error("Operation failed", "error", err)
+
+// Fatal logging with exit
+logger.Fatal("Critical error occurred")
+```
+
+**Features:**
+
+- Structured logging with slog
+- Text and JSON output formats
+- Configurable log levels (debug, info, warn, error)
+- Global logger configuration
+- Fatal logging with automatic exit
 
 ### Middlewares
 
-TODO
+The middlewares package provides HTTP middleware components for common web service needs.
+
+#### Authentication Middleware
+
+```go
+import (
+  "github.com/tink3rlabs/magic/middlewares"
+)
+
+// Configure JWT authentication
+authMiddleware := middlewares.NewAuthMiddleware(middlewares.AuthConfig{
+  Audience:        []string{"https://api.example.com"},
+  IssuerURL:       "https://auth.example.com/",
+  ClaimsConfig:    middlewares.DefaultClaimsConfig,
+  ContextKeys:     middlewares.DefaultContextKeys,
+})
+
+// Use in HTTP handler
+http.Handle("/protected", authMiddleware.RequireAuth(http.HandlerFunc(protectedHandler)))
+```
+
+**Features:**
+
+- JWT token validation with Auth0 integration
+- Configurable claim mappings
+- Role-based access control
+- Tenant isolation support
+- Context injection for user information
+
+#### Validation Middleware
+
+```go
+import (
+  "github.com/tink3rlabs/magic/middlewares"
+)
+
+// Define JSON schemas for validation
+schemas := map[string]string{
+  "body": `{"type": "object", "properties": {"name": {"type": "string"}}}`,
+  "query": `{"type": "object", "properties": {"limit": {"type": "integer"}}}`,
+}
+
+validator := &middlewares.Validator{}
+validatedHandler := validator.ValidateRequest(schemas, yourHandler)
+
+// Use in HTTP handler
+http.Handle("/api/resource", validatedHandler)
+```
+
+**Features:**
+
+- JSON Schema validation for request body, query parameters, and URL parameters
+- Configurable validation rules
+- Detailed error reporting
+- Support for complex validation schemas
+
+#### Error Handler Middleware
+
+```go
+import (
+  "github.com/tink3rlabs/magic/middlewares"
+)
+
+// Use error handler middleware
+http.Handle("/api", middlewares.ErrorHandler(yourHandler))
+```
+
+**Features:**
+
+- Centralized error handling
+- Consistent error response format
+- HTTP status code mapping
+- Error logging integration
 
 ### Types
 
-TODO
+The types package provides common data structures and OpenAPI-compliant response schemas.
+
+```go
+import (
+  "github.com/tink3rlabs/magic/types"
+)
+
+// Use predefined error response types
+errorResponse := types.ErrorResponse{
+  Status:  "Bad Request",
+  Error:   "validation failed",
+  Details: []string{"field is required"},
+}
+```
+
+**Features:**
+
+- Standardized error response formats
+- OpenAPI-compliant schema definitions
+- Common HTTP response types (BadRequest, Unauthorized, Forbidden, NotFound, ServerError)
+- Consistent API response structure
+
+### PubSub
+
+The pubsub package provides publish-subscribe messaging capabilities.
+
+#### SNS Publisher
+
+```go
+import (
+  "github.com/tink3rlabs/magic/pubsub"
+)
+
+// Configure SNS publisher
+config := map[string]string{
+  "region":      "us-west-2",
+  "access_key":  "your-access-key",
+  "secret_key":  "your-secret-key",
+  "endpoint":    "https://sns.us-west-2.amazonaws.com", // Optional for local testing
+}
+
+publisher := pubsub.GetSNSPublisher(config)
+
+// Publish message with optional parameters
+params := map[string]any{
+  "groupId":    "group1",
+  "dedupId":    "unique-id",
+  "filterKey":  "environment",
+  "filterValue": "production",
+}
+
+err := publisher.Publish("arn:aws:sns:region:account:topic", "Hello World", params)
+```
+
+**Features:**
+
+- AWS SNS integration
+- Message deduplication support
+- Message grouping for FIFO topics
+- Message filtering capabilities
+- Configurable endpoints for local development
+
+### MQL (Magic Query Language)
+
+The mql package provides a simple query language parser for building dynamic queries.
+
+```go
+import (
+  "github.com/tink3rlabs/magic/mql"
+)
+
+// Parse MQL expression
+parser := mql.NewParser("name:john AND age:25 OR status:active")
+expr, err := parser.Parse()
+
+if err != nil {
+  // Handle parsing error
+}
+
+// Use parsed expression for query building
+// Supports AND, OR, NOT operators and grouping with parentheses
+```
+
+**Features:**
+
+- Simple query language parser
+- Support for logical operators (AND, OR, NOT)
+- Grouping with parentheses
+- Key-value pair queries
+- Extensible expression tree structure
+
+### Errors
+
+The errors package provides typed error structures for consistent error handling.
+
+```go
+import (
+  "github.com/tink3rlabs/magic/errors"
+)
+
+// Create typed errors
+if userNotFound {
+  return &errors.NotFound{Message: "User not found"}
+}
+
+if invalidInput {
+  return &errors.BadRequest{Message: "Invalid input parameters"}
+}
+
+if unauthorized {
+  return &errors.Unauthorized{Message: "Authentication required"}
+}
+```
+
+**Features:**
+
+- Typed error structures
+- HTTP status code mapping
+- Consistent error message format
+- Easy error type checking
+
+### Utils
+
+The utils package provides utility functions for common operations.
+
+```go
+import (
+  "github.com/tink3rlabs/magic/utils"
+)
+
+// Generate reverse-sorted UUID
+id, err := utils.NewId()
+if err != nil {
+  // Handle error
+}
+
+// Returns a hex-encoded string with reversed byte order
+// Useful for creating unique identifiers that sort in reverse order
+```
+
+**Features:**
+
+- Reverse-sorted UUID generation
+- Hex encoding utilities
+- Mathematical operations for ID generation
 
 ## Contributing
 

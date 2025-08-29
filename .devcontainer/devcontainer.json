@@ -16,5 +16,6 @@
 			"target": "/home/vscode/.ssh",
 			"type": "bind"
 		}
-	]
+	],
+	"remoteUser": "vscode"
 }

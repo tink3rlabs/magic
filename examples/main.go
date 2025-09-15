@@ -24,7 +24,7 @@ func main() {
 
 	config := map[string]string{}
 
-	// config := map[string]string{
+	// config = map[string]string{
 	// 	"provider": "postgresql",
 	// 	"host":     "host.docker.internal",
 	// 	"port":     "5432",
@@ -34,7 +34,7 @@ func main() {
 	// 	"schema":   "todo",
 	// }
 
-	// config := map[string]string{
+	// config = map[string]string{
 	// 	"provider":   "dynamodb",
 	// 	"region":     "us-west-2",
 	// 	"endpoint":   "http://host.docker.internal:8000",
@@ -43,7 +43,15 @@ func main() {
 	// 	"global":     "false",
 	// }
 
-	s, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, config)
+	config = map[string]string{
+		"provider": "cassandra",
+		"hosts":    "host.docker.internal",
+		// "protocolVersion": "4",
+		// "port":            "9042",
+		"keyspace": "todo",
+	}
+
+	s, err := storage.StorageAdapterFactory{}.GetInstance(storage.CASSANDRA, config)
 	if err != nil {
 		fmt.Println(err)
 	}

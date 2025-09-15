@@ -4,7 +4,7 @@ go 1.24.3
 
 require (
 	github.com/auth0/go-jwt-middleware/v2 v2.3.0
-	github.com/aws/aws-sdk-go-v2 v1.38.2
+	github.com/aws/aws-sdk-go-v2 v1.39.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.71
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.50.0
 	github.com/aws/aws-sdk-go-v2/service/sns v1.34.7

@@ -43,6 +43,13 @@ func main() {
 	// 	"global":     "false",
 	// }
 
+	// config := map[string]string{
+	// 	"provider":          "cosmosdb",
+	// 	"endpoint":          "https://your-cosmosdb-account.documents.azure.com:443/",
+	// 	"key":               "your-cosmosdb-key",
+	// 	"database":          "magic",
+	// }
+
 	s, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, config)
 	if err != nil {
 		fmt.Println(err)

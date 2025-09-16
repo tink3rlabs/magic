@@ -22,7 +22,9 @@ Magic exposes multiple common functionalities each in it's own package.
 
 ### Storage
 
-This package contains everything needed to persist data in storage systems. For example to write data to an in-memory database you would instantiate the storage system as follows:
+This package contains everything needed to persist data in storage systems. The storage adapter provides a unified interface for different storage backends with consistent CRUD operations, migrations, and health checks.
+
+#### Basic Usage
 
 ```go
 import (
@@ -41,24 +43,159 @@ if err != nil {
 }
 
 fmt.Println(s.Ping())
-
 storage.NewDatabaseMigration(s).Migrate()
 ```
 
-**Supported Storage Providers:**
+#### Storage Adapter Configuration
 
-- **Memory**: In-memory storage for development and testing
-- **SQL**: Support for PostgreSQL, MySQL, and SQLite with GORM integration
-- **DynamoDB**: AWS DynamoDB integration with attribute value marshaling
-- **Search**: Full-text search capabilities
+##### Memory Storage (Development/Testing)
 
-**Features:**
+```go
+config := map[string]string{}
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, config)
+```
+
+##### SQL Storage (PostgreSQL, MySQL, SQLite)
+
+```go
+// PostgreSQL
+config := map[string]string{
+    "provider": "postgresql",
+    "host":     "localhost",
+    "port":     "5432",
+    "user":     "username",
+    "password": "password",
+    "dbname":   "database",
+    "schema":   "public",
+}
+
+// MySQL
+config := map[string]string{
+    "provider": "mysql",
+    "host":     "localhost",
+    "port":     "3306",
+    "user":     "username",
+    "password": "password",
+    "dbname":   "database",
+}
+
+// SQLite
+config := map[string]string{
+    "provider": "sqlite",
+    "path":     "/path/to/database.db",
+}
+
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.SQL, config)
+```
+
+##### DynamoDB Storage
+
+```go
+config := map[string]string{
+    "provider":   "dynamodb",
+    "region":     "us-west-2",
+    "endpoint":   "http://localhost:8000", // Optional for local testing
+    "access_key": "your-access-key",
+    "secret_key": "your-secret-key",
+}
+
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.DYNAMODB, config)
+```
+
+##### CosmosDB Storage
+
+```go
+// Individual parameters
+config := map[string]string{
+    "provider": "cosmosdb",
+    "endpoint": "https://your-cosmosdb-account.documents.azure.com:443/",
+    "key":      "your-cosmosdb-primary-key",
+    "database": "magic",
+}
+
+// Or use connection string
+config := map[string]string{
+    "provider":          "cosmosdb",
+    "connection_string": "AccountEndpoint=https://your-account.documents.azure.com:443/;AccountKey=your-key;",
+    "database":          "magic",
+}
+
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, config)
+```
+
+#### Storage Adapter Features
+
+**Common Features (All Adapters):**
 
 - CRUD operations (Create, Read, Update, Delete)
-- Database migrations
 - Connection pooling and health checks
 - Multi-tenant support
-- Automatic schema management
+- Pagination with cursor-based navigation
+- Search capabilities
+- Custom query execution
+
+**Memory Storage:**
+
+- In-memory SQLite for development and testing
+- No persistence across restarts
+- Full migration support
+- Fastest for unit tests
+
+**SQL Storage:**
+
+- Full migration support with version tracking
+- Schema management and creation
+- Support for PostgreSQL, MySQL, and SQLite
+- GORM integration with advanced querying
+- Transaction support
+- Connection pooling
+
+**DynamoDB Storage:**
+
+- NoSQL document storage
+- Automatic table creation based on struct types
+- Attribute value marshaling/unmarshaling
+- PartiQL query support
+- Global and local secondary indexes
+- No migration support (use application-level)
+
+**CosmosDB Storage:**
+
+- NoSQL document storage with SQL API
+- Automatic container creation based on Go struct types
+- UUID generation for items without IDs
+- Cursor-based pagination for large datasets
+- SQL query support with parameterized queries
+- Connection string or individual parameter configuration
+- No migration support (use application-level)
+
+#### Storage Adapter Limitations
+
+**Memory Storage:**
+
+- Data lost on restart
+- Single process only
+- Limited by available RAM
+
+**SQL Storage:**
+
+- Requires database server setup
+- Schema migrations required for changes
+- Performance depends on database configuration
+
+**DynamoDB Storage:**
+
+- No migration support
+- Execute method not supported
+- Limited query capabilities compared to SQL
+- AWS-specific service
+
+**CosmosDB Storage:**
+
+- Database migrations not supported
+- Execute method not supported
+- Basic search implementation (Lucene query parsing not yet implemented)
+- Azure-specific service
 
 See more detailed examples in the examples folder
 

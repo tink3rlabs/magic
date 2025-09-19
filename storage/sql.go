@@ -300,7 +300,12 @@ func (s *SQLAdapter) Count(dest any) (int64, error) {
 }
 
 func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
-	return "", fmt.Errorf("not implemented yet")
+	// TODO: Determine the sort key from the statement
+	sortKey := "id"
+
+	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
+		return q.Raw(statement)
+	})
 }
 
 func (s *SQLAdapter) buildQuery(filter map[string]any) string {

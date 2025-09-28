@@ -14,9 +14,9 @@ import (
 
 	"github.com/gocql/gocql"
 	"github.com/scylladb/go-reflectx"
-	"github.com/scylladb/gocqlx/v3"
-	"github.com/scylladb/gocqlx/v3/qb"
-	"github.com/scylladb/gocqlx/v3/table"
+	"github.com/scylladb/gocqlx/v2"
+	"github.com/scylladb/gocqlx/v2/qb"
+	"github.com/scylladb/gocqlx/v2/table"
 	"github.com/tink3rlabs/magic/logger"
 )
 
@@ -131,7 +131,9 @@ func (c *CassandraAdapter) initializeTableMappers() error {
 			mErr,
 		)
 	}
-
+	if c.tables == nil {
+		c.tables = map[string]*table.Table{}
+	}
 	for _, t := range metadata.Tables {
 		tableMetadata := table.Metadata{
 			Name:    t.Name,
@@ -202,7 +204,7 @@ func (c *CassandraAdapter) CreateSchema() error {
 	createKeyspaceErr := c.Execute(
 		fmt.Sprintf(
 			"CREATE KEYSPACE IF NOT EXISTS %s WITH REPLICATION = {'class':'%s', 'replication_factor': %d}",
-			c.GetSchemaName(),
+			c.config[keyspace],
 			replicationClass,
 			replicationFactor,
 		),
@@ -223,7 +225,7 @@ func (c *CassandraAdapter) CreateSchema() error {
 func (c *CassandraAdapter) CreateMigrationTable() error {
 	statement := fmt.Sprintf(
 		`CREATE TABLE IF NOT EXISTS %s.migrations (
-			id DECIMAL PRIMARY KEY,
+			id INT PRIMARY KEY,
 			name TEXT,
 			description TEXT,
 			timestamp DECIMAL)`,
@@ -258,18 +260,15 @@ func (c *CassandraAdapter) UpdateMigrationTable(id int, name string, desc string
 }
 
 func (c *CassandraAdapter) GetLatestMigration() (int, error) {
-	t, e := c.getTableForItem("migrations")
-	if e != nil {
-		return -1, errors.Join(
-			fmt.Errorf("failed getting migration table"),
-			e,
-		)
+	t, e := c.tables["migrations"]
+	if !e {
+		return -1, fmt.Errorf("failed getting migrations table")
 	}
 	s, sErr := c.createSession()
 	if sErr != nil {
 		return -1, errors.Join(
 			fmt.Errorf("failed creating a session"),
-			e,
+			sErr,
 		)
 	}
 	var latestMigration int

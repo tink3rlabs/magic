@@ -45,7 +45,7 @@ func main() {
 
 	config = map[string]string{
 		"provider": "cassandra",
-		"hosts":    "host.docker.internal",
+		"hosts":    "cassandra_host",
 		// "protocolVersion": "4",
 		// "port":            "9042",
 		"keyspace": "todo",

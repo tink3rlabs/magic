@@ -161,10 +161,10 @@ adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, co
 
 **CosmosDB Storage:**
 
-- NoSQL document storage with SQL API
+- NoSQL document storage with SQL API using [microsoft/gocosmos](https://github.com/microsoft/gocosmos) driver
 - Automatic container creation based on Go struct types
 - UUID generation for items without IDs
-- Cursor-based pagination for large datasets
+- Cross-partition query support for `SELECT * FROM c` operations
 - SQL query support with parameterized queries
 - Connection string or individual parameter configuration
 - No migration support (use application-level)
@@ -193,9 +193,9 @@ adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, co
 **CosmosDB Storage:**
 
 - Database migrations not supported
-- Execute method not supported
 - Basic search implementation (Lucene query parsing not yet implemented)
 - Azure-specific service
+- Uses experimental [microsoft/gocosmos](https://github.com/microsoft/gocosmos) driver (not production-ready)
 
 See more detailed examples in the examples folder
 

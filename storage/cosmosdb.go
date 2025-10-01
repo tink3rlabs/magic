@@ -1,7 +1,8 @@
 package storage
 
 import (
-	"context"
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,18 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
-	"github.com/google/uuid"
+	_ "github.com/microsoft/gocosmos"
 
 	"github.com/tink3rlabs/magic/logger"
 )
 
 type CosmosDBAdapter struct {
-	client   *azcosmos.Client
-	database *azcosmos.DatabaseClient
-	config   map[string]string
+	db     *sql.DB
+	config map[string]string
 }
 
 var cosmosDBAdapterLock = &sync.Mutex{}
@@ -47,69 +44,51 @@ func (s *CosmosDBAdapter) OpenConnection() {
 	var databaseName string
 
 	if connStr, exists := s.config["connection_string"]; exists {
-		// Parse connection string format: AccountEndpoint=https://...;AccountKey=...;
-		parts := strings.Split(connStr, ";")
-		for _, part := range parts {
-			if strings.HasPrefix(part, "AccountEndpoint=") {
-				endpoint = strings.TrimPrefix(part, "AccountEndpoint=")
-			} else if strings.HasPrefix(part, "AccountKey=") {
-				key = strings.TrimPrefix(part, "AccountKey=")
-			}
-		}
+		// Use connection string directly
+		endpoint = connStr
 	} else {
+		// Build DSN from individual parameters
 		endpoint = s.config["endpoint"]
 		key = s.config["key"]
+		databaseName = s.config["database"]
+		if databaseName == "" {
+			databaseName = "magic"
+		}
+
+		if endpoint == "" || key == "" {
+			logger.Fatal("CosmosDB endpoint and key are required")
+		}
+
+		// Build DSN for gocosmos
+		endpoint = fmt.Sprintf("AccountEndpoint=%s;AccountKey=%s;DefaultDb=%s;AutoId=true", endpoint, key, databaseName)
 	}
 
-	databaseName = s.config["database"]
-	if databaseName == "" {
-		databaseName = "magic"
-	}
-
-	if endpoint == "" || key == "" {
-		logger.Fatal("CosmosDB endpoint and key are required")
-	}
-
-	// Create credential
-	cred, err := azcosmos.NewKeyCredential(key)
+	// Open database connection using gocosmos driver
+	db, err := sql.Open("gocosmos", endpoint)
 	if err != nil {
-		logger.Fatal("failed to create CosmosDB credential", slog.Any("error", err.Error()))
+		logger.Fatal("failed to open CosmosDB connection", slog.Any("error", err.Error()))
 	}
 
-	// Create client options
-	clientOptions := azcosmos.ClientOptions{
-		ClientOptions: azcore.ClientOptions{
-			Retry: policy.RetryOptions{
-				MaxRetries: 3,
-			},
-		},
-	}
-
-	// Create client
-	s.client, err = azcosmos.NewClientWithKey(endpoint, cred, &clientOptions)
+	// Test the connection
+	err = db.Ping()
 	if err != nil {
-		logger.Fatal("failed to create CosmosDB client", slog.Any("error", err.Error()))
+		logger.Fatal("failed to ping CosmosDB", slog.Any("error", err.Error()))
 	}
 
-	// Get database
-	s.database, err = s.client.NewDatabase(databaseName)
-	if err != nil {
-		logger.Fatal("failed to get CosmosDB database", slog.Any("error", err.Error()))
-	}
-
-	slog.Debug(fmt.Sprintf("Connected to CosmosDB database: %s", databaseName))
+	s.db = db
+	slog.Debug("Connected to CosmosDB using gocosmos driver")
 }
 
 func (s *CosmosDBAdapter) Execute(statement string) error {
-	// CosmosDB doesn't support arbitrary SQL execution like traditional databases
-	// This method is mainly for compatibility with the interface
-	return fmt.Errorf("CosmosDB Execute method not supported - use Query method instead")
+	_, err := s.db.Exec(statement)
+	if err != nil {
+		return fmt.Errorf("failed to execute statement %s: %v", statement, err)
+	}
+	return nil
 }
 
 func (s *CosmosDBAdapter) Ping() error {
-	// Test connection by trying to read database properties
-	_, err := s.database.Read(context.TODO(), &azcosmos.ReadDatabaseOptions{})
-	return err
+	return s.db.Ping()
 }
 
 func (s *CosmosDBAdapter) GetType() StorageAdapterType {
@@ -146,30 +125,31 @@ func (s *CosmosDBAdapter) GetLatestMigration() (int, error) {
 
 func (s *CosmosDBAdapter) Create(item any) error {
 	containerName := s.getContainerName(item)
-	container, err := s.client.NewContainer(s.config["database"], containerName)
-	if err != nil {
-		return fmt.Errorf("failed to get container: %v", err)
-	}
 
-	// Add CosmosDB required fields if not present
+	// Convert item to map to work with individual fields
 	itemMap := s.itemToMap(item)
-	if _, exists := itemMap["id"]; !exists {
-		itemMap["id"] = uuid.New().String()
-	}
-	if _, exists := itemMap["_ts"]; !exists {
-		itemMap["_ts"] = time.Now().Unix()
-	}
 
-	// Convert back to the original type
-	item = s.mapToItem(itemMap, reflect.TypeOf(item))
+	// Build INSERT query with individual columns
+	columns := make([]string, 0, len(itemMap))
+	placeholders := make([]string, 0, len(itemMap))
+	values := make([]interface{}, 0, len(itemMap))
+	paramIndex := 1
 
-	// Marshal item to JSON
-	itemBytes, err := json.Marshal(item)
-	if err != nil {
-		return fmt.Errorf("failed to marshal item: %v", err)
+	for key, value := range itemMap {
+		columns = append(columns, key)
+		placeholders = append(placeholders, fmt.Sprintf("@%d", paramIndex))
+		values = append(values, value)
+		paramIndex++
 	}
 
-	_, err = container.CreateItem(context.TODO(), azcosmos.NewPartitionKeyString(""), itemBytes, nil)
+	// Build the INSERT query
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+		containerName,
+		strings.Join(columns, ", "),
+		strings.Join(placeholders, ", "))
+
+	// Execute the query
+	_, err := s.db.Exec(query, values...)
 	if err != nil {
 		return fmt.Errorf("failed to create item: %v", err)
 	}
@@ -183,53 +163,71 @@ func (s *CosmosDBAdapter) Get(dest any, filter map[string]any) error {
 	}
 
 	containerName := s.getContainerName(dest)
-	container, err := s.client.NewContainer(s.config["database"], containerName)
-	if err != nil {
-		return fmt.Errorf("failed to get container: %v", err)
-	}
 
-	// Build query
-	query := "SELECT * FROM c WHERE "
+	// Build query with gocosmos parameterized queries (@1, @2, etc.)
+	query := "SELECT * FROM " + containerName + " c WHERE "
 	conditions := []string{}
-	for key := range filter {
-		conditions = append(conditions, fmt.Sprintf("c.%s = @%s", key, key))
+	args := []interface{}{}
+
+	paramIndex := 1
+	for key, value := range filter {
+		conditions = append(conditions, fmt.Sprintf("c.%s = @%d", key, paramIndex))
+		args = append(args, value)
+		paramIndex++
 	}
 	query += strings.Join(conditions, " AND ")
 
-	// Execute query
-	queryOptions := azcosmos.QueryOptions{
-		QueryParameters: []azcosmos.QueryParameter{},
+	// Execute query with parameters
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to execute query: %v", err)
+	}
+	defer rows.Close()
+
+	// Check if rows has data
+	if !rows.Next() {
+		return ErrNotFound
 	}
 
-	for key, value := range filter {
-		queryOptions.QueryParameters = append(queryOptions.QueryParameters, azcosmos.QueryParameter{
-			Name:  fmt.Sprintf("@%s", key),
-			Value: value,
-		})
+	// Get column information
+	columns, err := rows.Columns()
+	if err != nil {
+		return fmt.Errorf("failed to get columns: %v", err)
 	}
 
-	pager := container.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(""), &queryOptions)
-
-	if pager.More() {
-		response, err := pager.NextPage(context.TODO())
-		if err != nil {
-			return fmt.Errorf("failed to execute query: %v", err)
-		}
-
-		if len(response.Items) == 0 {
-			return ErrNotFound
-		}
-
-		// Unmarshal first result
-		err = json.Unmarshal(response.Items[0], dest)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal result: %v", err)
-		}
-
-		return nil
+	// gocosmos returns individual columns for each field in the document
+	// We need to build a map from these columns and then marshal/unmarshal to handle custom types
+	values := make([]interface{}, len(columns))
+	scanArgs := make([]interface{}, len(columns))
+	for i := range values {
+		scanArgs[i] = &values[i]
 	}
 
-	return ErrNotFound
+	// Scan all columns
+	err = rows.Scan(scanArgs...)
+	if err != nil {
+		return fmt.Errorf("failed to scan result: %v", err)
+	}
+
+	// Build a map from columns to values
+	resultMap := make(map[string]interface{})
+	for i, col := range columns {
+		resultMap[col] = values[i]
+	}
+
+	// Marshal the map to JSON and then unmarshal to dest
+	// This allows datatypes.JSONMap and other custom types to handle the data correctly
+	jsonBytes, err := json.Marshal(resultMap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal result: %v", err)
+	}
+
+	err = json.Unmarshal(jsonBytes, dest)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal result: %v", err)
+	}
+
+	return nil
 }
 
 func (s *CosmosDBAdapter) Update(item any, filter map[string]any) error {
@@ -238,14 +236,10 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any) error {
 	}
 
 	containerName := s.getContainerName(item)
-	container, err := s.client.NewContainer(s.config["database"], containerName)
-	if err != nil {
-		return fmt.Errorf("failed to get container: %v", err)
-	}
 
 	// First get the item to update
 	var existingItem map[string]interface{}
-	err = s.Get(&existingItem, filter)
+	err := s.Get(&existingItem, filter)
 	if err != nil {
 		return err
 	}
@@ -270,7 +264,9 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any) error {
 		return fmt.Errorf("item does not have an id field")
 	}
 
-	_, err = container.ReplaceItem(context.TODO(), azcosmos.NewPartitionKeyString(""), id.(string), itemBytes, nil)
+	// Use UPDATE with gocosmos parameterized queries
+	query := fmt.Sprintf("UPDATE %s SET data = @1 WHERE id = @2", containerName)
+	_, err = s.db.Exec(query, string(itemBytes), id)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %v", err)
 	}
@@ -280,28 +276,20 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any) error {
 
 func (s *CosmosDBAdapter) Delete(item any, filter map[string]any) error {
 	if len(filter) == 0 {
-		return fmt.Errorf("filtering is required when deleting a resource")
+		return fmt.Errorf("an id filter is required when deleting a resource")
 	}
 
 	containerName := s.getContainerName(item)
-	container, err := s.client.NewContainer(s.config["database"], containerName)
-	if err != nil {
-		return fmt.Errorf("failed to get container: %v", err)
-	}
+	query := "DELETE FROM " + containerName + " WHERE id=@1 AND pk=@2"
 
-	// First get the item to get its ID
-	var existingItem map[string]interface{}
-	err = s.Get(&existingItem, filter)
-	if err != nil {
-		return err
-	}
-
-	id, exists := existingItem["id"]
+	id := filter["id"]
+	pk, exists := filter["pk"]
 	if !exists {
-		return fmt.Errorf("item does not have an id field")
+		pk = filter["id"]
 	}
 
-	_, err = container.DeleteItem(context.TODO(), azcosmos.NewPartitionKeyString(""), id.(string), nil)
+	// Execute DELETE query with parameters
+	_, err := s.db.Exec(query, id, pk)
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %v", err)
 	}
@@ -311,154 +299,231 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any) error {
 
 func (s *CosmosDBAdapter) executePaginatedQuery(
 	dest any,
+	sortKey string,
 	limit int,
 	cursor string,
-	builder func(*azcosmos.QueryOptions) *azcosmos.QueryOptions,
+	builder func(*sql.Rows) (*sql.Rows, error),
 ) (string, error) {
 	containerName := s.getContainerName(dest)
-	container, err := s.client.NewContainer(s.config["database"], containerName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get container: %v", err)
-	}
 
-	queryOptions := &azcosmos.QueryOptions{}
-
+	// Decode cursor to get the last value from previous page (aligned with SQL adapter)
+	var cursorValue string
 	if cursor != "" {
-		queryOptions.ContinuationToken = &cursor
+		bytes, err := base64.StdEncoding.DecodeString(cursor)
+		if err != nil {
+			return "", fmt.Errorf("invalid cursor: %w", err)
+		}
+		cursorValue = string(bytes)
 	}
 
-	queryOptions = builder(queryOptions)
+	// Build base query with CROSS PARTITION for multi-partition queries
+	// Use TOP instead of LIMIT for CosmosDB
+	query := fmt.Sprintf("SELECT CROSS PARTITION TOP %d * FROM %s c", limit+1, containerName) // Get one extra to check if there are more results
 
-	pager := container.NewQueryItemsPager("SELECT * FROM c", azcosmos.NewPartitionKeyString(""), queryOptions)
+	// Add cursor-based pagination using WHERE clause with sortKey comparison
+	if cursorValue != "" {
+		query += fmt.Sprintf(" WHERE c.%s > @1", sortKey)
+	}
 
-	if pager.More() {
-		response, err := pager.NextPage(context.TODO())
+	// Add ordering (TOP must come before ORDER BY in CosmosDB)
+	query += fmt.Sprintf(" ORDER BY c.%s ASC", sortKey)
+
+	// Execute query with parameters
+	var rows *sql.Rows
+	var err error
+	if cursorValue != "" {
+		rows, err = s.db.Query(query, cursorValue)
+	} else {
+		rows, err = s.db.Query(query)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to execute query: %v", err)
+	}
+	defer rows.Close()
+
+	// Apply any additional filtering/sorting
+	rows, err = builder(rows)
+	if err != nil {
+		return "", err
+	}
+
+	// Get column information
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", fmt.Errorf("failed to get columns: %v", err)
+	}
+
+	// Process results
+	var results []json.RawMessage
+	var lastSortValue string
+
+	for rows.Next() {
+		// Create a slice to hold all column values
+		values := make([]interface{}, len(columns))
+		scanArgs := make([]interface{}, len(columns))
+		for i := range values {
+			scanArgs[i] = &values[i]
+		}
+
+		// Scan all columns
+		err = rows.Scan(scanArgs...)
 		if err != nil {
-			return "", fmt.Errorf("failed to execute query: %v", err)
+			return "", fmt.Errorf("failed to scan result: %v", err)
 		}
 
-		// Unmarshal results - response.Items is [][]byte, we need to convert to []json.RawMessage
-		var items []json.RawMessage
-		for _, itemBytes := range response.Items {
-			items = append(items, itemBytes)
+		// Build a map from columns to values
+		resultMap := make(map[string]interface{})
+		for i, col := range columns {
+			resultMap[col] = values[i]
 		}
-		itemsJSON, err := json.Marshal(items)
+
+		// Marshal the map to JSON
+		jsonBytes, err := json.Marshal(resultMap)
 		if err != nil {
-			return "", fmt.Errorf("failed to marshal items: %v", err)
+			return "", fmt.Errorf("failed to marshal result: %v", err)
 		}
-		err = json.Unmarshal(itemsJSON, dest)
+
+		// Only add up to the requested limit
+		if len(results) < limit {
+			results = append(results, json.RawMessage(jsonBytes))
+
+			// Extract sortKey value from the result map for cursor generation
+			if sortVal, exists := resultMap[sortKey]; exists {
+				if sortStr, ok := sortVal.(string); ok {
+					lastSortValue = sortStr
+				}
+			}
+		}
+	}
+
+	// Unmarshal results
+	if len(results) > 0 {
+		resultsJSON, err := json.Marshal(results)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal results: %v", err)
+		}
+		err = json.Unmarshal(resultsJSON, dest)
 		if err != nil {
 			return "", fmt.Errorf("failed to unmarshal results: %v", err)
 		}
-
-		nextCursor := ""
-		if response.ContinuationToken != nil {
-			nextCursor = *response.ContinuationToken
-		}
-
-		return nextCursor, nil
 	}
 
-	return "", nil
+	// Generate next cursor if there are more results (aligned with SQL adapter)
+	nextCursor := ""
+	if len(results) > limit {
+		// There are more results, encode the last sortKey value as cursor
+		if lastSortValue != "" {
+			nextCursor = base64.StdEncoding.EncodeToString([]byte(lastSortValue))
+		}
+	}
+
+	return nextCursor, nil
 }
 
 func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
-	return s.executePaginatedQuery(dest, limit, cursor, func(queryOptions *azcosmos.QueryOptions) *azcosmos.QueryOptions {
-		// For now, implement basic listing without filtering
-		// TODO: Implement proper filtering and sorting
-		return queryOptions
+	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(rows *sql.Rows) (*sql.Rows, error) {
+		// For now, return rows as-is
+		// In a real implementation, you might want to apply additional filtering
+		return rows, nil
 	})
 }
 
 func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
-	return s.executePaginatedQuery(dest, limit, cursor, func(queryOptions *azcosmos.QueryOptions) *azcosmos.QueryOptions {
-		// For now, implement basic text search
-		// TODO: Implement proper Lucene query parsing for CosmosDB SQL
-		if query != "" {
-			// Simple contains search
-			queryOptions.QueryParameters = append(queryOptions.QueryParameters, azcosmos.QueryParameter{
-				Name:  "@searchTerm",
-				Value: query,
-			})
-		}
-
-		return queryOptions
+	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(rows *sql.Rows) (*sql.Rows, error) {
+		// For now, return rows as-is
+		// In a real implementation, you might want to apply search filtering
+		return rows, nil
 	})
 }
 
 func (s *CosmosDBAdapter) Count(dest any) (int64, error) {
 	containerName := s.getContainerName(dest)
-	container, err := s.client.NewContainer(s.config["database"], containerName)
+
+	query := fmt.Sprintf("SELECT CROSS PARTITION COUNT(1) FROM %s c", containerName)
+	var count int64
+
+	err := s.db.QueryRow(query).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get container: %v", err)
+		return 0, fmt.Errorf("failed to execute count query: %v", err)
 	}
 
-	queryOptions := &azcosmos.QueryOptions{}
-	pager := container.NewQueryItemsPager("SELECT VALUE COUNT(1) FROM c", azcosmos.NewPartitionKeyString(""), queryOptions)
-
-	if pager.More() {
-		response, err := pager.NextPage(context.TODO())
-		if err != nil {
-			return 0, fmt.Errorf("failed to execute count query: %v", err)
-		}
-
-		if len(response.Items) > 0 {
-			var count int64
-			err = json.Unmarshal(response.Items[0], &count)
-			if err != nil {
-				return 0, fmt.Errorf("failed to unmarshal count: %v", err)
-			}
-			return count, nil
-		}
-	}
-
-	return 0, nil
+	return count, nil
 }
 
 func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
-	containerName := s.getContainerName(dest)
-	container, err := s.client.NewContainer(s.config["database"], containerName)
+	// Execute the custom SQL statement
+	rows, err := s.db.Query(statement)
 	if err != nil {
-		return "", fmt.Errorf("failed to get container: %v", err)
+		return "", fmt.Errorf("failed to execute query: %v", err)
+	}
+	defer rows.Close()
+
+	// Get column information
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", fmt.Errorf("failed to get columns: %v", err)
 	}
 
-	queryOptions := &azcosmos.QueryOptions{}
+	// Process results
+	var results []json.RawMessage
 
-	if cursor != "" {
-		queryOptions.ContinuationToken = &cursor
+	for rows.Next() {
+		// Create a slice to hold all column values
+		values := make([]interface{}, len(columns))
+		scanArgs := make([]interface{}, len(columns))
+		for i := range values {
+			scanArgs[i] = &values[i]
+		}
+
+		// Scan all columns
+		err = rows.Scan(scanArgs...)
+		if err != nil {
+			return "", fmt.Errorf("failed to scan result: %v", err)
+		}
+
+		// Build a map from columns to values
+		resultMap := make(map[string]interface{})
+		for i, col := range columns {
+			resultMap[col] = values[i]
+		}
+
+		// Marshal the map to JSON
+		jsonBytes, err := json.Marshal(resultMap)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal result: %v", err)
+		}
+
+		results = append(results, json.RawMessage(jsonBytes))
 	}
 
-	pager := container.NewQueryItemsPager(statement, azcosmos.NewPartitionKeyString(""), queryOptions)
-
-	if pager.More() {
-		response, err := pager.NextPage(context.TODO())
+	// Unmarshal results
+	if len(results) > 0 {
+		resultsJSON, err := json.Marshal(results)
 		if err != nil {
-			return "", fmt.Errorf("failed to execute query: %v", err)
+			return "", fmt.Errorf("failed to marshal results: %v", err)
 		}
-
-		// Unmarshal results - response.Items is [][]byte, we need to convert to []json.RawMessage
-		var items []json.RawMessage
-		for _, itemBytes := range response.Items {
-			items = append(items, itemBytes)
-		}
-		itemsJSON, err := json.Marshal(items)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal items: %v", err)
-		}
-		err = json.Unmarshal(itemsJSON, dest)
+		err = json.Unmarshal(resultsJSON, dest)
 		if err != nil {
 			return "", fmt.Errorf("failed to unmarshal results: %v", err)
 		}
-
-		nextCursor := ""
-		if response.ContinuationToken != nil {
-			nextCursor = *response.ContinuationToken
-		}
-
-		return nextCursor, nil
 	}
 
 	return "", nil
+}
+
+func (s *CosmosDBAdapter) ensureContainerExists(containerName string) error {
+	// Check if container exists
+	query := fmt.Sprintf("SELECT COUNT(1) FROM %s c LIMIT 1", containerName)
+	_, err := s.db.Exec(query)
+	if err != nil {
+		// Container doesn't exist, create it
+		createQuery := fmt.Sprintf("CREATE COLLECTION %s WITH PK=id", containerName)
+		_, err = s.db.Exec(createQuery)
+		if err != nil {
+			return fmt.Errorf("failed to create container %s: %v", containerName, err)
+		}
+	}
+	return nil
 }
 
 func (s *CosmosDBAdapter) getContainerName(obj any) string {

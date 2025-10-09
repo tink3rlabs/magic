@@ -145,7 +145,7 @@ const definitions = `
 type ErrorResponse struct {
 	Status  string   `json:"status"`
 	Error   string   `json:"error"`
-	Details []string `json:"details,omitempty"`
+	Details []string `json:"details"`
 }
 
 func GetOpenAPIDefinitions() ([]byte, error) {

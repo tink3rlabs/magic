@@ -100,7 +100,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 }
 
 // NewAuditLogger creates or returns the singleton AuditLogger instance
-func NewAuditLogger(config AuditConfig, storageType storage.StorageAdapterType, storageConfig map[string]string) *AuditLogger {
+func NewAuditLogger(config AuditConfig, storageAdapter storage.StorageAdapter) *AuditLogger {
 	if !config.Enabled {
 		return nil
 	}
@@ -115,13 +115,6 @@ func NewAuditLogger(config AuditConfig, storageType storage.StorageAdapterType, 
 			}
 			if config.MaxBodySize == 0 {
 				config.MaxBodySize = 10000 // 10KB default
-			}
-
-			// Initialize storage adapter the same way services do
-			storageAdapter, err := storage.StorageAdapterFactory{}.GetInstance(storageType, storageConfig)
-			if err != nil {
-				slog.Error("failed to create audit storage adapter", slog.Any("error", err))
-				return nil
 			}
 
 			auditLoggerInstance = &AuditLogger{
@@ -541,8 +534,8 @@ func truncateString(s string, maxLen int) string {
 }
 
 // AuditMiddleware returns a middleware that logs all requests to the audit table
-func AuditMiddleware(config AuditConfig, storageType storage.StorageAdapterType, storageConfig map[string]string) func(http.Handler) http.Handler {
-	logger := NewAuditLogger(config, storageType, storageConfig)
+func AuditMiddleware(config AuditConfig, storageAdapter storage.StorageAdapter) func(http.Handler) http.Handler {
+	logger := NewAuditLogger(config, storageAdapter)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

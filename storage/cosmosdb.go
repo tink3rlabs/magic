@@ -237,36 +237,69 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any) error {
 
 	containerName := s.getContainerName(item)
 
-	// First get the item to update
-	var existingItem map[string]interface{}
-	err := s.Get(&existingItem, filter)
+	// First get the item to update - use the same type as the input item
+	itemType := reflect.TypeOf(item)
+	if itemType.Kind() == reflect.Ptr {
+		itemType = itemType.Elem()
+	}
+	existingItem := reflect.New(itemType).Interface()
+
+	err := s.Get(existingItem, filter)
 	if err != nil {
 		return err
 	}
 
+	// Convert existing item to map for merging
+	existingItemMap := s.itemToMap(existingItem)
+
 	// Merge with new item
 	itemMap := s.itemToMap(item)
 	for key, value := range itemMap {
-		existingItem[key] = value
+		existingItemMap[key] = value
 	}
 
 	// Update timestamp
-	existingItem["_ts"] = time.Now().Unix()
+	existingItemMap["_ts"] = time.Now().Unix()
 
-	// Marshal item to JSON
-	itemBytes, err := json.Marshal(existingItem)
-	if err != nil {
-		return fmt.Errorf("failed to marshal item: %v", err)
+	// Build UPDATE query with individual fields like Create method
+	// Exclude id field from updates since it should be immutable
+	setClauses := make([]string, 0, len(existingItemMap))
+	values := make([]interface{}, 0, len(existingItemMap))
+	paramIndex := 1
+
+	for key, value := range existingItemMap {
+		// Skip id field - it should be immutable
+		if key == "id" {
+			continue
+		}
+		setClauses = append(setClauses, fmt.Sprintf("%s = @%d", key, paramIndex))
+		values = append(values, value)
+		paramIndex++
 	}
 
-	id, exists := existingItem["id"]
+	// Add WHERE clause for id and partition key (required by CosmosDB)
+	id, exists := existingItemMap["id"]
 	if !exists {
 		return fmt.Errorf("item does not have an id field")
 	}
 
-	// Use UPDATE with gocosmos parameterized queries
-	query := fmt.Sprintf("UPDATE %s SET data = @1 WHERE id = @2", containerName)
-	_, err = s.db.Exec(query, string(itemBytes), id)
+	// Use id as partition key if pk is not explicitly set (same logic as Delete method)
+	pk, exists := existingItemMap["pk"]
+	if !exists {
+		pk = id
+	}
+
+	whereClause := fmt.Sprintf("id = @%d AND pk = @%d", paramIndex, paramIndex+1)
+	values = append(values, id, pk)
+
+	// Build the UPDATE query
+	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s",
+		containerName,
+		strings.Join(setClauses, ", "),
+		whereClause)
+
+	// Execute the query
+	_, err = s.db.Exec(query, values...)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %v", err)
 	}

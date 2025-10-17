@@ -76,36 +76,36 @@ func (m *MemoryAdapter) GetLatestMigration() (int, error) {
 	return latestMigration, nil
 }
 
-func (m *MemoryAdapter) Create(item any) error {
+func (m *MemoryAdapter) Create(item any, params ...map[string]any) error {
 	return m.DB.Create(item)
 }
 
-func (m *MemoryAdapter) Get(dest any, filter map[string]any) error {
+func (m *MemoryAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
 	return m.DB.Get(dest, filter)
 }
 
-func (m *MemoryAdapter) Update(item any, filter map[string]any) error {
+func (m *MemoryAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
 	return m.DB.Update(item, filter)
 }
 
-func (m *MemoryAdapter) Delete(item any, filter map[string]any) error {
+func (m *MemoryAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
 	return m.DB.Delete(item, filter)
 }
 
-func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
+func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	return m.DB.List(dest, sortKey, filter, limit, cursor)
 }
 
-func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
+func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return m.DB.Search(dest, sortKey, query, limit, cursor)
 }
 
-func (m *MemoryAdapter) Count(dest any, filter map[string]any) (int64, error) {
+func (m *MemoryAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
 	var total int64
 	total, err := m.DB.Count(dest, filter)
 	return total, err
 }
 
-func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return m.DB.Query(dest, statement, limit, cursor)
 }

@@ -18,14 +18,14 @@ type StorageAdapter interface {
 	CreateMigrationTable() error
 	UpdateMigrationTable(id int, name string, desc string) error
 	GetLatestMigration() (int, error)
-	Create(item any) error
-	Get(dest any, filter map[string]any) error
-	Update(item any, filter map[string]any) error
-	Delete(item any, filter map[string]any) error
-	List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error)
-	Search(dest any, sortKey string, query string, limit int, cursor string) (string, error)
-	Count(dest any, filter map[string]any) (int64, error)
-	Query(dest any, statement string, limit int, cursor string) (string, error)
+	Create(item any, params ...map[string]any) error
+	Get(dest any, filter map[string]any, params ...map[string]any) error
+	Update(item any, filter map[string]any, params ...map[string]any) error
+	Delete(item any, filter map[string]any, params ...map[string]any) error
+	List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error)
+	Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error)
+	Count(dest any, filter map[string]any, params ...map[string]any) (int64, error)
+	Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error)
 }
 
 type StorageAdapterType string

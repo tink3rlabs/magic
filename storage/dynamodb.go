@@ -145,7 +145,7 @@ func (s *DynamoDBAdapter) Get(dest any, filter map[string]any) error {
 	if response.Item == nil {
 		return ErrNotFound
 	} else {
-		err = attributevalue.UnmarshalMap(response.Item, &dest)
+		err = attributevalue.UnmarshalMapWithOptions(response.Item, &dest, func(eo *attributevalue.DecoderOptions) { eo.TagKey = "json" })
 		if err != nil {
 			return fmt.Errorf("failed to unmarshal dynamodb Get result into dest, %v", err)
 		}

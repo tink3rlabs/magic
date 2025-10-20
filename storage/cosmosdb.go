@@ -1,25 +1,29 @@
 package storage
 
 import (
-	"database/sql"
-	"encoding/base64"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"reflect"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	_ "github.com/microsoft/gocosmos"
-
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
 	"github.com/tink3rlabs/magic/logger"
 )
 
 type CosmosDBAdapter struct {
-	db     *sql.DB
-	config map[string]string
+	client         *azcosmos.Client
+	databaseClient *azcosmos.DatabaseClient
+	config         map[string]string
+	databaseName   string
 }
 
 var cosmosDBAdapterLock = &sync.Mutex{}
@@ -38,7 +42,6 @@ func GetCosmosDBAdapterInstance(config map[string]string) *CosmosDBAdapter {
 }
 
 func (s *CosmosDBAdapter) OpenConnection() {
-	// Parse connection string or use individual config values
 	var endpoint string
 	var key string
 	var databaseName string
@@ -47,7 +50,7 @@ func (s *CosmosDBAdapter) OpenConnection() {
 		// Use connection string directly
 		endpoint = connStr
 	} else {
-		// Build DSN from individual parameters
+		// Build from individual parameters
 		endpoint = s.config["endpoint"]
 		key = s.config["key"]
 		databaseName = s.config["database"]
@@ -58,37 +61,72 @@ func (s *CosmosDBAdapter) OpenConnection() {
 		if endpoint == "" || key == "" {
 			logger.Fatal("CosmosDB endpoint and key are required")
 		}
-
-		// Build DSN for gocosmos
-		endpoint = fmt.Sprintf("AccountEndpoint=%s;AccountKey=%s;DefaultDb=%s;AutoId=true", endpoint, key, databaseName)
 	}
 
-	// Open database connection using gocosmos driver
-	db, err := sql.Open("gocosmos", endpoint)
+	s.databaseName = databaseName
+
+	// Check if TLS verification should be skipped (for local testing)
+	skipTLS := s.config["skip_tls_verify"] == "true" || s.config["skip_tls_verify"] == "1"
+
+	// Create Azure Cosmos DB client
+	var err error
+	var clientOptions *azcosmos.ClientOptions
+
+	if skipTLS {
+		// Configure client to skip TLS verification
+		clientOptions = &azcosmos.ClientOptions{
+			ClientOptions: azcore.ClientOptions{
+				Transport: &http.Client{
+					Transport: &http.Transport{
+						TLSClientConfig: &tls.Config{
+							InsecureSkipVerify: true,
+						},
+					},
+				},
+			},
+		}
+		slog.Warn("TLS verification is disabled - only use this for local testing!")
+	}
+
+	if key != "" {
+		// Use account key authentication
+		keyCredential, keyErr := azcosmos.NewKeyCredential(key)
+		if keyErr != nil {
+			logger.Fatal("Failed to create key credential", slog.Any("error", keyErr.Error()))
+		}
+		s.client, err = azcosmos.NewClientWithKey(endpoint, keyCredential, clientOptions)
+	} else {
+		// Use Azure AD authentication
+		credential, credErr := azidentity.NewDefaultAzureCredential(nil)
+		if credErr != nil {
+			logger.Fatal("Failed to obtain Azure credential", slog.Any("error", credErr.Error()))
+		}
+		s.client, err = azcosmos.NewClient(endpoint, credential, clientOptions)
+	}
+
 	if err != nil {
-		logger.Fatal("failed to open CosmosDB connection", slog.Any("error", err.Error()))
+		logger.Fatal("Failed to create CosmosDB client", slog.Any("error", err.Error()))
 	}
 
-	// Test the connection
-	err = db.Ping()
+	// Get database client
+	s.databaseClient, err = s.client.NewDatabase(databaseName)
 	if err != nil {
-		logger.Fatal("failed to ping CosmosDB", slog.Any("error", err.Error()))
+		logger.Fatal("Failed to create database client", slog.Any("error", err.Error()))
 	}
 
-	s.db = db
-	slog.Debug("Connected to CosmosDB using gocosmos driver")
+	slog.Debug("Connected to CosmosDB using Azure SDK")
 }
 
 func (s *CosmosDBAdapter) Execute(statement string) error {
-	_, err := s.db.Exec(statement)
-	if err != nil {
-		return fmt.Errorf("failed to execute statement %s: %v", statement, err)
-	}
-	return nil
+	// Azure SDK doesn't support arbitrary SQL execution like gocosmos
+	// This method is kept for compatibility but will return an error
+	return fmt.Errorf("Execute method not supported with Azure SDK - use specific CRUD methods instead")
 }
 
 func (s *CosmosDBAdapter) Ping() error {
-	return s.db.Ping()
+	// Test connection by trying to read database properties
+	_, err := s.databaseClient.Read(context.Background(), nil)
+	return err
 }
 
 func (s *CosmosDBAdapter) GetType() StorageAdapterType {
@@ -100,7 +138,7 @@ func (s *CosmosDBAdapter) GetProvider() StorageProviders {
 }
 
 func (s *CosmosDBAdapter) GetSchemaName() string {
-	return s.config["database"]
+	return s.databaseName
 }
 
 func (s *CosmosDBAdapter) CreateSchema() error {
@@ -128,15 +166,26 @@ func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
 	paramMap := s.extractParams(params...)
 
 	containerName := s.getContainerName(item)
+	containerClient, err := s.databaseClient.NewContainer(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to create container client: %v", err)
+	}
 
 	// Convert item to map to work with individual fields
 	itemMap := s.itemToMap(item)
+
+	// Ensure id field exists
+	if _, exists := itemMap["id"]; !exists {
+		return fmt.Errorf("item must have an id field")
+	}
 
 	// Build partition key from params if provided
 	if pk, err := s.buildPartitionKey(paramMap); err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
-		itemMap["pk"] = pk
+		// Set the partition key value in the item
+		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		itemMap[pkFieldName] = pk
 	} else if _, exists := itemMap["pk"]; !exists {
 		// If no partition key is provided and item doesn't have pk, use id as partition key
 		if id, exists := itemMap["id"]; exists {
@@ -144,27 +193,29 @@ func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
 		}
 	}
 
-	// Build INSERT query with individual columns
-	columns := make([]string, 0, len(itemMap))
-	placeholders := make([]string, 0, len(itemMap))
-	values := make([]interface{}, 0, len(itemMap))
-	paramIndex := 1
-
-	for key, value := range itemMap {
-		columns = append(columns, key)
-		placeholders = append(placeholders, fmt.Sprintf("@%d", paramIndex))
-		values = append(values, value)
-		paramIndex++
+	// Marshal item to JSON
+	itemBytes, err := json.Marshal(itemMap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal item: %v", err)
 	}
 
-	// Build the INSERT query
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		containerName,
-		strings.Join(columns, ", "),
-		strings.Join(placeholders, ", "))
+	// Get the partition key value from the item
+	pkFieldName := s.getPartitionKeyFieldName(paramMap)
+	var pkValue string
+	if pk, exists := itemMap[pkFieldName]; exists {
+		pkValue = pk.(string)
+	} else if pk, exists := itemMap["pk"]; exists {
+		// Fallback to "pk" field if custom field doesn't exist
+		pkValue = pk.(string)
+	} else {
+		return fmt.Errorf("partition key field '%s' not found in item", pkFieldName)
+	}
 
-	// Execute the query
-	_, err := s.db.Exec(query, values...)
+	// Create partition key
+	partitionKey := azcosmos.NewPartitionKeyString(pkValue)
+
+	// Create item
+	_, err = containerClient.CreateItem(context.Background(), partitionKey, itemBytes, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create item: %v", err)
 	}
@@ -181,16 +232,24 @@ func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, params ...map[str
 	paramMap := s.extractParams(params...)
 
 	containerName := s.getContainerName(dest)
+	containerClient, err := s.databaseClient.NewContainer(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to create container client: %v", err)
+	}
 
-	// Build query with gocosmos parameterized queries (@1, @2, etc.)
-	query := "SELECT * FROM " + containerName + " c WHERE "
+	// Build query
+	query := "SELECT * FROM c"
 	conditions := []string{}
-	args := []interface{}{}
+	queryParams := []azcosmos.QueryParameter{}
 
 	paramIndex := 1
 	for key, value := range filter {
-		conditions = append(conditions, fmt.Sprintf("c.%s = @%d", key, paramIndex))
-		args = append(args, value)
+		paramName := fmt.Sprintf("@param%d", paramIndex)
+		conditions = append(conditions, fmt.Sprintf("c.%s = %s", key, paramName))
+		queryParams = append(queryParams, azcosmos.QueryParameter{
+			Name:  paramName,
+			Value: value,
+		})
 		paramIndex++
 	}
 
@@ -198,59 +257,37 @@ func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, params ...map[str
 	if pk, err := s.buildPartitionKey(paramMap); err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
-		conditions = append(conditions, fmt.Sprintf("c.pk = @%d", paramIndex))
-		args = append(args, pk)
-		paramIndex++
+		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		paramName := fmt.Sprintf("@param%d", paramIndex)
+		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
+		queryParams = append(queryParams, azcosmos.QueryParameter{
+			Name:  paramName,
+			Value: pk,
+		})
 	}
 
-	query += strings.Join(conditions, " AND ")
+	// Add WHERE clause if we have conditions
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
 
-	// Execute query with parameters
-	rows, err := s.db.Query(query, args...)
+	// Set up query options with parameters
+	queryOptions := &azcosmos.QueryOptions{
+		QueryParameters: queryParams,
+	}
+
+	// Execute query
+	page, err := s.executeQuery(containerClient, query, paramMap, queryOptions)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %v", err)
 	}
-	defer rows.Close()
 
-	// Check if rows has data
-	if !rows.Next() {
+	if len(page.Items) == 0 {
 		return ErrNotFound
 	}
 
-	// Get column information
-	columns, err := rows.Columns()
-	if err != nil {
-		return fmt.Errorf("failed to get columns: %v", err)
-	}
-
-	// gocosmos returns individual columns for each field in the document
-	// We need to build a map from these columns and then marshal/unmarshal to handle custom types
-	values := make([]interface{}, len(columns))
-	scanArgs := make([]interface{}, len(columns))
-	for i := range values {
-		scanArgs[i] = &values[i]
-	}
-
-	// Scan all columns
-	err = rows.Scan(scanArgs...)
-	if err != nil {
-		return fmt.Errorf("failed to scan result: %v", err)
-	}
-
-	// Build a map from columns to values
-	resultMap := make(map[string]interface{})
-	for i, col := range columns {
-		resultMap[col] = values[i]
-	}
-
-	// Marshal the map to JSON and then unmarshal to dest
-	// This allows datatypes.JSONMap and other custom types to handle the data correctly
-	jsonBytes, err := json.Marshal(resultMap)
-	if err != nil {
-		return fmt.Errorf("failed to marshal result: %v", err)
-	}
-
-	err = json.Unmarshal(jsonBytes, dest)
+	// Unmarshal first result
+	err = json.Unmarshal(page.Items[0], dest)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal result: %v", err)
 	}
@@ -267,15 +304,19 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[
 	paramMap := s.extractParams(params...)
 
 	containerName := s.getContainerName(item)
+	containerClient, err := s.databaseClient.NewContainer(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to create container client: %v", err)
+	}
 
-	// First get the item to update - use the same type as the input item
+	// First get the item to update
 	itemType := reflect.TypeOf(item)
 	if itemType.Kind() == reflect.Ptr {
 		itemType = itemType.Elem()
 	}
 	existingItem := reflect.New(itemType).Interface()
 
-	err := s.Get(existingItem, filter)
+	err = s.Get(existingItem, filter, params...)
 	if err != nil {
 		return err
 	}
@@ -292,52 +333,47 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[
 	// Update timestamp
 	existingItemMap["_ts"] = time.Now().Unix()
 
-	// Build UPDATE query with individual fields like Create method
-	// Exclude id field from updates since it should be immutable
-	setClauses := make([]string, 0, len(existingItemMap))
-	values := make([]interface{}, 0, len(existingItemMap))
-	paramIndex := 1
-
-	for key, value := range existingItemMap {
-		// Skip id field - it should be immutable
-		if key == "id" {
-			continue
-		}
-		setClauses = append(setClauses, fmt.Sprintf("%s = @%d", key, paramIndex))
-		values = append(values, value)
-		paramIndex++
-	}
-
-	// Add WHERE clause for id and partition key (required by CosmosDB)
+	// Ensure id and pk fields exist
 	id, exists := existingItemMap["id"]
 	if !exists {
 		return fmt.Errorf("item does not have an id field")
 	}
 
-	// Use partition key from params if provided, otherwise use id as partition key
-	pk, exists := existingItemMap["pk"]
+	// Get the partition key field name
+	pkFieldName := s.getPartitionKeyFieldName(paramMap)
+
+	// Get or set the partition key value
+	pk, exists := existingItemMap[pkFieldName]
 	if !exists {
 		// Check if partition key is provided in params
 		if paramPk, err := s.buildPartitionKey(paramMap); err != nil {
 			return fmt.Errorf("failed to build partition key: %v", err)
 		} else if paramPk != "" {
 			pk = paramPk
+			existingItemMap[pkFieldName] = pk
 		} else {
-			pk = id
+			// Fallback to "pk" field or id
+			if fallbackPk, exists := existingItemMap["pk"]; exists {
+				pk = fallbackPk
+				existingItemMap[pkFieldName] = pk
+			} else {
+				pk = id
+				existingItemMap[pkFieldName] = pk
+			}
 		}
 	}
 
-	whereClause := fmt.Sprintf("id = @%d AND pk = @%d", paramIndex, paramIndex+1)
-	values = append(values, id, pk)
+	// Marshal updated item
+	itemBytes, err := json.Marshal(existingItemMap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal item: %v", err)
+	}
 
-	// Build the UPDATE query
-	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s",
-		containerName,
-		strings.Join(setClauses, ", "),
-		whereClause)
+	// Create partition key
+	partitionKey := azcosmos.NewPartitionKeyString(pk.(string))
 
-	// Execute the query
-	_, err = s.db.Exec(query, values...)
+	// Update item
+	_, err = containerClient.ReplaceItem(context.Background(), partitionKey, id.(string), itemBytes, nil)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %v", err)
 	}
@@ -354,28 +390,127 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 	paramMap := s.extractParams(params...)
 
 	containerName := s.getContainerName(item)
-	query := "DELETE FROM " + containerName + " WHERE id=@1 AND pk=@2"
+	containerClient, err := s.databaseClient.NewContainer(containerName)
+	if err != nil {
+		return fmt.Errorf("failed to create container client: %v", err)
+	}
 
 	id := filter["id"]
-	pk, exists := filter["pk"]
-	if !exists {
-		// Check if partition key is provided in params
-		if paramPk, err := s.buildPartitionKey(paramMap); err != nil {
-			return fmt.Errorf("failed to build partition key: %v", err)
-		} else if paramPk != "" {
-			pk = paramPk
+
+	// Try to get partition key from params first
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
+		return fmt.Errorf("failed to build partition key: %v", err)
+	}
+
+	// If no partition key from params, try to get from filter
+	if pk == "" {
+		if filterPk, exists := filter["pk"]; exists {
+			pk = filterPk.(string)
 		} else {
-			pk = filter["id"]
+			// Fallback to id
+			pk = id.(string)
 		}
 	}
 
-	// Execute DELETE query with parameters
-	_, err := s.db.Exec(query, id, pk)
+	// Create partition key
+	partitionKey := azcosmos.NewPartitionKeyString(pk)
+
+	// Delete item
+	_, err = containerClient.DeleteItem(context.Background(), partitionKey, id.(string), nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %v", err)
 	}
 
 	return nil
+}
+
+func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+	// Extract sort direction from params
+	paramMap := s.extractParams(params...)
+	sortDirection := s.extractSortDirection(paramMap)
+
+	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, filter, params...)
+}
+
+func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+	// Note: The Search method in CosmosDB is designed for full-text search scenarios
+	// For CosmosDB, full-text search requires Azure Cognitive Search integration
+	// This implementation treats Search as List with no filter
+	// For custom queries, use the Query method instead
+
+	// Extract sort direction from params
+	paramMap := s.extractParams(params...)
+	sortDirection := s.extractSortDirection(paramMap)
+
+	// Use executePaginatedQuery with empty filter (the query parameter is ignored for CosmosDB)
+	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, map[string]any{}, params...)
+}
+
+func (s *CosmosDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+	// TODO Implement
+	var total int64
+	return total, nil
+}
+
+func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+	// Note: For custom SQL queries, partition key parameters should be handled within the statement itself
+	// The params are available but not automatically applied to the query
+	// Users should include partition key conditions in their custom SQL statements when needed
+
+	containerName := s.getContainerName(dest)
+	containerClient, err := s.databaseClient.NewContainer(containerName)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container client: %v", err)
+	}
+
+	// Set up query options
+	enableCrossPartition := true
+	queryOptions := &azcosmos.QueryOptions{
+		EnableCrossPartitionQuery: &enableCrossPartition, // Enable cross-partition for custom queries
+		PageSizeHint:              int32(limit),
+	}
+
+	// Handle cursor for pagination
+	if cursor != "" {
+		queryOptions.ContinuationToken = &cursor
+	}
+
+	// Execute the custom SQL statement
+	// Cross-partition is enabled by default for custom queries
+	pager := containerClient.NewQueryItemsPager(statement, azcosmos.NewPartitionKeyString(""), queryOptions)
+
+	// Get first page
+	page, err := pager.NextPage(context.Background())
+	if err != nil {
+		return "", fmt.Errorf("failed to execute query: %v", err)
+	}
+
+	// Process results
+	var results []json.RawMessage
+	for _, item := range page.Items {
+		results = append(results, json.RawMessage(item))
+	}
+
+	// Unmarshal results
+	if len(results) > 0 {
+		resultsJSON, err := json.Marshal(results)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal results: %v", err)
+		}
+		err = json.Unmarshal(resultsJSON, dest)
+		if err != nil {
+			return "", fmt.Errorf("failed to unmarshal results: %v", err)
+		}
+	}
+
+	// Return continuation token for next page
+	nextCursor := ""
+	if page.ContinuationToken != nil {
+		nextCursor = *page.ContinuationToken
+	}
+
+	return nextCursor, nil
 }
 
 func (s *CosmosDBAdapter) executePaginatedQuery(
@@ -385,40 +520,31 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	limit int,
 	cursor string,
 	filter map[string]any,
-	builder func(*sql.Rows) (*sql.Rows, error),
 	params ...map[string]any,
 ) (string, error) {
 	// Extract provider-specific parameters
 	paramMap := s.extractParams(params...)
 
 	containerName := s.getContainerName(dest)
-
-	// Check if we need CROSS PARTITION based on partition key usage
-	needsCrossPartition := true
-	if pk, err := s.buildPartitionKey(paramMap); err == nil && pk != "" {
-		// If partition key is specified, we can query within a single partition
-		needsCrossPartition = false
+	containerClient, err := s.databaseClient.NewContainer(containerName)
+	if err != nil {
+		return "", fmt.Errorf("failed to create container client: %v", err)
 	}
 
-	// Build base query - use CROSS PARTITION only when needed
-	var query string
-	if needsCrossPartition {
-		query = fmt.Sprintf("SELECT CROSS PARTITION * FROM %s c", containerName)
-	} else {
-		query = fmt.Sprintf("SELECT * FROM %s c", containerName)
-	}
+	// Build base query
+	query := "SELECT * FROM c"
+	queryParams := []azcosmos.QueryParameter{}
+	paramIndex := 1
 
 	// Build WHERE conditions
 	conditions := []string{}
-	args := []interface{}{}
-	paramIndex := 1
 
 	// Add filter conditions if provided
 	if len(filter) > 0 {
-		filterClause, filterArgs := s.buildFilter(filter, &paramIndex)
+		filterClause, filterParams := s.buildFilter(filter, &paramIndex)
 		if filterClause != "" {
 			conditions = append(conditions, filterClause)
-			args = append(args, filterArgs...)
+			queryParams = append(queryParams, filterParams...)
 		}
 	}
 
@@ -426,144 +552,50 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	if pk, err := s.buildPartitionKey(paramMap); err != nil {
 		return "", fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
-		conditions = append(conditions, fmt.Sprintf("c.pk = @%d", paramIndex))
-		args = append(args, pk)
+		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		paramName := fmt.Sprintf("@param%d", paramIndex)
+		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
+		queryParams = append(queryParams, azcosmos.QueryParameter{
+			Name:  paramName,
+			Value: pk,
+		})
 		paramIndex++
 	}
 
-	// Handle pagination differently based on whether we need cross-partition queries
-	if needsCrossPartition {
-		// For cross-partition queries, we need to use CosmosDB's native pagination
-		// We cannot use TOP with ORDER BY, so we'll use a simpler approach
-
-		// Add WHERE clause if we have conditions
-		if len(conditions) > 0 {
-			query += " WHERE " + strings.Join(conditions, " AND ")
-		}
-
-		// Add ordering - required for consistent results
-		if sortKey != "" {
-			query += fmt.Sprintf(" ORDER BY c.%s %s", sortKey, sortDirection)
-		} else {
-			// Use id as default sort key for consistent pagination
-			query += fmt.Sprintf(" ORDER BY c.id %s", sortDirection)
-		}
-
-		// For cross-partition queries, we'll use a simple approach without TOP
-		// The gocosmos driver will handle pagination internally
-	} else {
-		// For single partition queries, we can use OFFSET and LIMIT (native pagination)
-
-		// Add WHERE clause if we have conditions
-		if len(conditions) > 0 {
-			query += " WHERE " + strings.Join(conditions, " AND ")
-		}
-
-		// Add ordering - CosmosDB requires ORDER BY for consistent pagination
-		if sortKey != "" {
-			query += fmt.Sprintf(" ORDER BY c.%s %s", sortKey, sortDirection)
-		} else {
-			// Use id as default sort key for consistent pagination
-			query += fmt.Sprintf(" ORDER BY c.id %s", sortDirection)
-		}
-
-		// Use CosmosDB's native pagination with OFFSET and LIMIT
-		// The cursor represents the offset for pagination
-		offset := 0
-		if cursor != "" {
-			// Decode cursor to get offset
-			bytes, err := base64.StdEncoding.DecodeString(cursor)
-			if err != nil {
-				return "", fmt.Errorf("invalid cursor: %w", err)
-			}
-			cursorValue := string(bytes)
-
-			// Parse cursor as offset (simple approach)
-			if parsedOffset, err := fmt.Sscanf(cursorValue, "%d", &offset); err != nil || parsedOffset != 1 {
-				return "", fmt.Errorf("invalid cursor format: %w", err)
-			}
-		}
-
-		// Add pagination clauses
-		query += fmt.Sprintf(" OFFSET %d LIMIT %d", offset, limit)
+	// Add WHERE clause if we have conditions
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Execute query with parameters
-	var rows *sql.Rows
-	var err error
-
-	if len(args) > 0 {
-		rows, err = s.db.Query(query, args...)
+	// Add ordering - required for consistent pagination
+	if sortKey != "" {
+		query += fmt.Sprintf(" ORDER BY c.%s %s", sortKey, sortDirection)
 	} else {
-		rows, err = s.db.Query(query)
+		// Use id as default sort key for consistent pagination
+		query += fmt.Sprintf(" ORDER BY c.id %s", sortDirection)
 	}
+
+	// Set up query options
+	queryOptions := &azcosmos.QueryOptions{
+		QueryParameters: queryParams,
+		PageSizeHint:    int32(limit),
+	}
+
+	// Handle cursor for pagination
+	if cursor != "" {
+		queryOptions.ContinuationToken = &cursor
+	}
+
+	// Execute query
+	page, err := s.executeQuery(containerClient, query, paramMap, queryOptions)
 	if err != nil {
 		return "", fmt.Errorf("failed to execute query: %v", err)
-	}
-	defer rows.Close()
-
-	// Apply any additional filtering/sorting
-	rows, err = builder(rows)
-	if err != nil {
-		return "", err
-	}
-
-	// Get column information
-	columns, err := rows.Columns()
-	if err != nil {
-		return "", fmt.Errorf("failed to get columns: %v", err)
 	}
 
 	// Process results
 	var results []json.RawMessage
-	var lastSortValue string
-	resultCount := 0
-
-	for rows.Next() {
-		// Create a slice to hold all column values
-		values := make([]interface{}, len(columns))
-		scanArgs := make([]interface{}, len(columns))
-		for i := range values {
-			scanArgs[i] = &values[i]
-		}
-
-		// Scan all columns
-		err = rows.Scan(scanArgs...)
-		if err != nil {
-			return "", fmt.Errorf("failed to scan result: %v", err)
-		}
-
-		// Build a map from columns to values
-		resultMap := make(map[string]interface{})
-		for i, col := range columns {
-			resultMap[col] = values[i]
-		}
-
-		// Marshal the map to JSON
-		jsonBytes, err := json.Marshal(resultMap)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal result: %v", err)
-		}
-
-		// Add result to our collection
-		results = append(results, json.RawMessage(jsonBytes))
-
-		// Extract sortKey value from the result map for cursor generation
-		if sortKey != "" {
-			if sortVal, exists := resultMap[sortKey]; exists {
-				if sortStr, ok := sortVal.(string); ok {
-					lastSortValue = sortStr
-				}
-			}
-		} else {
-			if idVal, exists := resultMap["id"]; exists {
-				if idStr, ok := idVal.(string); ok {
-					lastSortValue = idStr
-				}
-			}
-		}
-
-		resultCount++
+	for _, item := range page.Items {
+		results = append(results, json.RawMessage(item))
 	}
 
 	// Unmarshal results
@@ -578,167 +610,13 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 		}
 	}
 
-	// Generate next cursor based on pagination type
+	// Return continuation token for next page
 	nextCursor := ""
-	if needsCrossPartition {
-		// For cross-partition queries, check if we got the full limit (indicating more results might be available)
-		if len(results) == limit && lastSortValue != "" {
-			// There might be more results, encode the last sortKey value as cursor
-			nextCursor = base64.StdEncoding.EncodeToString([]byte(lastSortValue))
-		}
-	} else {
-		// For single partition queries, check if we got the full limit
-		if resultCount == limit {
-			// There might be more results, encode the next offset as cursor
-			offset := 0
-			if cursor != "" {
-				bytes, err := base64.StdEncoding.DecodeString(cursor)
-				if err == nil {
-					cursorValue := string(bytes)
-					fmt.Sscanf(cursorValue, "%d", &offset)
-				}
-			}
-			nextOffset := offset + limit
-			nextCursor = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", nextOffset)))
-		}
+	if page.ContinuationToken != nil {
+		nextCursor = *page.ContinuationToken
 	}
 
 	return nextCursor, nil
-}
-
-func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	// Extract sort direction from params
-	paramMap := s.extractParams(params...)
-	sortDirection := s.extractSortDirection(paramMap)
-
-	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, filter, func(rows *sql.Rows) (*sql.Rows, error) {
-		// For now, return rows as-is
-		// In a real implementation, you might want to apply additional filtering
-		return rows, nil
-	}, params...)
-}
-
-func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	// Extract sort direction from params
-	paramMap := s.extractParams(params...)
-	sortDirection := s.extractSortDirection(paramMap)
-
-	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, map[string]any{}, func(rows *sql.Rows) (*sql.Rows, error) {
-		// For now, return rows as-is
-		// In a real implementation, you might want to apply search filtering
-		return rows, nil
-	}, params...)
-}
-
-func (s *CosmosDBAdapter) Count(dest any, params ...map[string]any) (int64, error) {
-	// Extract provider-specific parameters
-	paramMap := s.extractParams(params...)
-
-	containerName := s.getContainerName(dest)
-
-	query := fmt.Sprintf("SELECT CROSS PARTITION COUNT(1) FROM %s c", containerName)
-	args := []interface{}{}
-
-	// Add partition key condition if provided in params
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
-		return 0, fmt.Errorf("failed to build partition key: %v", err)
-	} else if pk != "" {
-		query += " WHERE c.pk = @1"
-		args = append(args, pk)
-	}
-
-	var count int64
-	var err error
-	if len(args) > 0 {
-		err = s.db.QueryRow(query, args...).Scan(&count)
-	} else {
-		err = s.db.QueryRow(query).Scan(&count)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("failed to execute count query: %v", err)
-	}
-
-	return count, nil
-}
-
-func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	// Note: For custom SQL queries, partition key parameters should be handled within the statement itself
-	// The params are available but not automatically applied to the query
-	// Users should include partition key conditions in their custom SQL statements when needed
-
-	// Execute the custom SQL statement
-	rows, err := s.db.Query(statement)
-	if err != nil {
-		return "", fmt.Errorf("failed to execute query: %v", err)
-	}
-	defer rows.Close()
-
-	// Get column information
-	columns, err := rows.Columns()
-	if err != nil {
-		return "", fmt.Errorf("failed to get columns: %v", err)
-	}
-
-	// Process results
-	var results []json.RawMessage
-
-	for rows.Next() {
-		// Create a slice to hold all column values
-		values := make([]interface{}, len(columns))
-		scanArgs := make([]interface{}, len(columns))
-		for i := range values {
-			scanArgs[i] = &values[i]
-		}
-
-		// Scan all columns
-		err = rows.Scan(scanArgs...)
-		if err != nil {
-			return "", fmt.Errorf("failed to scan result: %v", err)
-		}
-
-		// Build a map from columns to values
-		resultMap := make(map[string]interface{})
-		for i, col := range columns {
-			resultMap[col] = values[i]
-		}
-
-		// Marshal the map to JSON
-		jsonBytes, err := json.Marshal(resultMap)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal result: %v", err)
-		}
-
-		results = append(results, json.RawMessage(jsonBytes))
-	}
-
-	// Unmarshal results
-	if len(results) > 0 {
-		resultsJSON, err := json.Marshal(results)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal results: %v", err)
-		}
-		err = json.Unmarshal(resultsJSON, dest)
-		if err != nil {
-			return "", fmt.Errorf("failed to unmarshal results: %v", err)
-		}
-	}
-
-	return "", nil
-}
-
-func (s *CosmosDBAdapter) ensureContainerExists(containerName string) error {
-	// Check if container exists
-	query := fmt.Sprintf("SELECT COUNT(1) FROM %s c LIMIT 1", containerName)
-	_, err := s.db.Exec(query)
-	if err != nil {
-		// Container doesn't exist, create it
-		createQuery := fmt.Sprintf("CREATE COLLECTION %s WITH PK=id", containerName)
-		_, err = s.db.Exec(createQuery)
-		if err != nil {
-			return fmt.Errorf("failed to create container %s: %v", containerName, err)
-		}
-	}
-	return nil
 }
 
 func (s *CosmosDBAdapter) getContainerName(obj any) string {
@@ -765,55 +643,61 @@ func (s *CosmosDBAdapter) itemToMap(item any) map[string]interface{} {
 	return itemMap
 }
 
-func (s *CosmosDBAdapter) mapToItem(itemMap map[string]interface{}, itemType reflect.Type) interface{} {
-	itemBytes, _ := json.Marshal(itemMap)
-	item := reflect.New(itemType).Interface()
-	json.Unmarshal(itemBytes, item)
-	return item
-}
-
 // buildPartitionKey constructs a partition key from parameters
-// Supports both single values and compound keys
+// Only supports explicit pk_field and pk_value parameters
 func (s *CosmosDBAdapter) buildPartitionKey(paramMap map[string]any) (string, error) {
-	// Check for direct pk parameter first
-	if pk, exists := paramMap["pk"]; exists {
-		if pkStr, ok := pk.(string); ok {
-			return pkStr, nil
-		}
-		return "", fmt.Errorf("pk parameter must be a string")
-	}
-
-	// Check for compound partition key fields
-	compoundFields := []string{"pk_fields", "partition_key_fields", "compound_pk"}
-	for _, field := range compoundFields {
-		if fields, exists := paramMap[field]; exists {
-			if fieldList, ok := fields.([]string); ok {
-				// Build synthetic partition key from multiple fields
-				values := make([]string, 0, len(fieldList))
-				for _, fieldName := range fieldList {
-					if value, exists := paramMap[fieldName]; exists {
-						values = append(values, fmt.Sprintf("%v", value))
-					} else {
-						return "", fmt.Errorf("compound partition key field '%s' not found in parameters", fieldName)
-					}
-				}
-				return strings.Join(values, "_"), nil
+	// Check for pk_field and pk_value parameters
+	if fieldName, exists := paramMap["pk_field"]; exists {
+		if fieldStr, ok := fieldName.(string); ok && fieldStr != "" {
+			if value, exists := paramMap["pk_value"]; exists {
+				return fmt.Sprintf("%v", value), nil
 			}
+			return "", fmt.Errorf("pk_field specified but pk_value not found")
 		}
-	}
-
-	// Check for individual compound fields (pk_field1, pk_field2, etc.)
-	compoundValues := make([]string, 0)
-	for key, value := range paramMap {
-		if strings.HasPrefix(key, "pk_") && key != "pk" {
-			compoundValues = append(compoundValues, fmt.Sprintf("%v", value))
-		}
-	}
-	if len(compoundValues) > 0 {
-		return strings.Join(compoundValues, "_"), nil
+		return "", fmt.Errorf("pk_field must be a non-empty string")
 	}
 
 	return "", nil // No partition key specified
+}
+
+// getPartitionKeyFieldName gets the partition key field name from params, defaulting to "pk"
+func (s *CosmosDBAdapter) getPartitionKeyFieldName(paramMap map[string]any) string {
+	if fieldName, exists := paramMap["pk_field"]; exists {
+		if fieldStr, ok := fieldName.(string); ok && fieldStr != "" {
+			return fieldStr
+		}
+	}
+	return "pk" // Default
+}
+
+// executeQuery executes a query and handles single-partition vs cross-partition logic
+func (s *CosmosDBAdapter) executeQuery(
+	containerClient *azcosmos.ContainerClient,
+	query string,
+	paramMap map[string]any,
+	queryOptions *azcosmos.QueryOptions,
+) (azcosmos.QueryItemsResponse, error) {
+	// Determine if we need cross-partition query
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
+		return azcosmos.QueryItemsResponse{}, fmt.Errorf("failed to build partition key: %v", err)
+	}
+
+	// Get first page
+	var page azcosmos.QueryItemsResponse
+	if pk != "" {
+		// Single partition query - use the partition key
+		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions)
+		page, err = pager.NextPage(context.Background())
+	} else {
+		// Cross-partition query
+		enableCrossPartition := true
+		queryOptions.EnableCrossPartitionQuery = &enableCrossPartition
+		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(""), queryOptions)
+		page, err = pager.NextPage(context.Background())
+	}
+
+	return page, err
 }
 
 // extractParams merges all provided parameter maps into a single map
@@ -842,9 +726,9 @@ func (s *CosmosDBAdapter) extractSortDirection(paramMap map[string]any) string {
 }
 
 // buildFilter constructs WHERE clause conditions from filter map
-func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (string, []interface{}) {
+func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (string, []azcosmos.QueryParameter) {
 	conditions := []string{}
-	args := []interface{}{}
+	queryParams := []azcosmos.QueryParameter{}
 
 	for key, value := range filter {
 		if reflect.ValueOf(value).Kind() == reflect.Slice {
@@ -852,18 +736,26 @@ func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (s
 			slice := reflect.ValueOf(value)
 			placeholders := make([]string, slice.Len())
 			for i := 0; i < slice.Len(); i++ {
-				placeholders[i] = fmt.Sprintf("@%d", *paramIndex)
-				args = append(args, slice.Index(i).Interface())
+				paramName := fmt.Sprintf("@param%d", *paramIndex)
+				placeholders[i] = paramName
+				queryParams = append(queryParams, azcosmos.QueryParameter{
+					Name:  paramName,
+					Value: slice.Index(i).Interface(),
+				})
 				*paramIndex++
 			}
 			conditions = append(conditions, fmt.Sprintf("c.%s IN (%s)", key, strings.Join(placeholders, ", ")))
 		} else {
 			// Handle single value equality
-			conditions = append(conditions, fmt.Sprintf("c.%s = @%d", key, *paramIndex))
-			args = append(args, value)
+			paramName := fmt.Sprintf("@param%d", *paramIndex)
+			conditions = append(conditions, fmt.Sprintf("c.%s = %s", key, paramName))
+			queryParams = append(queryParams, azcosmos.QueryParameter{
+				Name:  paramName,
+				Value: value,
+			})
 			*paramIndex++
 		}
 	}
 
-	return strings.Join(conditions, " AND "), args
+	return strings.Join(conditions, " AND "), queryParams
 }

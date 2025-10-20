@@ -433,39 +433,15 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 
 	// Handle pagination differently based on whether we need cross-partition queries
 	if needsCrossPartition {
-		// For cross-partition queries, we cannot use OFFSET/LIMIT
-		// Instead, we use TOP with cursor-based pagination using WHERE clauses
-
-		// Add cursor-based pagination using WHERE clause with sortKey comparison
-		if cursor != "" {
-			// Decode cursor to get the last value from previous page
-			bytes, err := base64.StdEncoding.DecodeString(cursor)
-			if err != nil {
-				return "", fmt.Errorf("invalid cursor: %w", err)
-			}
-			cursorValue := string(bytes)
-
-			// Add cursor condition - use appropriate operator based on sort direction
-			operator := ">"
-			if sortDirection == "DESC" {
-				operator = "<"
-			}
-
-			if sortKey != "" {
-				conditions = append(conditions, fmt.Sprintf("c.%s %s @%d", sortKey, operator, paramIndex))
-			} else {
-				conditions = append(conditions, fmt.Sprintf("c.id %s @%d", operator, paramIndex))
-			}
-			args = append(args, cursorValue)
-			paramIndex++
-		}
+		// For cross-partition queries, we need to use CosmosDB's native pagination
+		// We cannot use TOP with ORDER BY, so we'll use a simpler approach
 
 		// Add WHERE clause if we have conditions
 		if len(conditions) > 0 {
 			query += " WHERE " + strings.Join(conditions, " AND ")
 		}
 
-		// Add ordering - required for cursor-based pagination
+		// Add ordering - required for consistent results
 		if sortKey != "" {
 			query += fmt.Sprintf(" ORDER BY c.%s %s", sortKey, sortDirection)
 		} else {
@@ -473,8 +449,8 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 			query += fmt.Sprintf(" ORDER BY c.id %s", sortDirection)
 		}
 
-		// Use TOP for cross-partition queries (get one extra to check for more results)
-		query = strings.Replace(query, "SELECT CROSS PARTITION *", fmt.Sprintf("SELECT CROSS PARTITION TOP %d *", limit+1), 1)
+		// For cross-partition queries, we'll use a simple approach without TOP
+		// The gocosmos driver will handle pagination internally
 	} else {
 		// For single partition queries, we can use OFFSET and LIMIT (native pagination)
 
@@ -515,6 +491,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	// Execute query with parameters
 	var rows *sql.Rows
 	var err error
+
 	if len(args) > 0 {
 		rows, err = s.db.Query(query, args...)
 	} else {
@@ -568,31 +545,24 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 			return "", fmt.Errorf("failed to marshal result: %v", err)
 		}
 
-		// Handle pagination differently based on query type
-		if needsCrossPartition {
-			// For cross-partition queries, only add up to the requested limit
-			if len(results) < limit {
-				results = append(results, json.RawMessage(jsonBytes))
+		// Add result to our collection
+		results = append(results, json.RawMessage(jsonBytes))
 
-				// Extract sortKey value from the result map for cursor generation
-				if sortKey != "" {
-					if sortVal, exists := resultMap[sortKey]; exists {
-						if sortStr, ok := sortVal.(string); ok {
-							lastSortValue = sortStr
-						}
-					}
-				} else {
-					if idVal, exists := resultMap["id"]; exists {
-						if idStr, ok := idVal.(string); ok {
-							lastSortValue = idStr
-						}
-					}
+		// Extract sortKey value from the result map for cursor generation
+		if sortKey != "" {
+			if sortVal, exists := resultMap[sortKey]; exists {
+				if sortStr, ok := sortVal.(string); ok {
+					lastSortValue = sortStr
 				}
 			}
 		} else {
-			// For single partition queries, add all results (OFFSET/LIMIT handles pagination)
-			results = append(results, json.RawMessage(jsonBytes))
+			if idVal, exists := resultMap["id"]; exists {
+				if idStr, ok := idVal.(string); ok {
+					lastSortValue = idStr
+				}
+			}
 		}
+
 		resultCount++
 	}
 
@@ -611,12 +581,10 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	// Generate next cursor based on pagination type
 	nextCursor := ""
 	if needsCrossPartition {
-		// For cross-partition queries, check if we got more than the limit (indicating more results)
-		if resultCount > limit {
-			// There are more results, encode the last sortKey value as cursor
-			if lastSortValue != "" {
-				nextCursor = base64.StdEncoding.EncodeToString([]byte(lastSortValue))
-			}
+		// For cross-partition queries, check if we got the full limit (indicating more results might be available)
+		if len(results) == limit && lastSortValue != "" {
+			// There might be more results, encode the last sortKey value as cursor
+			nextCursor = base64.StdEncoding.EncodeToString([]byte(lastSortValue))
 		}
 	} else {
 		// For single partition queries, check if we got the full limit

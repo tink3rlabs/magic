@@ -4,7 +4,7 @@ go 1.24.3
 
 require (
 	github.com/auth0/go-jwt-middleware/v2 v2.3.0
-	github.com/aws/aws-sdk-go-v2 v1.38.2
+	github.com/aws/aws-sdk-go-v2 v1.39.4
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.71
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.50.0
 	github.com/aws/aws-sdk-go-v2/service/sns v1.34.7
@@ -50,7 +50,7 @@ require (
 	github.com/TwiN/deepmerge v0.2.2
 	github.com/aws/aws-sdk-go-v2/config v1.29.18
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.8
-	github.com/aws/smithy-go v1.23.0 // indirect
+	github.com/aws/smithy-go v1.23.1 // indirect
 	github.com/go-chi/chi/v5 v5.2.2
 	github.com/go-chi/render v1.0.3
 	github.com/google/uuid v1.6.0

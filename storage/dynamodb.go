@@ -257,7 +257,7 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 	})
 }
 
-func (s *DynamoDBAdapter) Count(dest any) (int64, error) {
+func (s *DynamoDBAdapter) Count(dest any, filter map[string]any) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil

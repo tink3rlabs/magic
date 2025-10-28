@@ -100,10 +100,10 @@ func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int
 	return m.DB.Search(dest, sortKey, query, limit, cursor)
 }
 
-func (s *MemoryAdapter) Count(dest any) (int64, error) {
-	//TODO: Implement
+func (m *MemoryAdapter) Count(dest any, filter map[string]any) (int64, error) {
 	var total int64
-	return total, nil
+	total, err := m.DB.Count(dest, filter)
+	return total, err
 }
 
 func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {

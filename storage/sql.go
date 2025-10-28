@@ -288,8 +288,12 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 	})
 }
 
-func (s *SQLAdapter) Count(dest any) (int64, error) {
+func (s *SQLAdapter) Count(dest any, filter map[string]any) (int64, error) {
 	q := s.DB.Model(dest)
+
+	if len(filter) > 0 {
+		q = q.Where(s.buildQuery(filter), filter)
+	}
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {

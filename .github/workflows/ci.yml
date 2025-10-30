@@ -51,7 +51,7 @@ jobs:
         uses: golangci/golangci-lint-action@v3
         with:
           version: latest
-          args: --out-format=colored-line-number --timeout=5m
+          args:  --output.text.path=stdout --output.text.colors=true​
           skip-cache: true
           skip-pkg-cache: true
           skip-build-cache: true

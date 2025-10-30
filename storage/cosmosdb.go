@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,7 +67,7 @@ func (s *CosmosDBAdapter) OpenConnection() {
 	s.databaseName = databaseName
 
 	// Check if TLS verification should be skipped (for local testing)
-	skipTLS := s.config["skip_tls_verify"] == "true" || s.config["skip_tls_verify"] == "1"
+	skipTLS, _ := strconv.ParseBool(s.config["skip_tls_verify"])
 
 	// Create Azure Cosmos DB client
 	var err error
@@ -85,7 +86,7 @@ func (s *CosmosDBAdapter) OpenConnection() {
 				},
 			},
 		}
-		slog.Warn("TLS verification is disabled - only use this for local testing!")
+		slog.Warn("TLS verification is disabled - use this only for local testing!")
 	}
 
 	if key != "" {

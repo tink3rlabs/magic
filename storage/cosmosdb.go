@@ -637,9 +637,14 @@ func (s *CosmosDBAdapter) getContainerName(obj any) string {
 }
 
 func (s *CosmosDBAdapter) itemToMap(item any) map[string]interface{} {
-	itemBytes, _ := json.Marshal(item)
+	itemBytes, err := json.Marshal(item)
+	if err != nil {
+		return map[string]interface{}{}
+	}
 	var itemMap map[string]interface{}
-	json.Unmarshal(itemBytes, &itemMap)
+	if err := json.Unmarshal(itemBytes, &itemMap); err != nil {
+		return map[string]interface{}{}
+	}
 	return itemMap
 }
 

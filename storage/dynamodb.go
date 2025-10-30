@@ -109,7 +109,7 @@ func (s *DynamoDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("DynamoDB GetLatestMigration is not supported")
 }
 
-func (s *DynamoDBAdapter) Create(item any) error {
+func (s *DynamoDBAdapter) Create(item any, params ...map[string]any) error {
 	i, err := attributevalue.MarshalMapWithOptions(item, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal input item into dynamodb item, %v", err)
@@ -127,7 +127,7 @@ func (s *DynamoDBAdapter) Create(item any) error {
 	return nil
 }
 
-func (s *DynamoDBAdapter) Get(dest any, filter map[string]any) error {
+func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
@@ -154,11 +154,11 @@ func (s *DynamoDBAdapter) Get(dest any, filter map[string]any) error {
 	}
 }
 
-func (s *DynamoDBAdapter) Update(item any, filter map[string]any) error {
+func (s *DynamoDBAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
 	return s.Create(item)
 }
 
-func (s *DynamoDBAdapter) Delete(item any, filter map[string]any) error {
+func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
@@ -215,7 +215,7 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	return nextToken, nil
 }
 
-func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
+func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
 
@@ -234,7 +234,7 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 	})
 }
 
-func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
+func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Parse Lucene query
 		destType := reflect.TypeOf(dest).Elem().Elem()
@@ -257,13 +257,13 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 	})
 }
 
-func (s *DynamoDBAdapter) Count(dest any, filter map[string]any) (int64, error) {
+func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil
 }
 
-func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		input.Statement = aws.String(statement)
 		return input

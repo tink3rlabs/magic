@@ -18,14 +18,14 @@ type StorageAdapter interface {
 	CreateMigrationTable() error
 	UpdateMigrationTable(id int, name string, desc string) error
 	GetLatestMigration() (int, error)
-	Create(item any) error
-	Get(dest any, filter map[string]any) error
-	Update(item any, filter map[string]any) error
-	Delete(item any, filter map[string]any) error
-	List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error)
-	Search(dest any, sortKey string, query string, limit int, cursor string) (string, error)
-	Count(dest any, filter map[string]any) (int64, error)
-	Query(dest any, statement string, limit int, cursor string) (string, error)
+	Create(item any, params ...map[string]any) error
+	Get(dest any, filter map[string]any, params ...map[string]any) error
+	Update(item any, filter map[string]any, params ...map[string]any) error
+	Delete(item any, filter map[string]any, params ...map[string]any) error
+	List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error)
+	Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error)
+	Count(dest any, filter map[string]any, params ...map[string]any) (int64, error)
+	Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error)
 }
 
 type StorageAdapterType string
@@ -36,12 +36,14 @@ const (
 	MEMORY   StorageAdapterType = "memory"
 	SQL      StorageAdapterType = "sql"
 	DYNAMODB StorageAdapterType = "dynamodb"
+	COSMOSDB StorageAdapterType = "cosmosdb"
 )
 
 const (
-	POSTGRESQL StorageProviders = "postgresql"
-	MYSQL      StorageProviders = "mysql"
-	SQLITE     StorageProviders = "sqlite"
+	POSTGRESQL        StorageProviders = "postgresql"
+	MYSQL             StorageProviders = "mysql"
+	SQLITE            StorageProviders = "sqlite"
+	COSMOSDB_PROVIDER StorageProviders = "cosmosdb"
 )
 
 func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, config any) (StorageAdapter, error) {
@@ -55,6 +57,8 @@ func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, confi
 		return GetSQLAdapterInstance(config.(map[string]string)), nil
 	case DYNAMODB:
 		return GetDynamoDBAdapterInstance(config.(map[string]string)), nil
+	case COSMOSDB:
+		return GetCosmosDBAdapterInstance(config.(map[string]string)), nil
 	default:
 		return nil, errors.New("this storage adapter type isn't supported")
 	}

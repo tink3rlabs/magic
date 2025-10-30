@@ -167,12 +167,12 @@ func (s *SQLAdapter) GetLatestMigration() (int, error) {
 	return latestMigration, nil
 }
 
-func (s *SQLAdapter) Create(item any) error {
+func (s *SQLAdapter) Create(item any, params ...map[string]any) error {
 	result := s.DB.Create(reflect.ValueOf(item).Interface())
 	return result.Error
 }
 
-func (s *SQLAdapter) Get(dest any, filter map[string]any) error {
+func (s *SQLAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when getting a resource")
 	}
@@ -183,7 +183,7 @@ func (s *SQLAdapter) Get(dest any, filter map[string]any) error {
 	return result.Error
 }
 
-func (s *SQLAdapter) Update(item any, filter map[string]any) error {
+func (s *SQLAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
@@ -191,7 +191,7 @@ func (s *SQLAdapter) Update(item any, filter map[string]any) error {
 	return result.Error
 }
 
-func (s *SQLAdapter) Delete(item any, filter map[string]any) error {
+func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when deleting a resource")
 	}
@@ -247,7 +247,7 @@ func (s *SQLAdapter) executePaginatedQuery(
 	return nextCursor, nil
 }
 
-func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string) (string, error) {
+func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
 			return q.Where(s.buildQuery(filter), filter)
@@ -256,7 +256,7 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 	})
 }
 
-func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string) (string, error) {
+func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	if query == "" {
 		return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
 			return q
@@ -272,23 +272,23 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 		return "", err
 	}
 
-	whereClause, params, err := parser.ParseToSQL(query)
+	whereClause, queryParams, err := parser.ParseToSQL(query)
 	if err != nil {
 		slog.Error("Filter parsing failed", "error", err)
 		return "", err
 	}
 
-	slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, params))
+	slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, queryParams))
 
 	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if whereClause != "" {
-			return q.Where(whereClause, params...)
+			return q.Where(whereClause, queryParams...)
 		}
 		return q
 	})
 }
 
-func (s *SQLAdapter) Count(dest any, filter map[string]any) (int64, error) {
+func (s *SQLAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
 	q := s.DB.Model(dest)
 
 	if len(filter) > 0 {
@@ -303,7 +303,7 @@ func (s *SQLAdapter) Count(dest any, filter map[string]any) (int64, error) {
 	return total, nil
 }
 
-func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string) (string, error) {
+func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return "", fmt.Errorf("not implemented yet")
 }
 

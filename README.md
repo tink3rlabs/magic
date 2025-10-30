@@ -22,7 +22,9 @@ Magic exposes multiple common functionalities each in it's own package.
 
 ### Storage
 
-This package contains everything needed to persist data in storage systems. For example to write data to an in-memory database you would instantiate the storage system as follows:
+This package contains everything needed to persist data in storage systems. The storage adapter provides a unified interface for different storage backends with consistent CRUD operations, migrations, and health checks.
+
+#### Basic Usage
 
 ```go
 import (
@@ -41,24 +43,227 @@ if err != nil {
 }
 
 fmt.Println(s.Ping())
-
 storage.NewDatabaseMigration(s).Migrate()
 ```
 
-**Supported Storage Providers:**
+#### Storage Adapter Configuration
 
-- **Memory**: In-memory storage for development and testing
-- **SQL**: Support for PostgreSQL, MySQL, and SQLite with GORM integration
-- **DynamoDB**: AWS DynamoDB integration with attribute value marshaling
-- **Search**: Full-text search capabilities
+##### Memory Storage (Development/Testing)
 
-**Features:**
+```go
+config := map[string]string{}
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, config)
+```
+
+##### SQL Storage (PostgreSQL, MySQL, SQLite)
+
+```go
+// PostgreSQL
+config := map[string]string{
+    "provider": "postgresql",
+    "host":     "localhost",
+    "port":     "5432",
+    "user":     "username",
+    "password": "password",
+    "dbname":   "database",
+    "schema":   "public",
+}
+
+// MySQL
+config := map[string]string{
+    "provider": "mysql",
+    "host":     "localhost",
+    "port":     "3306",
+    "user":     "username",
+    "password": "password",
+    "dbname":   "database",
+}
+
+// SQLite
+config := map[string]string{
+    "provider": "sqlite",
+    "path":     "/path/to/database.db",
+}
+
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.SQL, config)
+```
+
+##### DynamoDB Storage
+
+```go
+config := map[string]string{
+    "provider":   "dynamodb",
+    "region":     "us-west-2",
+    "endpoint":   "http://localhost:8000", // Optional for local testing
+    "access_key": "your-access-key",
+    "secret_key": "your-secret-key",
+}
+
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.DYNAMODB, config)
+```
+
+##### CosmosDB Storage
+
+```go
+// Individual parameters
+config := map[string]string{
+    "provider": "cosmosdb",
+    "endpoint": "https://your-cosmosdb-account.documents.azure.com:443/",
+    "key":      "your-cosmosdb-primary-key",
+    "database": "magic",
+}
+
+// Or use connection string
+config := map[string]string{
+    "provider":          "cosmosdb",
+    "connection_string": "AccountEndpoint=https://your-account.documents.azure.com:443/;AccountKey=your-key;",
+    "database":          "magic",
+}
+
+// Optional: Skip TLS verification for local testing
+config := map[string]string{
+    "provider":       "cosmosdb",
+    "endpoint":       "https://localhost:8081/",
+    "key":            "your-cosmosdb-primary-key",
+    "database":       "magic",
+    "skip_tls_verify": "true", // Only for local testing
+}
+
+adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, config)
+```
+
+**Optional Parameters for CRUD Operations:**
+
+The CosmosDB adapter supports dynamic partition key configuration through optional parameters:
+
+- `pk_field`: The field name to use as the partition key in your documents (defaults to `"pk"` if not specified)
+- `pk_value`: The value for the partition key
+- `sort_direction`: Sort direction for List and Search operations (`"ASC"` or `"DESC"`, defaults to `"ASC"`)
+
+**Example with Custom Partition Key:**
+
+```go
+type User struct {
+    ID     string `json:"id"`
+    Tenant string `json:"tenant"` // This will be used as partition key
+    Name   string `json:"name"`
+    Email  string `json:"email"`
+}
+
+// Create a user with tenant as partition key
+user := &User{
+    ID:     "user-123",
+    Tenant: "acme-corp",
+    Name:   "John Doe",
+    Email:  "john@example.com",
+}
+
+params := map[string]any{
+    "pk_field": "tenant",           // Field name in document
+    "pk_value": "acme-corp",        // Partition key value
+}
+
+err := adapter.Create(user, params)
+
+// Get user - must specify partition key
+err = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
+
+// List users in a specific tenant (ascending order)
+var users []User
+cursor, err := adapter.List(&users, "name", map[string]any{}, 10, "", params)
+
+// List users in descending order by name
+paramsWithSort := map[string]any{
+    "pk_field":      "tenant",
+    "pk_value":      "acme-corp",
+    "sort_direction": "DESC",
+}
+cursor, err = adapter.List(&users, "name", map[string]any{}, 10, "", paramsWithSort)
+
+// Update user
+user.Email = "newemail@example.com"
+err = adapter.Update(user, map[string]any{"id": user.ID}, params)
+
+// Delete user
+err = adapter.Delete(&User{}, map[string]any{"id": user.ID}, params)
+```
+
+#### Storage Adapter Features
+
+**Common Features (All Adapters):**
 
 - CRUD operations (Create, Read, Update, Delete)
-- Database migrations
 - Connection pooling and health checks
 - Multi-tenant support
-- Automatic schema management
+- Pagination with cursor-based navigation
+- Search capabilities
+- Custom query execution
+
+**Memory Storage:**
+
+- In-memory SQLite for development and testing
+- No persistence across restarts
+- Full migration support
+- Fastest for unit tests
+
+**SQL Storage:**
+
+- Full migration support with version tracking
+- Schema management and creation
+- Support for PostgreSQL, MySQL, and SQLite
+- GORM integration with advanced querying
+- Transaction support
+- Connection pooling
+
+**DynamoDB Storage:**
+
+- NoSQL document storage
+- Automatic table creation based on struct types
+- Attribute value marshaling/unmarshaling
+- PartiQL query support
+- Global and local secondary indexes
+- No migration support (use application-level)
+
+**CosmosDB Storage:**
+
+- NoSQL document storage with SQL API using Azure SDK for Go (`azcosmos`)
+- UUID generation for items without IDs
+- Dynamic partition key configuration via `pk_field` and `pk_value` parameters
+- Single-partition query support
+- Native cursor-based pagination with continuation tokens
+- SQL query support with parameterized queries
+- Connection string or individual parameter configuration
+- Optional TLS verification skip for local testing
+- ASC/DESC sorting support
+- No migration support (use application-level)
+
+#### Storage Adapter Limitations
+
+**Memory Storage:**
+
+- Data lost on restart
+- Single process only
+- Limited by available RAM
+
+**SQL Storage:**
+
+- Requires database server setup
+- Schema migrations required for changes
+- Performance depends on database configuration
+
+**DynamoDB Storage:**
+
+- No migration support
+- Execute method not supported
+- Limited query capabilities compared to SQL
+- AWS-specific service
+
+**CosmosDB Storage:**
+
+- Database migrations not supported
+- Full-text search requires Azure Cognitive Search integration (Search method returns List results)
+- Azure-specific service
+- Partition key (`pk_field` and `pk_value`) must be specified for all operations
 
 See more detailed examples in the examples folder
 

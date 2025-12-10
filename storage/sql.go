@@ -176,7 +176,8 @@ func (s *SQLAdapter) Get(dest any, filter map[string]any, params ...map[string]a
 	if len(filter) == 0 {
 		return errors.New("filtering is required when getting a resource")
 	}
-	result := s.DB.Where(s.buildQuery(filter), filter).Find(dest)
+	query, bindings := s.buildQuery(filter)
+	result := s.DB.Where(query, bindings).Find(dest)
 	if result.RowsAffected == 0 {
 		return ErrNotFound
 	}
@@ -187,7 +188,8 @@ func (s *SQLAdapter) Update(item any, filter map[string]any, params ...map[strin
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
-	result := s.DB.Where(s.buildQuery(filter), filter).Save(item)
+	query, bindings := s.buildQuery(filter)
+	result := s.DB.Where(query, bindings).Save(item)
 	return result.Error
 }
 
@@ -195,7 +197,8 @@ func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[strin
 	if len(filter) == 0 {
 		return errors.New("filtering is required when deleting a resource")
 	}
-	result := s.DB.Where(s.buildQuery(filter), filter).Delete(item)
+	query, bindings := s.buildQuery(filter)
+	result := s.DB.Where(query, bindings).Delete(item)
 	return result.Error
 }
 
@@ -250,7 +253,8 @@ func (s *SQLAdapter) executePaginatedQuery(
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
-			return q.Where(s.buildQuery(filter), filter)
+			query, bindings := s.buildQuery(filter)
+			return q.Where(query, bindings)
 		}
 		return q
 	})
@@ -292,7 +296,8 @@ func (s *SQLAdapter) Count(dest any, filter map[string]any, params ...map[string
 	q := s.DB.Model(dest)
 
 	if len(filter) > 0 {
-		q = q.Where(s.buildQuery(filter), filter)
+		query, bindings := s.buildQuery(filter)
+		q = q.Where(query, bindings)
 	}
 
 	var total int64
@@ -307,10 +312,19 @@ func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string,
 	return "", fmt.Errorf("not implemented yet")
 }
 
-func (s *SQLAdapter) buildQuery(filter map[string]any) string {
+func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any) {
 	clauses := []string{}
-	for key := range filter {
-		clauses = append(clauses, fmt.Sprintf("%s = @%s", key, key))
+	bindings := make(map[string]any)
+
+	for key, value := range filter {
+		if value == nil {
+			// For nil values, use IS NULL instead of = @key
+			clauses = append(clauses, fmt.Sprintf("%s IS NULL", key))
+		} else {
+			// For non-nil values, use = @key and include in bindings
+			clauses = append(clauses, fmt.Sprintf("%s = @%s", key, key))
+			bindings[key] = value
+		}
 	}
-	return strings.Join(clauses, " AND ")
+	return strings.Join(clauses, " AND "), bindings
 }

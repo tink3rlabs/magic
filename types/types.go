@@ -19,7 +19,7 @@ const definitions = `
 				},
 				"example": {
 				"status": "Bad Request",
-				"error": "request validation faild",
+				"error": "request validation failed",
 				"details": [
 					"(root): Additional property foo is not allowed",
 					"bar: Invalid type. Expected: string, given: integer"

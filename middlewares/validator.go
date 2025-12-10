@@ -119,7 +119,7 @@ func (f *Validator) ValidateRequest(schemas map[string]string, next http.Handler
 		if len(allErrors) > 0 {
 			validationError := types.ErrorResponse{
 				Status:  http.StatusText(http.StatusBadRequest),
-				Error:   "request validation faild",
+				Error:   "request validation failed",
 				Details: allErrors,
 			}
 			render.Status(r, http.StatusBadRequest)

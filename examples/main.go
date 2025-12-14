@@ -50,6 +50,12 @@ func main() {
 	// 	"database":          "magic",
 	// }
 
+	config = map[string]string{
+		"provider": "cassandra",
+		"endpoint": "localhost",
+		"keyspace": "todo",
+	}
+
 	s, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, config)
 	if err != nil {
 		fmt.Println(err)

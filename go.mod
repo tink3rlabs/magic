@@ -1,6 +1,6 @@
 module github.com/tink3rlabs/magic
 
-go 1.24.3
+go 1.25.0
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
@@ -11,9 +11,14 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.6
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.53.5
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.10
+	github.com/gocql/gocql v1.7.0
+	github.com/scylladb/go-reflectx v1.0.1
+	github.com/scylladb/gocqlx/v3 v3.0.4
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.1
 )
+
+replace github.com/gocql/gocql => github.com/scylladb/gocql v1.17.0
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -42,6 +47,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
@@ -54,6 +60,7 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/go-jose/go-jose.v2 v2.6.3 // indirect
+	gopkg.in/inf.v0 v0.9.1 // indirect
 )
 
 require (

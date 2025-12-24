@@ -8,52 +8,72 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	lucene "github.com/grindlemire/go-lucene"
+	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
 )
 
+// Safety limits for query parsing
+const (
+	DefaultMaxQueryLength = 10000 // 10KB - prevents memory exhaustion
+	DefaultMaxDepth       = 20    // Prevents stack overflow from deep nesting
+	DefaultMaxTerms       = 100   // Prevents CPU exhaustion from complex queries
+)
+
+// FieldInfo describes a searchable field and its properties.
 type FieldInfo struct {
-	Name    string
-	IsJSONB bool
+	Name           string
+	IsJSONB        bool
+	ImplicitSearch bool // Whether this field is included in unfielded/implicit queries
 }
 
+// Parser provides Lucene query parsing with security limits.
 type Parser struct {
-	DefaultFields []FieldInfo
+	Fields []FieldInfo // All searchable fields
+
+	// Security limits (configurable with safe defaults)
+	MaxQueryLength int // Maximum query string length (default: 10KB)
+	MaxDepth       int // Maximum nesting depth (default: 20)
+	MaxTerms       int // Maximum number of terms (default: 100)
+
+	// Field lookup maps for O(1) validation
+	fieldMap    map[string]FieldInfo // All fields by name
+	jsonbFields map[string]bool      // JSONB field names for sub-field validation
+
+	// Custom drivers for different backends
+	postgresDriver *PostgresJSONBDriver
+	dynamoDriver   *DynamoDBPartiQLDriver
 }
 
-type NodeType int
-
-const (
-	NodeTerm NodeType = iota
-	NodeWildcard
-	NodeLogical
-)
-
-type LogicalOperator string
-
-const (
-	AND LogicalOperator = "AND"
-	OR  LogicalOperator = "OR"
-	NOT LogicalOperator = "NOT"
-)
-
-type MatchType int
-
-const (
-	matchExact MatchType = iota
-	matchStartsWith
-	matchEndsWith
-	matchContains
-)
-
-type Node struct {
-	Type      NodeType
-	Field     string
-	Value     string
-	Operator  LogicalOperator
-	Children  []*Node
-	Negate    bool
-	MatchType MatchType
-}
-
+// NewParserFromType creates a parser by introspecting a struct's fields.
+// This is the recommended approach for initializing parsers as it:
+// - Works with any backend (PostgreSQL, MySQL, DynamoDB, etc.)
+// - Zero database overhead
+// - Compile-time safety
+// - Auto-detects JSONB fields from gorm tags
+// - Auto-sets string fields for implicit search (ImplicitSearch=true)
+//
+// Example:
+//
+//	type Task struct {
+//	    ID          string    `json:"id"`
+//	    Name        string    `json:"name"`                         // Auto: ImplicitSearch=true
+//	    Description string    `json:"description"`                  // Auto: ImplicitSearch=true
+//	    Status      string    `json:"status" lucene:"explicit"`     // Explicit: ImplicitSearch=false
+//	    CreatedAt   time.Time `json:"created_at"`                   // Auto: ImplicitSearch=false (not string)
+//	    Labels      JSONB     `json:"labels" gorm:"type:jsonb"`     // Auto: IsJSONB=true, ImplicitSearch=false
+//	}
+//
+//	parser, err := lucene.NewParserFromType(Task{})
+//
+// Struct tag controls:
+// - lucene:"implicit" - Force ImplicitSearch=true (include in unfielded queries)
+// - lucene:"explicit" - Force ImplicitSearch=false (require field:value syntax)
+// - gorm:"type:jsonb" - Auto-detected as JSONB field
+//
+// Auto-detection rules (when no lucene tag):
+// - String fields: ImplicitSearch=true (included in unfielded queries)
+// - Non-string fields (int, time.Time, uuid, etc.): ImplicitSearch=false
+// - JSONB fields: ImplicitSearch=false (require field.subfield syntax)
 func NewParserFromType(model any) (*Parser, error) {
 	fields, err := getStructFields(model)
 	if err != nil {
@@ -62,10 +82,52 @@ func NewParserFromType(model any) (*Parser, error) {
 	return NewParser(fields), nil
 }
 
-func NewParser(defaultFields []FieldInfo) *Parser {
-	return &Parser{DefaultFields: defaultFields}
+func NewParser(fields []FieldInfo) *Parser {
+	fieldMap := make(map[string]FieldInfo, len(fields))
+	jsonbFields := make(map[string]bool)
+	for _, f := range fields {
+		fieldMap[f.Name] = f
+		if f.IsJSONB {
+			jsonbFields[f.Name] = true
+		}
+	}
+
+	return &Parser{
+		Fields:         fields,
+		MaxQueryLength: DefaultMaxQueryLength,
+		MaxDepth:       DefaultMaxDepth,
+		MaxTerms:       DefaultMaxTerms,
+		fieldMap:       fieldMap,
+		jsonbFields:    jsonbFields,
+		postgresDriver: NewPostgresJSONBDriver(fields),
+		dynamoDriver:   NewDynamoDBPartiQLDriver(fields),
+	}
 }
 
+// Precompiled regex for performance - matches Lucene operators and special syntax
+var (
+	// Matches field:value pattern (including JSONB like labels.category:value)
+	fieldValuePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?:`)
+	// Extracts field name from field:value pattern
+	fieldExtractPattern = regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?):`)
+	// Matches boolean operators (case-insensitive)
+	booleanOperators = regexp.MustCompile(`(?i)^(AND|OR|NOT|\+|-)$`)
+	// Matches range syntax
+	rangePattern = regexp.MustCompile(`^\[.*\s+TO\s+.*\]$|^\{.*\s+TO\s+.*\}$`)
+)
+
+// InvalidFieldError represents an error when a query references a non-existent field
+type InvalidFieldError struct {
+	Field       string
+	ValidFields []string
+}
+
+func (e *InvalidFieldError) Error() string {
+	return fmt.Sprintf("invalid field '%s' in query; valid fields are: %s", e.Field, strings.Join(e.ValidFields, ", "))
+}
+
+// getStructFields uses reflection to extract field metadata from a struct.
+// String fields get ImplicitSearch=true, others get ImplicitSearch=false.
 func getStructFields(model any) ([]FieldInfo, error) {
 	t := reflect.TypeOf(model)
 	if t.Kind() == reflect.Ptr {
@@ -91,425 +153,593 @@ func getStructFields(model any) ([]FieldInfo, error) {
 		gormTag := field.Tag.Get("gorm")
 		isJSONB := strings.Contains(gormTag, "type:jsonb")
 
+		luceneTag := field.Tag.Get("lucene")
+		implicitSearch := false
+		if luceneTag == "implicit" {
+			implicitSearch = true
+		} else if luceneTag != "explicit" {
+			implicitSearch = field.Type.Kind() == reflect.String && !isJSONB
+		}
+
 		fields = append(fields, FieldInfo{
-			Name:    jsonTag,
-			IsJSONB: isJSONB,
+			Name:           jsonTag,
+			IsJSONB:        isJSONB,
+			ImplicitSearch: implicitSearch,
 		})
 	}
 
 	return fields, nil
 }
 
+// ParseToMap parses a Lucene query into a map representation.
+// Note: This is a legacy method kept for backward compatibility.
 func (p *Parser) ParseToMap(query string) (map[string]any, error) {
-	node, err := p.parse(query)
+
+	if err := p.validateQuery(query); err != nil {
+		return nil, err
+	}
+
+	e, err := p.parseWithImplicitSearch(query)
 	if err != nil {
 		return nil, err
 	}
-	return p.nodeToMap(node), nil
+
+	// Convert expression to map
+	return p.exprToMap(e), nil
 }
 
+// ParseToSQL parses a Lucene query and converts it to PostgreSQL SQL with parameters.
 func (p *Parser) ParseToSQL(query string) (string, []any, error) {
-	slog.Debug(fmt.Sprintf(`Parsing query to sql: %s`, query))
-	re := regexp.MustCompile(`(\w+):"([^"]+)"`)
-	query = re.ReplaceAllString(query, `$1:$2`)
-	node, err := p.parse(query)
+	slog.Debug(fmt.Sprintf(`Parsing query to SQL: %s`, query))
+
+	if err := p.validateQuery(query); err != nil {
+		return "", nil, err
+	}
+
+	// Expand implicit terms first (for validation of the full query)
+	expandedQuery := p.expandImplicitTerms(query)
+
+	// Validate all field references exist in the model
+	if err := p.ValidateFields(expandedQuery); err != nil {
+		return "", nil, err
+	}
+
+	// Parse using the library
+	e, err := p.parseWithImplicitSearch(query)
 	if err != nil {
 		return "", nil, err
 	}
-	return p.nodeToSQL(node)
+
+	// Render using custom PostgreSQL driver
+	sql, params, err := p.postgresDriver.RenderParam(e)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return sql, params, nil
 }
 
-func (p *Parser) parse(query string) (*Node, error) {
+// ParseToDynamoDBPartiQL parses a Lucene query and converts it to DynamoDB PartiQL.
+func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.AttributeValue, error) {
+	slog.Debug(fmt.Sprintf(`Parsing query to DynamoDB PartiQL: %s`, query))
+
+	if err := p.validateQuery(query); err != nil {
+		return "", nil, err
+	}
+
+	// Expand implicit terms first (for validation of the full query)
+	expandedQuery := p.expandImplicitTerms(query)
+
+	// Validate all field references exist in the model
+	if err := p.ValidateFields(expandedQuery); err != nil {
+		return "", nil, err
+	}
+
+	// Parse using the library
+	e, err := p.parseWithImplicitSearch(query)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Render using custom DynamoDB driver
+	partiql, attrs, err := p.dynamoDriver.RenderPartiQL(e)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return partiql, attrs, nil
+}
+
+func (p *Parser) validateQuery(query string) error {
+	if len(query) > p.MaxQueryLength {
+		return fmt.Errorf("query too long: %d bytes exceeds maximum of %d bytes", len(query), p.MaxQueryLength)
+	}
+
+	depth := calculateNestingDepth(query)
+	if depth > p.MaxDepth {
+		return fmt.Errorf("query too complex: nesting depth %d exceeds maximum of %d", depth, p.MaxDepth)
+	}
+
+	terms := countTerms(query)
+	if terms > p.MaxTerms {
+		return fmt.Errorf("query too large: %d terms exceeds maximum of %d", terms, p.MaxTerms)
+	}
+
+	return nil
+}
+
+func calculateNestingDepth(query string) int {
+	maxDepth := 0
+	currentDepth := 0
+	inQuotes := false
+
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+
+		if c == '\\' && i+1 < len(query) {
+			i++
+			continue
+		}
+
+		if c == '"' {
+			inQuotes = !inQuotes
+			continue
+		}
+
+		if !inQuotes {
+			switch c {
+			case '(', '[', '{':
+				currentDepth++
+				if currentDepth > maxDepth {
+					maxDepth = currentDepth
+				}
+			case ')', ']', '}':
+				currentDepth--
+			}
+		}
+	}
+
+	return maxDepth
+}
+
+// countTerms counts search terms in a query.
+// Terms include field:value pairs, implicit terms, and quoted phrases.
+// Operators (AND, OR, NOT) and parentheses are excluded.
+func countTerms(query string) int {
+	if query == "" {
+		return 0
+	}
+
+	terms := 0
+	inQuotes := false
+	inRange := false
+	currentTerm := false
+
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+
+		if c == '\\' && i+1 < len(query) {
+			i++
+			currentTerm = true
+			continue
+		}
+
+		if c == '"' {
+			if !inQuotes {
+				if currentTerm {
+					terms++
+				}
+				currentTerm = true
+			} else {
+				if currentTerm {
+					terms++
+					currentTerm = false
+				}
+			}
+			inQuotes = !inQuotes
+			continue
+		}
+
+		if !inQuotes {
+			if c == '[' || c == '{' {
+				inRange = true
+				if currentTerm {
+					terms++
+					currentTerm = false
+				}
+				continue
+			}
+			if c == ']' || c == '}' {
+				inRange = false
+				if currentTerm {
+					terms++
+					currentTerm = false
+				}
+				continue
+			}
+		}
+
+		if c == ' ' && !inQuotes && !inRange {
+			if currentTerm {
+				terms++
+				currentTerm = false
+			}
+			continue
+		}
+
+		if !inQuotes && !inRange && (c == '(' || c == ')') {
+			if currentTerm {
+				terms++
+				currentTerm = false
+			}
+			continue
+		}
+
+		if !inQuotes && !inRange && currentTerm {
+			remaining := query[i:]
+			if strings.HasPrefix(remaining, "AND ") || strings.HasPrefix(remaining, "OR ") ||
+				strings.HasPrefix(remaining, "NOT ") || strings.HasPrefix(remaining, "and ") ||
+				strings.HasPrefix(remaining, "or ") || strings.HasPrefix(remaining, "not ") {
+				terms++
+				currentTerm = false
+				if len(remaining) >= 3 && (remaining[0] == 'A' || remaining[0] == 'a') {
+					i += 3
+				} else if len(remaining) >= 3 && (remaining[0] == 'N' || remaining[0] == 'n') {
+					i += 3
+				} else {
+					i += 2
+				}
+				continue
+			}
+		}
+
+		currentTerm = true
+	}
+
+	if currentTerm {
+		terms++
+	}
+
+	return terms
+}
+
+// ValidateFields returns InvalidFieldError if the query references non-existent fields.
+func (p *Parser) ValidateFields(query string) error {
+	matches := fieldExtractPattern.FindAllStringSubmatchIndex(query, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	validFields := p.getValidFieldNames()
+
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		fieldStart := match[2]
+		fieldEnd := match[3]
+
+		if isInsideQuotes(query, fieldStart) {
+			continue
+		}
+
+		fieldName := query[fieldStart:fieldEnd]
+
+		if err := p.validateFieldName(fieldName); err != nil {
+			return &InvalidFieldError{
+				Field:       fieldName,
+				ValidFields: validFields,
+			}
+		}
+	}
+
+	return nil
+}
+
+func isInsideQuotes(query string, pos int) bool {
+	inQuotes := false
+	for i := 0; i < pos && i < len(query); i++ {
+		c := query[i]
+		if c == '\\' && i+1 < len(query) {
+			i++
+			continue
+		}
+		if c == '"' {
+			inQuotes = !inQuotes
+		}
+	}
+	return inQuotes
+}
+
+// validateFieldName validates both simple fields (name) and JSONB sub-fields (labels.category).
+func (p *Parser) validateFieldName(fieldName string) error {
+	if strings.Contains(fieldName, ".") {
+		parts := strings.SplitN(fieldName, ".", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid field format: %s", fieldName)
+		}
+
+		baseField := parts[0]
+
+		if !p.jsonbFields[baseField] {
+			if _, exists := p.fieldMap[baseField]; !exists {
+				return fmt.Errorf("field '%s' does not exist", baseField)
+			}
+			return fmt.Errorf("field '%s' is not a JSONB field; cannot use sub-field notation", baseField)
+		}
+
+		return nil
+	}
+
+	if _, exists := p.fieldMap[fieldName]; !exists {
+		return fmt.Errorf("field '%s' does not exist", fieldName)
+	}
+
+	return nil
+}
+
+func (p *Parser) getValidFieldNames() []string {
+	var names []string
+	for _, f := range p.Fields {
+		if f.IsJSONB {
+			names = append(names, f.Name+".*")
+		} else {
+			names = append(names, f.Name)
+		}
+	}
+	return names
+}
+
+func (p *Parser) getImplicitSearchFields() []FieldInfo {
+	var fields []FieldInfo
+	for _, field := range p.Fields {
+		if field.ImplicitSearch {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+// isImplicitTerm returns true if token is a search term without an explicit field prefix.
+func isImplicitTerm(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+
+	// Check if it's a boolean operator
+	if booleanOperators.MatchString(token) {
+		return false
+	}
+
+	// Check if it starts with + or - (required/prohibited operators)
+	if strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") {
+		// Remove the prefix and check the rest
+		rest := token[1:]
+		if fieldValuePattern.MatchString(rest) {
+			return false // It's a +field:value or -field:value
+		}
+		// Otherwise it's an implicit term with +/- modifier
+		return true
+	}
+
+	// Check if it's a field:value pattern
+	if fieldValuePattern.MatchString(token) {
+		return false
+	}
+
+	// Check if it's a range query
+	if rangePattern.MatchString(token) {
+		return false
+	}
+
+	// Check if it's a parenthesis
+	if token == "(" || token == ")" {
+		return false
+	}
+
+	// Quoted strings are also implicit terms (they search across implicit search fields)
+	if strings.HasPrefix(token, `"`) && strings.HasSuffix(token, `"`) {
+		return true
+	}
+
+	return true
+}
+
+// expandImplicitTerms expands implicit search terms to explicit field:value patterns
+// across all implicit search fields. For example:
+// "paint" → "(name:*paint* OR description:*paint*)"
+// "paint*" → "(name:paint* OR description:paint*)"
+// '"Living Room"' → '(name:"Living Room" OR description:"Living Room")'
+func (p *Parser) expandImplicitTerms(query string) string {
+	implicitFields := p.getImplicitSearchFields()
+	if len(implicitFields) == 0 {
+		return query
+	}
+
+	// Tokenize the query while preserving structure
+	tokens := tokenizeQuery(query)
+	var result []string
+
+	for _, token := range tokens {
+		if isImplicitTerm(token) {
+			// Check if it has a +/- prefix
+			prefix := ""
+			term := token
+			if strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") {
+				prefix = string(token[0])
+				term = token[1:]
+			}
+
+			// Check if it's a quoted phrase (exact match) or already has wildcards
+			searchTerm := term
+			isQuotedPhrase := strings.HasPrefix(term, `"`) && strings.HasSuffix(term, `"`)
+			hasWildcards := strings.Contains(term, "*") || strings.Contains(term, "?")
+
+			// For implicit search without wildcards or quotes, use contains matching
+			// This provides a better user experience for simple searches
+			if !isQuotedPhrase && !hasWildcards {
+				searchTerm = "*" + term + "*"
+			}
+
+			// Expand to all implicit search fields with OR
+			var fieldTerms []string
+			for _, field := range implicitFields {
+				fieldTerms = append(fieldTerms, fmt.Sprintf("%s:%s", field.Name, searchTerm))
+			}
+
+			if len(fieldTerms) == 1 {
+				result = append(result, prefix+fieldTerms[0])
+			} else {
+				expanded := "(" + strings.Join(fieldTerms, " OR ") + ")"
+				if prefix != "" {
+					expanded = prefix + expanded
+				}
+				result = append(result, expanded)
+			}
+		} else {
+			result = append(result, token)
+		}
+	}
+
+	return strings.Join(result, " ")
+}
+
+// tokenizeQuery splits query into tokens, preserving quoted strings and range brackets.
+func tokenizeQuery(query string) []string {
+	var tokens []string
+	var current strings.Builder
+	inQuotes := false
+	inRange := false
+	rangeDepth := 0
+
+	for i := 0; i < len(query); i++ {
+		c := query[i]
+
+		// Handle quotes
+		if c == '"' && (i == 0 || query[i-1] != '\\') {
+			inQuotes = !inQuotes
+			current.WriteByte(c)
+			continue
+		}
+
+		// Handle range brackets
+		if !inQuotes {
+			if c == '[' || c == '{' {
+				inRange = true
+				rangeDepth++
+				current.WriteByte(c)
+				continue
+			}
+			if c == ']' || c == '}' {
+				current.WriteByte(c)
+				rangeDepth--
+				if rangeDepth == 0 {
+					inRange = false
+				}
+				continue
+			}
+		}
+
+		// Handle spaces (token separators) when not in quotes or range
+		if c == ' ' && !inQuotes && !inRange {
+			if current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+			continue
+		}
+
+		// Handle parentheses as separate tokens
+		if !inQuotes && !inRange && (c == '(' || c == ')') {
+			if current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+			tokens = append(tokens, string(c))
+			continue
+		}
+
+		current.WriteByte(c)
+	}
+
+	if current.Len() > 0 {
+		tokens = append(tokens, current.String())
+	}
+
+	return tokens
+}
+
+// parseWithImplicitSearch expands unfielded terms across all implicit search fields with OR.
+func (p *Parser) parseWithImplicitSearch(query string) (*expr.Expression, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, nil
 	}
 
-	if strings.HasPrefix(query, "(") && strings.HasSuffix(query, ")") {
-		return p.parse(query[1 : len(query)-1])
+	// Expand implicit terms to explicit field:value patterns
+	expandedQuery := p.expandImplicitTerms(query)
+
+	slog.Debug("Query expansion", "original", query, "expanded", expandedQuery)
+
+	// Get first implicit field as fallback for the parser
+	fallbackField := ""
+	implicitFields := p.getImplicitSearchFields()
+	if len(implicitFields) > 0 {
+		fallbackField = implicitFields[0].Name
+	} else if len(p.Fields) > 0 {
+		fallbackField = p.Fields[0].Name
 	}
 
-	if andParts := splitByOperator(query, "AND"); len(andParts) > 1 {
-		return p.createLogicalNode(AND, andParts)
-	}
-	if orParts := splitByOperator(query, "OR"); len(orParts) > 1 {
-		return p.createLogicalNode(OR, orParts)
-	}
-	if notParts := splitByOperator(query, "NOT"); len(notParts) > 1 {
-		return p.createLogicalNode(NOT, notParts)
-	}
-
-	if parts := strings.SplitN(query, ":", 2); len(parts) == 2 {
-		field := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		// Skip empty fields or values
-		if field == "" || value == "" {
-			return nil, nil
-		}
-		return p.createTermNode(field, value)
-	}
-
-	// Skip empty implicit terms
-	if query = strings.TrimSpace(query); query == "" {
-		return nil, nil
-	}
-
-	return p.createImplicitNode(query)
+	return lucene.Parse(expandedQuery, lucene.WithDefaultField(fallbackField))
 }
 
-func splitByOperator(input string, op string) []string {
-	// Handle case where the operator is at the beginning of the string
-	trimmedInput := strings.TrimSpace(input)
-	lowerInput := strings.ToLower(trimmedInput)
-	lowerOp := strings.ToLower(op)
-
-	if strings.HasPrefix(lowerInput, lowerOp) {
-		// Check if it's a standalone word (followed by space or end of string)
-		opLength := len(op)
-		if len(trimmedInput) == opLength || (len(trimmedInput) > opLength && trimmedInput[opLength] == ' ') {
-			afterOp := strings.TrimSpace(trimmedInput[opLength:])
-			if afterOp != "" {
-				return []string{"", afterOp}
-			}
-		}
-	}
-
-	// Original logic for operators in the middle
-	re := regexp.MustCompile(fmt.Sprintf(`(?i)\s+%s\s+`, op))
-	parts := re.Split(input, -1)
-	if len(parts) > 1 {
-		return parts
-	}
-
-	return nil
-}
-
-func (p *Parser) createImplicitNode(term string) (*Node, error) {
-	slog.Debug(fmt.Sprintf(`Handling implicit: %s`, term))
-	term = strings.Trim(term, `"`)
-
-	containsWildcard := strings.Contains(term, "*") || strings.Contains(term, "?")
-
-	node := &Node{
-		Type:     NodeLogical,
-		Operator: OR,
-	}
-
-	for _, field := range p.DefaultFields {
-		var child *Node
-		var err error
-
-		if containsWildcard {
-			child, err = p.createWildcardNode(field.Name, term)
-		} else {
-			child, err = p.createTermNode(field.Name, term)
-
-			if child.Type == NodeTerm {
-				child.Type = NodeWildcard
-				child.MatchType = matchContains
-			}
-		}
-		if err != nil {
-			return nil, err
-		}
-		node.Children = append(node.Children, child)
-	}
-
-	return node, nil
-}
-
-func (p *Parser) createWildcardNode(field, value string) (*Node, error) {
-	// Skip empty fields or values
-	field = strings.TrimSpace(field)
-	value = strings.TrimSpace(value)
-
-	if field == "" || value == "" {
-		return nil, nil
-	}
-
-	formattedField := p.formatFieldName(field)
-
-	node := &Node{
-		Type:  NodeWildcard,
-		Field: formattedField,
-		Value: value,
-	}
-
-	// Process the wildcard pattern
-	if strings.HasPrefix(value, "*") && strings.HasSuffix(value, "*") {
-		// For *term* pattern
-		node.MatchType = matchContains
-		node.Value = strings.Trim(value, "*")
-	} else if strings.HasPrefix(value, "*") {
-		// For *term pattern
-		node.MatchType = matchEndsWith
-		node.Value = strings.TrimPrefix(value, "*")
-	} else if strings.HasSuffix(value, "*") {
-		// For term* pattern
-		node.MatchType = matchStartsWith
-		node.Value = strings.TrimSuffix(value, "*")
-	} else if strings.Contains(value, "*") {
-		// For patterns like te*rm
-		node.MatchType = matchContains
-		// Replace wildcards with % for SQL LIKE
-		node.Value = strings.ReplaceAll(value, "*", "%")
-	} else {
-		// Default to contains match for other patterns
-		node.MatchType = matchContains
-	}
-
-	// Skip if the value becomes empty after processing
-	if node.Value == "" {
-		return nil, nil
-	}
-
-	return node, nil
-}
-
-func (p *Parser) formatFieldName(fieldName string) string {
-	if parts := strings.SplitN(fieldName, ".", 2); len(parts) == 2 {
-		baseField := parts[0]
-		subField := parts[1]
-
-		for _, field := range p.DefaultFields {
-			if field.IsJSONB && field.Name == baseField {
-				return fmt.Sprintf("%s->>'%s'", baseField, subField)
-			}
-		}
-	}
-	return fieldName
-}
-
-func (p *Parser) createTermNode(field, value string) (*Node, error) {
-	field = strings.TrimSpace(field)
-	value = strings.TrimSpace(value)
-
-	if field == "" || value == "" {
-		return nil, nil
-	}
-	formattedField := p.formatFieldName(field)
-
-	trimmedValue := strings.TrimSpace(strings.Trim(value, `"`))
-
-	// Skip if the value becomes empty after trimming
-	if trimmedValue == "" {
-		return nil, nil
-	}
-
-	node := &Node{
-		Type:  NodeTerm,
-		Field: formattedField,
-		Value: strings.Trim(value, `"`),
-	}
-
-	if strings.Contains(value, "*") || strings.Contains(value, "?") {
-		node.Type = NodeWildcard
-
-		// Determine the match type based on wildcard position
-		if strings.HasPrefix(value, "*") && strings.HasSuffix(value, "*") {
-			node.MatchType = matchContains
-			node.Value = strings.Trim(value, "*")
-		} else if strings.HasPrefix(value, "*") {
-			node.MatchType = matchEndsWith
-			node.Value = strings.TrimPrefix(value, "*")
-		} else if strings.HasSuffix(value, "*") {
-			node.MatchType = matchStartsWith
-			node.Value = strings.TrimSuffix(value, "*")
-		} else {
-			// For patterns like te*rm or te?rm
-			node.MatchType = matchContains
-			// For SQL LIKE, convert * to % and ? to _
-			node.Value = strings.ReplaceAll(strings.ReplaceAll(value, "*", "%"), "?", "_")
-		}
-
-		// Skip if the value becomes empty after processing wildcards
-		if node.Value == "" {
-			return nil, nil
-		}
-	}
-
-	return node, nil
-}
-
-func (p *Parser) createLogicalNode(op LogicalOperator, parts []string) (*Node, error) {
-	node := &Node{
-		Type:     NodeLogical,
-		Operator: op,
-	}
-
-	for _, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			continue
-		}
-		child, err := p.parse(part)
-		if err != nil {
-			return nil, err
-		}
-		if child != nil {
-			node.Children = append(node.Children, child)
-		}
-	}
-
-	// If no valid children were found, return nil
-	if len(node.Children) == 0 {
-		return nil, nil
-	}
-
-	return node, nil
-}
-
-func (p *Parser) nodeToMap(node *Node) map[string]any {
-	if node == nil {
+// exprToMap converts expression to map format (legacy, kept for backward compatibility).
+func (p *Parser) exprToMap(e *expr.Expression) map[string]any {
+	if e == nil {
 		return nil
 	}
 
-	switch node.Type {
-	case NodeTerm:
-		return map[string]any{node.Field: node.Value}
-	case NodeWildcard:
-		return map[string]any{node.Field: map[string]string{
-			"$like": wildcardToPattern(node.Value, node.MatchType),
-		}}
-	case NodeLogical:
-		result := make(map[string]any)
-		children := make([]map[string]any, 0, len(node.Children))
-		for _, child := range node.Children {
-			children = append(children, p.nodeToMap(child))
+	result := make(map[string]any)
+
+	switch e.Op {
+	case expr.Equals:
+		if col, ok := e.Left.(expr.Column); ok {
+			result[string(col)] = p.valueToAny(e.Right)
 		}
-		result[string(node.Operator)] = children
-		return result
-	}
-	return nil
-}
-
-func (p *Parser) nodeToSQL(node *Node) (string, []any, error) {
-	if node == nil {
-		return "", nil, nil
-	}
-
-	switch node.Type {
-	case NodeTerm:
-		if strings.Contains(node.Field, "->>") {
-			return fmt.Sprintf("%s = ?", node.Field), []any{node.Value}, nil
+	case expr.Like:
+		if col, ok := e.Left.(expr.Column); ok {
+			pattern := p.valueToAny(e.Right)
+			result[string(col)] = map[string]any{"$like": pattern}
 		}
-		return fmt.Sprintf("%s = ?", node.Field), []any{node.Value}, nil
-	case NodeWildcard:
-		pattern := wildcardToPattern(node.Value, node.MatchType)
-		if strings.Contains(node.Field, "->>") {
-			return fmt.Sprintf("%s ILIKE ?", node.Field), []any{pattern}, nil
-		} else {
-			return fmt.Sprintf("%s::text ILIKE ?", node.Field), []any{pattern}, nil
+	case expr.And, expr.Or, expr.Not:
+		var children []map[string]any
+		if leftExpr, ok := e.Left.(*expr.Expression); ok {
+			children = append(children, p.exprToMap(leftExpr))
 		}
-	case NodeLogical:
-		var parts []string
-		var params []any
-
-		for _, child := range node.Children {
-			sqlPart, childParams, err := p.nodeToSQL(child)
-			if err != nil {
-				return "", nil, err
-			}
-			if sqlPart != "" {
-				parts = append(parts, sqlPart)
-				params = append(params, childParams...)
-			}
+		if rightExpr, ok := e.Right.(*expr.Expression); ok {
+			children = append(children, p.exprToMap(rightExpr))
 		}
-
-		if len(parts) == 0 {
-			return "", nil, nil
-		}
-
-		if len(parts) == 1 {
-			return parts[0], params, nil
-		}
-
-		operator := string(node.Operator)
-		if node.Negate {
-			operator = "NOT " + operator
-		}
-
-		return fmt.Sprintf("(%s)", strings.Join(parts, fmt.Sprintf(" %s ", operator))), params, nil
-	}
-
-	return "", nil, fmt.Errorf("unsupported node type")
-}
-
-func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.AttributeValue, error) {
-	slog.Debug(fmt.Sprintf(`Parsing query to DynamoDB PartiQL: %s`, query))
-	node, err := p.parse(query)
-	if err != nil {
-		return "", nil, err
-	}
-	return p.nodeToDynamoDBPartiQL(node)
-}
-
-func (p *Parser) nodeToDynamoDBPartiQL(node *Node) (string, []types.AttributeValue, error) {
-	if node == nil {
-		return "", nil, nil
-	}
-
-	switch node.Type {
-	case NodeTerm:
-		// For term node, create an exact match condition
-		return fmt.Sprintf("%s = ?", node.Field), []types.AttributeValue{
-			&types.AttributeValueMemberS{Value: node.Value},
-		}, nil
-	case NodeWildcard:
-		// For wildcard node, use begins_with or contains based on the match type
-		switch node.MatchType {
-		case matchStartsWith:
-			return fmt.Sprintf("begins_with(%s, ?)", node.Field), []types.AttributeValue{
-				&types.AttributeValueMemberS{Value: node.Value},
-			}, nil
-		case matchEndsWith, matchContains:
-			return fmt.Sprintf("contains(%s, ?)", node.Field), []types.AttributeValue{
-				&types.AttributeValueMemberS{Value: node.Value},
-			}, nil
-		default:
-			return fmt.Sprintf("%s = ?", node.Field), []types.AttributeValue{
-				&types.AttributeValueMemberS{Value: node.Value},
-			}, nil
-		}
-	case NodeLogical:
-		// For logical node, combine conditions with appropriate operator
-		var parts []string
-		var params []types.AttributeValue
-
-		for _, child := range node.Children {
-			part, childParams, err := p.nodeToDynamoDBPartiQL(child)
-			if err != nil {
-				return "", nil, err
-			}
-			if part != "" {
-				parts = append(parts, part)
-				params = append(params, childParams...)
-			}
-		}
-
-		if len(parts) == 0 {
-			return "", nil, nil
-		}
-
-		operator := string(node.Operator)
-		if node.Negate {
-			operator = "NOT " + operator
-		}
-
-		return fmt.Sprintf("(%s)", strings.Join(parts, fmt.Sprintf(" %s ", operator))), params, nil
-	}
-
-	return "", nil, fmt.Errorf("unsupported node type")
-}
-
-func wildcardToPattern(value string, matchType MatchType) string {
-	switch matchType {
-	case matchStartsWith:
-		return value + "%"
-	case matchEndsWith:
-		return "%" + value
-	case matchContains:
-		return "%" + value + "%"
+		result[e.Op.String()] = children
 	default:
-		return value
+		// For other operators, do a simple conversion
+		if col, ok := e.Left.(expr.Column); ok {
+			result[string(col)] = p.valueToAny(e.Right)
+		}
+	}
+
+	return result
+}
+
+func (p *Parser) valueToAny(v any) any {
+	switch val := v.(type) {
+	case *expr.Expression:
+		return p.exprToMap(val)
+	case string:
+		return val
+	case int, float64:
+		return val
+	default:
+		return fmt.Sprintf("%v", v)
 	}
 }

@@ -94,15 +94,16 @@ func (p *Parser) parseTerm() (Expr, error) {
 	key := p.text
 	p.next()
 
-	if p.text == ":" {
+	switch p.text {
+	case ":":
 		p.next()
 		val := p.text
 		p.next()
 		return &TermExpr{Key: key, Op: ":", Value: val}, nil
-	} else if p.text == "IN" {
+	case "IN":
 		p.next()
 		return p.parseList(key, "IN")
-	} else if p.text == "NOT" {
+	case "NOT":
 		p.next()
 		if p.text != "IN" {
 			return nil, fmt.Errorf("expected 'IN' after 'NOT'")

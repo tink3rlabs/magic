@@ -1,7 +1,9 @@
 {
 	"name": "Go",
 	"image": "mcr.microsoft.com/devcontainers/go:1.25-bookworm",
-	"runArgs": ["--add-host=host.docker.internal:host-gateway"],
+	"runArgs": [
+		"--add-host=host.docker.internal:host-gateway"
+	],
 	"customizations": {
 		"vscode": {
 			"extensions": [

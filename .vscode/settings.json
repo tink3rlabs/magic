@@ -4,5 +4,6 @@
         "azcosmos",
         "azidentity",
         "tink"
-    ]
+    ],
+     "go.diagnostic.vulncheck": "Imports"
 }

@@ -136,8 +136,49 @@ const definitions = `
 				"description": "A string containing a JSON Pointer value."
 			}
 			}
+		},
+		"SearchQuery": {
+			"type": "string",
+			"description": "Lucene-style search query supporting field searches, wildcards, boolean operators, ranges, and more. Syntax: field:value, wildcards (*,?), operators (AND, OR, NOT, +, -), ranges ([min TO max]), quoted phrases, JSONB access (field.subfield:value), null checks (field:null), and fuzzy search (term~).",
+			"example": "name:john AND status:active",
+			"examples": [
+			"name:john",
+			"name:john*",
+			"email:*@example.com",
+			"description:*important*",
+			"name:john* OR email:*@example.com",
+			"name:john AND status:active",
+			"status:active OR status:pending",
+			"name:john NOT status:inactive",
+			"+name:john +status:active",
+			"name:john -status:deleted",
+			"age:[25 TO 65]",
+			"age:{25 TO 65}",
+			"age:[25 TO *]",
+			"age:[* TO 65]",
+			"created_at:[2024-01-01 TO 2024-12-31]",
+			"description:\"hello world\"",
+			"title:\"test-app (v1.0)\"",
+			"name:C\\+\\+ OR path:\\/usr\\/bin",
+			"(name:john* OR email:*@example.com) AND status:active AND age:[25 TO 65]",
+			"((name:john OR name:jane) AND status:active) OR (status:pending AND age:[18 TO *])",
+			"searchterm",
+			"john*",
+			"labels.category:production",
+			"metadata.tags:prod*",
+			"name:john AND labels.env:prod AND metadata.team:engineering",
+			"parent_id:null",
+			"NOT deleted_at:null",
+			"name:john AND deleted_at:null",
+			"name:roam~",
+			"name:roam~2",
+			"labels.tag:prod~",
+			"+name:john* -status:deleted age:[25 TO 65] AND (role:admin OR role:moderator)",
+			"name:john OR email:john@example.com OR phone:*555*",
+			"(name:*admin* OR role:administrator) AND status:active AND NOT deleted_at:null AND created_at:[2024-01-01 TO *]"
+			]
 		}
-		}
+	}
 	}
 }
 `

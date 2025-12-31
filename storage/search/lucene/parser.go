@@ -19,6 +19,39 @@ const (
 	DefaultMaxTerms       = 100   // Prevents CPU exhaustion from complex queries
 )
 
+// Struct tag names for field metadata extraction
+const (
+	TagJSON   = "json"   // JSON serialization tag
+	TagGORM   = "gorm"   // GORM database tag (for detecting JSONB fields)
+	TagLucene = "lucene" // Lucene search behavior tag (implicit/explicit)
+)
+
+// ParserConfig allows customization of parser behavior and security limits.
+type ParserConfig struct {
+	// Security limits (nil = use defaults)
+	MaxQueryLength *int // Maximum query string length (default: 10KB)
+	MaxDepth       *int // Maximum nesting depth (default: 20)
+	MaxTerms       *int // Maximum number of terms (default: 100)
+
+	// Tag customization (empty = use defaults)
+	JSONTag   string // JSON tag name (default: "json")
+	GORMTag   string // GORM tag name (default: "gorm")
+	LuceneTag string // Lucene tag name (default: "lucene")
+}
+
+// IntPtr is a helper function to create int pointers for ParserConfig.
+// This makes it easier to set optional configuration values.
+//
+// Example:
+//
+//	config := &ParserConfig{
+//	    MaxQueryLength: IntPtr(5000),
+//	    MaxDepth:       IntPtr(10),
+//	}
+func IntPtr(i int) *int {
+	return &i
+}
+
 // FieldInfo describes a searchable field and its properties.
 type FieldInfo struct {
 	Name           string
@@ -27,6 +60,7 @@ type FieldInfo struct {
 }
 
 // Parser provides Lucene query parsing with security limits.
+// Drivers are created on-demand when calling ParseToSQL or ParseToDynamoDBPartiQL.
 type Parser struct {
 	Fields []FieldInfo // All searchable fields
 
@@ -38,10 +72,6 @@ type Parser struct {
 	// Field lookup maps for O(1) validation
 	fieldMap    map[string]FieldInfo // All fields by name
 	jsonbFields map[string]bool      // JSONB field names for sub-field validation
-
-	// Custom drivers for different backends
-	postgresDriver *PostgresJSONBDriver
-	dynamoDriver   *DynamoDBPartiQLDriver
 }
 
 // NewParserFromType creates a parser by introspecting a struct's fields.
@@ -65,6 +95,14 @@ type Parser struct {
 //
 //	parser, err := lucene.NewParserFromType(Task{})
 //
+// With custom configuration:
+//
+//	config := &lucene.ParserConfig{
+//	    MaxQueryLength: lucene.IntPtr(5000),
+//	    MaxDepth:       lucene.IntPtr(10),
+//	}
+//	parser, err := lucene.NewParserFromType(Task{}, config)
+//
 // Struct tag controls:
 // - lucene:"implicit" - Force ImplicitSearch=true (include in unfielded queries)
 // - lucene:"explicit" - Force ImplicitSearch=false (require field:value syntax)
@@ -74,15 +112,39 @@ type Parser struct {
 // - String fields: ImplicitSearch=true (included in unfielded queries)
 // - Non-string fields (int, time.Time, uuid, etc.): ImplicitSearch=false
 // - JSONB fields: ImplicitSearch=false (require field.subfield syntax)
-func NewParserFromType(model any) (*Parser, error) {
-	fields, err := getStructFields(model)
+func NewParserFromType(model any, config ...*ParserConfig) (*Parser, error) {
+	var cfg *ParserConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+
+	fields, err := getStructFieldsWithConfig(model, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return NewParser(fields), nil
+	return NewParser(fields, cfg), nil
 }
 
-func NewParser(fields []FieldInfo) *Parser {
+// NewParser creates a parser from field definitions with optional configuration.
+//
+// Basic usage:
+//
+//	fields := []FieldInfo{{Name: "name", ImplicitSearch: true}}
+//	parser := lucene.NewParser(fields)
+//
+// With custom configuration:
+//
+//	config := &lucene.ParserConfig{
+//	    MaxQueryLength: lucene.IntPtr(5000),
+//	    MaxDepth:       lucene.IntPtr(10),
+//	}
+//	parser := lucene.NewParser(fields, config)
+func NewParser(fields []FieldInfo, config ...*ParserConfig) *Parser {
+	var cfg *ParserConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+
 	fieldMap := make(map[string]FieldInfo, len(fields))
 	jsonbFields := make(map[string]bool)
 	for _, f := range fields {
@@ -92,15 +154,30 @@ func NewParser(fields []FieldInfo) *Parser {
 		}
 	}
 
+	// Apply config or use defaults
+	maxQueryLength := DefaultMaxQueryLength
+	maxDepth := DefaultMaxDepth
+	maxTerms := DefaultMaxTerms
+
+	if cfg != nil {
+		if cfg.MaxQueryLength != nil {
+			maxQueryLength = *cfg.MaxQueryLength
+		}
+		if cfg.MaxDepth != nil {
+			maxDepth = *cfg.MaxDepth
+		}
+		if cfg.MaxTerms != nil {
+			maxTerms = *cfg.MaxTerms
+		}
+	}
+
 	return &Parser{
 		Fields:         fields,
-		MaxQueryLength: DefaultMaxQueryLength,
-		MaxDepth:       DefaultMaxDepth,
-		MaxTerms:       DefaultMaxTerms,
+		MaxQueryLength: maxQueryLength,
+		MaxDepth:       maxDepth,
+		MaxTerms:       maxTerms,
 		fieldMap:       fieldMap,
 		jsonbFields:    jsonbFields,
-		postgresDriver: NewPostgresJSONBDriver(fields),
-		dynamoDriver:   NewDynamoDBPartiQLDriver(fields),
 	}
 }
 
@@ -126,9 +203,8 @@ func (e *InvalidFieldError) Error() string {
 	return fmt.Sprintf("invalid field '%s' in query; valid fields are: %s", e.Field, strings.Join(e.ValidFields, ", "))
 }
 
-// getStructFields uses reflection to extract field metadata from a struct.
-// String fields get ImplicitSearch=true, others get ImplicitSearch=false.
-func getStructFields(model any) ([]FieldInfo, error) {
+// getStructFieldsWithConfig extracts field metadata using configurable tag names.
+func getStructFieldsWithConfig(model any, config *ParserConfig) ([]FieldInfo, error) {
 	t := reflect.TypeOf(model)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -138,31 +214,47 @@ func getStructFields(model any) ([]FieldInfo, error) {
 		return nil, fmt.Errorf("expected struct, got %s", t.Kind())
 	}
 
+	// Determine tag names from config or use defaults
+	jsonTag := TagJSON
+	gormTag := TagGORM
+	luceneTag := TagLucene
+	if config != nil {
+		if config.JSONTag != "" {
+			jsonTag = config.JSONTag
+		}
+		if config.GORMTag != "" {
+			gormTag = config.GORMTag
+		}
+		if config.LuceneTag != "" {
+			luceneTag = config.LuceneTag
+		}
+	}
+
 	var fields []FieldInfo
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		jsonTag := field.Tag.Get("json")
-		if jsonTag == "" || jsonTag == "-" {
+		jsonTagValue := field.Tag.Get(jsonTag)
+		if jsonTagValue == "" || jsonTagValue == "-" {
 			continue
 		}
 
-		if commaIdx := strings.Index(jsonTag, ","); commaIdx != -1 {
-			jsonTag = jsonTag[:commaIdx]
+		if commaIdx := strings.Index(jsonTagValue, ","); commaIdx != -1 {
+			jsonTagValue = jsonTagValue[:commaIdx]
 		}
 
-		gormTag := field.Tag.Get("gorm")
-		isJSONB := strings.Contains(gormTag, "type:jsonb")
+		gormTagValue := field.Tag.Get(gormTag)
+		isJSONB := strings.Contains(gormTagValue, "type:jsonb")
 
-		luceneTag := field.Tag.Get("lucene")
+		luceneTagValue := field.Tag.Get(luceneTag)
 		implicitSearch := false
-		if luceneTag == "implicit" {
+		if luceneTagValue == "implicit" {
 			implicitSearch = true
-		} else if luceneTag != "explicit" {
+		} else if luceneTagValue != "explicit" {
 			implicitSearch = field.Type.Kind() == reflect.String && !isJSONB
 		}
 
 		fields = append(fields, FieldInfo{
-			Name:           jsonTag,
+			Name:           jsonTagValue,
 			IsJSONB:        isJSONB,
 			ImplicitSearch: implicitSearch,
 		})
@@ -189,6 +281,7 @@ func (p *Parser) ParseToMap(query string) (map[string]any, error) {
 }
 
 // ParseToSQL parses a Lucene query and converts it to PostgreSQL SQL with parameters.
+// Creates a PostgreSQL driver on-demand for rendering.
 func (p *Parser) ParseToSQL(query string) (string, []any, error) {
 	slog.Debug(fmt.Sprintf(`Parsing query to SQL: %s`, query))
 
@@ -210,8 +303,9 @@ func (p *Parser) ParseToSQL(query string) (string, []any, error) {
 		return "", nil, err
 	}
 
-	// Render using custom PostgreSQL driver
-	sql, params, err := p.postgresDriver.RenderParam(e)
+	// Create PostgreSQL driver on-demand and render
+	driver := NewPostgresJSONBDriver(p.Fields)
+	sql, params, err := driver.RenderParam(e)
 	if err != nil {
 		return "", nil, err
 	}
@@ -220,6 +314,7 @@ func (p *Parser) ParseToSQL(query string) (string, []any, error) {
 }
 
 // ParseToDynamoDBPartiQL parses a Lucene query and converts it to DynamoDB PartiQL.
+// Creates a DynamoDB driver on-demand for rendering.
 func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.AttributeValue, error) {
 	slog.Debug(fmt.Sprintf(`Parsing query to DynamoDB PartiQL: %s`, query))
 
@@ -241,8 +336,9 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 		return "", nil, err
 	}
 
-	// Render using custom DynamoDB driver
-	partiql, attrs, err := p.dynamoDriver.RenderPartiQL(e)
+	// Create DynamoDB driver on-demand and render
+	driver := NewDynamoDBPartiQLDriver(p.Fields)
+	partiql, attrs, err := driver.RenderPartiQL(e)
 	if err != nil {
 		return "", nil, err
 	}

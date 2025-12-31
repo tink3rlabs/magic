@@ -270,7 +270,7 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 	destType := reflect.TypeOf(dest).Elem().Elem()
 	model := reflect.New(destType).Elem().Interface()
 
-	parser, err := lucene.NewParserFromType(model)
+	parser, err := lucene.NewParser(model)
 	if err != nil {
 		slog.Error("Parser creation failed", "error", err)
 		return "", err

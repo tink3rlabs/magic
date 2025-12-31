@@ -12,6 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.53.5
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.10
 	github.com/gocql/gocql v1.7.0
+	github.com/grindlemire/go-lucene v0.0.26
 	github.com/scylladb/go-reflectx v1.0.1
 	github.com/scylladb/gocqlx/v3 v3.0.4
 	gopkg.in/yaml.v3 v3.0.1
@@ -41,7 +42,6 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.0 // indirect
-	github.com/grindlemire/go-lucene v0.0.26 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.6.0 // indirect

@@ -19,44 +19,18 @@ const (
 	DefaultMaxTerms       = 100   // Prevents CPU exhaustion from complex queries
 )
 
-// Struct tag names for field metadata extraction
-const (
-	TagJSON   = "json"   // JSON serialization tag
-	TagGORM   = "gorm"   // GORM database tag (for detecting JSONB fields)
-	TagLucene = "lucene" // Lucene search behavior tag (implicit/explicit)
-)
-
 // ParserConfig allows customization of parser behavior and security limits.
 type ParserConfig struct {
-	// Security limits (nil = use defaults)
-	MaxQueryLength *int // Maximum query string length (default: 10KB)
-	MaxDepth       *int // Maximum nesting depth (default: 20)
-	MaxTerms       *int // Maximum number of terms (default: 100)
-
-	// Tag customization (empty = use defaults)
-	JSONTag   string // JSON tag name (default: "json")
-	GORMTag   string // GORM tag name (default: "gorm")
-	LuceneTag string // Lucene tag name (default: "lucene")
-}
-
-// IntPtr is a helper function to create int pointers for ParserConfig.
-// This makes it easier to set optional configuration values.
-//
-// Example:
-//
-//	config := &ParserConfig{
-//	    MaxQueryLength: IntPtr(5000),
-//	    MaxDepth:       IntPtr(10),
-//	}
-func IntPtr(i int) *int {
-	return &i
+	MaxQueryLength int // 0 = use default (10000)
+	MaxDepth       int // 0 = use default (20)
+	MaxTerms       int // 0 = use default (100)
 }
 
 // FieldInfo describes a searchable field and its properties.
 type FieldInfo struct {
 	Name           string
-	IsJSONB        bool
-	ImplicitSearch bool // Whether this field is included in unfielded/implicit queries
+	Type           reflect.Type // For validation only
+	ImplicitSearch bool         // Whether this field is included in unfielded/implicit queries
 }
 
 // Parser provides Lucene query parsing with security limits.
@@ -70,88 +44,41 @@ type Parser struct {
 	MaxTerms       int // Maximum number of terms (default: 100)
 
 	// Field lookup maps for O(1) validation
-	fieldMap    map[string]FieldInfo // All fields by name
-	jsonbFields map[string]bool      // JSONB field names for sub-field validation
+	fieldMap map[string]FieldInfo // All fields by name
 }
 
-// NewParserFromType creates a parser by introspecting a struct's fields.
-// This is the recommended approach for initializing parsers as it:
-// - Works with any backend (PostgreSQL, MySQL, DynamoDB, etc.)
-// - Zero database overhead
-// - Compile-time safety
-// - Auto-detects JSONB fields from gorm tags
-// - Auto-sets string fields for implicit search (ImplicitSearch=true)
-//
-// Example:
-//
-//	type Task struct {
-//	    ID          string    `json:"id"`
-//	    Name        string    `json:"name"`                         // Auto: ImplicitSearch=true
-//	    Description string    `json:"description"`                  // Auto: ImplicitSearch=true
-//	    Status      string    `json:"status" lucene:"explicit"`     // Explicit: ImplicitSearch=false
-//	    CreatedAt   time.Time `json:"created_at"`                   // Auto: ImplicitSearch=false (not string)
-//	    Labels      JSONB     `json:"labels" gorm:"type:jsonb"`     // Auto: IsJSONB=true, ImplicitSearch=false
-//	}
-//
-//	parser, err := lucene.NewParserFromType(Task{})
-//
-// With custom configuration:
-//
-//	config := &lucene.ParserConfig{
-//	    MaxQueryLength: lucene.IntPtr(5000),
-//	    MaxDepth:       lucene.IntPtr(10),
-//	}
-//	parser, err := lucene.NewParserFromType(Task{}, config)
-//
-// Struct tag controls:
-// - lucene:"implicit" - Force ImplicitSearch=true (include in unfielded queries)
-// - lucene:"explicit" - Force ImplicitSearch=false (require field:value syntax)
-// - gorm:"type:jsonb" - Auto-detected as JSONB field
-//
-// Auto-detection rules (when no lucene tag):
-// - String fields: ImplicitSearch=true (included in unfielded queries)
-// - Non-string fields (int, time.Time, uuid, etc.): ImplicitSearch=false
-// - JSONB fields: ImplicitSearch=false (require field.subfield syntax)
-func NewParserFromType(model any, config ...*ParserConfig) (*Parser, error) {
-	var cfg *ParserConfig
-	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
-	}
-
-	fields, err := getStructFieldsWithConfig(model, cfg)
-	if err != nil {
-		return nil, err
-	}
-	return NewParser(fields, cfg), nil
-}
-
-// NewParser creates a parser from field definitions with optional configuration.
+// NewParser creates a parser by introspecting a struct's fields.
 //
 // Basic usage:
 //
-//	fields := []FieldInfo{{Name: "name", ImplicitSearch: true}}
-//	parser := lucene.NewParser(fields)
+//	parser, err := lucene.NewParser(Task{})
 //
 // With custom configuration:
 //
 //	config := &lucene.ParserConfig{
-//	    MaxQueryLength: lucene.IntPtr(5000),
-//	    MaxDepth:       lucene.IntPtr(10),
+//	    MaxQueryLength: 5000,
+//	    MaxDepth:       10,
 //	}
-//	parser := lucene.NewParser(fields, config)
-func NewParser(fields []FieldInfo, config ...*ParserConfig) *Parser {
-	var cfg *ParserConfig
-	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
+//	parser, err := lucene.NewParser(Task{}, config)
+//
+// Auto-detection rules:
+// - String fields: ImplicitSearch=true (included in unfielded queries)
+// - Non-string fields (int, time.Time, uuid, etc.): ImplicitSearch=false
+// - JSONB fields: ImplicitSearch=false (require field.subfield syntax)
+//
+// Field name extraction:
+// - Uses `json` struct tag for field names
+// - Skips fields without `json` tag or with `json:"-"`
+func NewParser(model any, config ...*ParserConfig) (*Parser, error) {
+	fields, err := extractFields(model)
+	if err != nil {
+		return nil, err
 	}
 
+	// Build field map
 	fieldMap := make(map[string]FieldInfo, len(fields))
-	jsonbFields := make(map[string]bool)
 	for _, f := range fields {
 		fieldMap[f.Name] = f
-		if f.IsJSONB {
-			jsonbFields[f.Name] = true
-		}
 	}
 
 	// Apply config or use defaults
@@ -159,15 +86,16 @@ func NewParser(fields []FieldInfo, config ...*ParserConfig) *Parser {
 	maxDepth := DefaultMaxDepth
 	maxTerms := DefaultMaxTerms
 
-	if cfg != nil {
-		if cfg.MaxQueryLength != nil {
-			maxQueryLength = *cfg.MaxQueryLength
+	if len(config) > 0 && config[0] != nil {
+		cfg := config[0]
+		if cfg.MaxQueryLength > 0 {
+			maxQueryLength = cfg.MaxQueryLength
 		}
-		if cfg.MaxDepth != nil {
-			maxDepth = *cfg.MaxDepth
+		if cfg.MaxDepth > 0 {
+			maxDepth = cfg.MaxDepth
 		}
-		if cfg.MaxTerms != nil {
-			maxTerms = *cfg.MaxTerms
+		if cfg.MaxTerms > 0 {
+			maxTerms = cfg.MaxTerms
 		}
 	}
 
@@ -177,8 +105,72 @@ func NewParser(fields []FieldInfo, config ...*ParserConfig) *Parser {
 		MaxDepth:       maxDepth,
 		MaxTerms:       maxTerms,
 		fieldMap:       fieldMap,
-		jsonbFields:    jsonbFields,
+	}, nil
+}
+
+// extractFields uses reflection to extract field metadata from a struct.
+func extractFields(model any) ([]FieldInfo, error) {
+	t := reflect.TypeOf(model)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
 	}
+
+	if t.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("expected struct, got %s", t.Kind())
+	}
+
+	var fields []FieldInfo
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+
+		// Get field name from json tag
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+
+		// Strip options from json tag (e.g., "name,omitempty" -> "name")
+		if commaIdx := strings.Index(jsonTag, ","); commaIdx != -1 {
+			jsonTag = jsonTag[:commaIdx]
+		}
+
+		// Implicit search: only string fields
+		implicitSearch := field.Type.Kind() == reflect.String
+
+		fields = append(fields, FieldInfo{
+			Name:           jsonTag,
+			Type:           field.Type,
+			ImplicitSearch: implicitSearch,
+		})
+	}
+
+	return fields, nil
+}
+
+// canUseNestedAccess checks if a field type supports nested access (field.subfield syntax).
+func canUseNestedAccess(t reflect.Type) bool {
+	// Return false for nil types
+	if t == nil {
+		return false
+	}
+
+	// Unwrap pointers
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	// Check type name for JSONB-like types
+	name := t.Name()
+	if strings.Contains(name, "JSONB") || strings.Contains(name, "JSON") {
+		return true
+	}
+
+	// Maps and structs support nested access
+	if t.Kind() == reflect.Map || t.Kind() == reflect.Struct {
+		return true
+	}
+
+	return false
 }
 
 // Precompiled regex for performance - matches Lucene operators and special syntax
@@ -203,70 +195,9 @@ func (e *InvalidFieldError) Error() string {
 	return fmt.Sprintf("invalid field '%s' in query; valid fields are: %s", e.Field, strings.Join(e.ValidFields, ", "))
 }
 
-// getStructFieldsWithConfig extracts field metadata using configurable tag names.
-func getStructFieldsWithConfig(model any, config *ParserConfig) ([]FieldInfo, error) {
-	t := reflect.TypeOf(model)
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-
-	if t.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("expected struct, got %s", t.Kind())
-	}
-
-	// Determine tag names from config or use defaults
-	jsonTag := TagJSON
-	gormTag := TagGORM
-	luceneTag := TagLucene
-	if config != nil {
-		if config.JSONTag != "" {
-			jsonTag = config.JSONTag
-		}
-		if config.GORMTag != "" {
-			gormTag = config.GORMTag
-		}
-		if config.LuceneTag != "" {
-			luceneTag = config.LuceneTag
-		}
-	}
-
-	var fields []FieldInfo
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		jsonTagValue := field.Tag.Get(jsonTag)
-		if jsonTagValue == "" || jsonTagValue == "-" {
-			continue
-		}
-
-		if commaIdx := strings.Index(jsonTagValue, ","); commaIdx != -1 {
-			jsonTagValue = jsonTagValue[:commaIdx]
-		}
-
-		gormTagValue := field.Tag.Get(gormTag)
-		isJSONB := strings.Contains(gormTagValue, "type:jsonb")
-
-		luceneTagValue := field.Tag.Get(luceneTag)
-		implicitSearch := false
-		if luceneTagValue == "implicit" {
-			implicitSearch = true
-		} else if luceneTagValue != "explicit" {
-			implicitSearch = field.Type.Kind() == reflect.String && !isJSONB
-		}
-
-		fields = append(fields, FieldInfo{
-			Name:           jsonTagValue,
-			IsJSONB:        isJSONB,
-			ImplicitSearch: implicitSearch,
-		})
-	}
-
-	return fields, nil
-}
-
 // ParseToMap parses a Lucene query into a map representation.
 // Note: This is a legacy method kept for backward compatibility.
 func (p *Parser) ParseToMap(query string) (map[string]any, error) {
-
 	if err := p.validateQuery(query); err != nil {
 		return nil, err
 	}
@@ -304,7 +235,7 @@ func (p *Parser) ParseToSQL(query string) (string, []any, error) {
 	}
 
 	// Create PostgreSQL driver on-demand and render
-	driver := NewPostgresJSONBDriver(p.Fields)
+	driver := NewPostgresDriver(p.Fields)
 	sql, params, err := driver.RenderParam(e)
 	if err != nil {
 		return "", nil, err
@@ -337,7 +268,7 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 	}
 
 	// Create DynamoDB driver on-demand and render
-	driver := NewDynamoDBPartiQLDriver(p.Fields)
+	driver := NewDynamoDBDriver(p.Fields)
 	partiql, attrs, err := driver.RenderPartiQL(e)
 	if err != nil {
 		return "", nil, err
@@ -547,7 +478,7 @@ func isInsideQuotes(query string, pos int) bool {
 	return inQuotes
 }
 
-// validateFieldName validates both simple fields (name) and JSONB sub-fields (labels.category).
+// validateFieldName validates both simple fields (name) and nested fields (labels.category).
 func (p *Parser) validateFieldName(fieldName string) error {
 	if strings.Contains(fieldName, ".") {
 		parts := strings.SplitN(fieldName, ".", 2)
@@ -557,11 +488,15 @@ func (p *Parser) validateFieldName(fieldName string) error {
 
 		baseField := parts[0]
 
-		if !p.jsonbFields[baseField] {
-			if _, exists := p.fieldMap[baseField]; !exists {
-				return fmt.Errorf("field '%s' does not exist", baseField)
-			}
-			return fmt.Errorf("field '%s' is not a JSONB field; cannot use sub-field notation", baseField)
+		// Check if base field exists
+		field, exists := p.fieldMap[baseField]
+		if !exists {
+			return fmt.Errorf("field '%s' does not exist", baseField)
+		}
+
+		// Check if base field supports nested access
+		if !canUseNestedAccess(field.Type) {
+			return fmt.Errorf("field '%s' does not support nested access (field.subfield syntax); use explicit field names only", baseField)
 		}
 
 		return nil
@@ -577,7 +512,8 @@ func (p *Parser) validateFieldName(fieldName string) error {
 func (p *Parser) getValidFieldNames() []string {
 	var names []string
 	for _, f := range p.Fields {
-		if f.IsJSONB {
+		// Add a hint for fields that support nested access
+		if canUseNestedAccess(f.Type) {
 			names = append(names, f.Name+".*")
 		} else {
 			names = append(names, f.Name)

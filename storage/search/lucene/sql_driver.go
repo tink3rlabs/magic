@@ -8,14 +8,17 @@ import (
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
 )
 
-// PostgresJSONBDriver is a custom PostgreSQL driver that supports JSONB field notation.
-// It extends the base PostgreSQL driver to handle field->>'subfield' syntax.
-type PostgresJSONBDriver struct {
+// SQLDriver is a SQL driver that supports multiple SQL dialects (PostgreSQL, MySQL, SQLite).
+// It handles database-specific syntax for LIKE operators, JSON field access, and parameter placeholders.
+type SQLDriver struct {
 	driver.Base
-	fields map[string]FieldInfo // Map of field names to their metadata
+	fields   map[string]FieldInfo // Map of field names to their metadata
+	provider string               // SQL provider: "postgresql", "mysql", or "sqlite"
 }
 
-func NewPostgresDriver(fields []FieldInfo) *PostgresJSONBDriver {
+// NewSQLDriver creates a new SQL driver for the specified provider.
+// Provider should be one of: "postgresql", "mysql", "sqlite"
+func NewSQLDriver(fields []FieldInfo, provider string) *SQLDriver {
 	fieldMap := make(map[string]FieldInfo)
 	for _, f := range fields {
 		fieldMap[f.Name] = f
@@ -43,113 +46,147 @@ func NewPostgresDriver(fields []FieldInfo) *PostgresJSONBDriver {
 		expr.List:      driver.Shared[expr.List],
 	}
 
-	return &PostgresJSONBDriver{
+	return &SQLDriver{
 		Base: driver.Base{
 			RenderFNs: fns,
 		},
-		fields: fieldMap,
+		fields:   fieldMap,
+		provider: provider,
 	}
 }
 
-// RenderParam renders the expression with PostgreSQL-style $N placeholders.
-func (p *PostgresJSONBDriver) RenderParam(e *expr.Expression) (string, []any, error) {
-	// Process JSONB field notation before rendering
-	p.processJSONBFields(e)
+// RenderParam renders the expression with provider-specific parameter placeholders.
+func (s *SQLDriver) RenderParam(e *expr.Expression) (string, []any, error) {
+	// Process JSON field notation before rendering
+	s.processJSONFields(e)
 
 	// Use our custom rendering logic
-	str, params, err := p.renderParamInternal(e)
+	str, params, err := s.renderParamInternal(e)
 	if err != nil {
 		return "", nil, err
 	}
 
-	// Convert ? to $N format
-	str = convertToPostgresPlaceholders(str)
+	// Convert ? placeholders to provider-specific format
+	// PostgreSQL uses $1, $2, $3; MySQL and SQLite use ?
+	switch s.provider {
+	case "postgresql":
+		str = convertToPostgresPlaceholders(str)
+	case "mysql", "sqlite":
+		// Already uses ? placeholders, no conversion needed
+	}
 
 	return str, params, nil
 }
 
 // renderParamInternal dispatches to specialized renderers based on operator type.
-func (p *PostgresJSONBDriver) renderParamInternal(e *expr.Expression) (string, []any, error) {
+func (s *SQLDriver) renderParamInternal(e *expr.Expression) (string, []any, error) {
 	if e == nil {
 		return "", nil, nil
 	}
 
 	switch e.Op {
 	case expr.Like, expr.Wild:
-		return p.renderLikeOrWild(e)
+		return s.renderLikeOrWild(e)
 	case expr.Fuzzy:
-		return p.renderFuzzy(e)
+		return s.renderFuzzy(e)
 	case expr.Boost:
 		return "", nil, fmt.Errorf("boost operator (^) is not supported in SQL filtering; it only affects ranking/scoring")
 	case expr.Range:
-		return p.renderRange(e)
+		return s.renderRange(e)
 	case expr.Equals, expr.Greater, expr.Less, expr.GreaterEq, expr.LessEq:
-		return p.renderComparison(e)
+		return s.renderComparison(e)
 	case expr.And, expr.Or, expr.Must, expr.MustNot:
-		return p.renderBinary(e)
+		return s.renderBinary(e)
 	default:
 		// Use base implementation for all other operators
-		return p.Base.RenderParam(e)
+		return s.Base.RenderParam(e)
 	}
 }
 
-// renderLikeOrWild converts LIKE and Wild operators to PostgreSQL ILIKE for case-insensitive matching.
-func (p *PostgresJSONBDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) {
-	leftStr, leftParams, err := p.serializeColumn(e.Left)
+// renderLikeOrWild converts LIKE and Wild operators to provider-specific case-insensitive matching.
+func (s *SQLDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := s.serializeColumn(e.Left)
 	if err != nil {
 		return "", nil, err
 	}
 
-	rightStr, rightParams, err := p.serializeValue(e.Right)
+	rightStr, rightParams, err := s.serializeValue(e.Right)
 	if err != nil {
 		return "", nil, err
 	}
 
 	params := append(leftParams, rightParams...)
 
-	if isJSONBSyntax(leftStr) {
-		return fmt.Sprintf("%s ILIKE %s", leftStr, rightStr), params, nil
+	switch s.provider {
+	case "postgresql":
+		// PostgreSQL: ILIKE for case-insensitive matching
+		if isJSONSyntax(leftStr) {
+			return fmt.Sprintf("%s ILIKE %s", leftStr, rightStr), params, nil
+		}
+		return fmt.Sprintf("%s::text ILIKE %s", leftStr, rightStr), params, nil
+
+	case "mysql":
+		// MySQL: Use LOWER() for case-insensitive matching
+		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", leftStr, rightStr), params, nil
+
+	case "sqlite":
+		// SQLite: LIKE is already case-insensitive for ASCII by default
+		return fmt.Sprintf("%s LIKE %s", leftStr, rightStr), params, nil
+
+	default:
+		return "", nil, fmt.Errorf("unsupported SQL provider: %s", s.provider)
 	}
-	return fmt.Sprintf("%s::text ILIKE %s", leftStr, rightStr), params, nil
 }
 
-// renderFuzzy handles fuzzy search using PostgreSQL similarity() function.
-// Requires pg_trgm extension.
+// renderFuzzy handles fuzzy search with provider-specific implementations.
 // For queries like "name:roam~2", the structure is:
 // - Op: Fuzzy
 // - Left: Equals expression (name:roam) with Left=Column("name"), Right=Literal("roam")
 // - Right: nil (distance stored in unexported fuzzyDistance field)
-func (p *PostgresJSONBDriver) renderFuzzy(e *expr.Expression) (string, []any, error) {
+func (s *SQLDriver) renderFuzzy(e *expr.Expression) (string, []any, error) {
 	leftExpr, ok := e.Left.(*expr.Expression)
 	if !ok || leftExpr.Op != expr.Equals {
 		return "", nil, fmt.Errorf("fuzzy operator requires field:value syntax (e.g., name:roam~2)")
 	}
 
-	colStr, colParams, err := p.serializeColumn(leftExpr.Left)
+	colStr, colParams, err := s.serializeColumn(leftExpr.Left)
 	if err != nil {
 		return "", nil, err
 	}
 
-	termStr, termParams, err := p.serializeValue(leftExpr.Right)
+	termStr, termParams, err := s.serializeValue(leftExpr.Right)
 	if err != nil {
 		return "", nil, err
 	}
 
 	params := append(colParams, termParams...)
 
-	// Use threshold 0.3 (lower = more matches, higher = stricter).
-	// The fuzzy distance from go-lucene is unexported, so we use a reasonable default.
-	threshold := 0.3
+	switch s.provider {
+	case "postgresql":
+		// PostgreSQL: Use similarity() function from pg_trgm extension
+		// Threshold 0.3 (lower = more matches, higher = stricter)
+		threshold := 0.3
+		if isJSONSyntax(colStr) {
+			return fmt.Sprintf("similarity(%s, %s) > %f", colStr, termStr, threshold), params, nil
+		}
+		return fmt.Sprintf("similarity(%s::text, %s) > %f", colStr, termStr, threshold), params, nil
 
-	if isJSONBSyntax(colStr) {
-		return fmt.Sprintf("similarity(%s, %s) > %f", colStr, termStr, threshold), params, nil
+	case "mysql":
+		// MySQL: Use SOUNDEX for phonetic matching (limited fuzzy support)
+		return fmt.Sprintf("SOUNDEX(%s) = SOUNDEX(%s)", colStr, termStr), params, nil
+
+	case "sqlite":
+		// SQLite: No built-in fuzzy search support
+		return "", nil, fmt.Errorf("fuzzy search (field:term~N) is not supported with SQLite; use wildcards instead (e.g., field:term*)")
+
+	default:
+		return "", nil, fmt.Errorf("unsupported SQL provider: %s", s.provider)
 	}
-	return fmt.Sprintf("similarity(%s::text, %s) > %f", colStr, termStr, threshold), params, nil
 }
 
 // renderComparison handles comparison operators with IS NULL support for null values.
-func (p *PostgresJSONBDriver) renderComparison(e *expr.Expression) (string, []any, error) {
-	leftStr, leftParams, err := p.serializeColumn(e.Left)
+func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := s.serializeColumn(e.Left)
 	if err != nil {
 		return "", nil, err
 	}
@@ -161,7 +198,7 @@ func (p *PostgresJSONBDriver) renderComparison(e *expr.Expression) (string, []an
 		return "", nil, fmt.Errorf("cannot use comparison operators (>, <, >=, <=) with null value")
 	}
 
-	rightStr, rightParams, err := p.serializeValue(e.Right)
+	rightStr, rightParams, err := s.serializeValue(e.Right)
 	if err != nil {
 		return "", nil, err
 	}
@@ -187,7 +224,7 @@ func (p *PostgresJSONBDriver) renderComparison(e *expr.Expression) (string, []an
 
 // renderBinary handles binary and unary logical operators recursively.
 // Note: Must and MustNot are unary (only Left operand), while And and Or are binary.
-func (p *PostgresJSONBDriver) renderBinary(e *expr.Expression) (string, []any, error) {
+func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
 	switch e.Op {
 	case expr.Must, expr.MustNot:
 		if e.Left == nil {
@@ -195,7 +232,7 @@ func (p *PostgresJSONBDriver) renderBinary(e *expr.Expression) (string, []any, e
 		}
 
 		if leftExpr, ok := e.Left.(*expr.Expression); ok {
-			leftStr, leftParams, err := p.renderParamInternal(leftExpr)
+			leftStr, leftParams, err := s.renderParamInternal(leftExpr)
 			if err != nil {
 				return "", nil, err
 			}
@@ -206,11 +243,11 @@ func (p *PostgresJSONBDriver) renderBinary(e *expr.Expression) (string, []any, e
 			return fmt.Sprintf("NOT (%s)", leftStr), leftParams, nil
 		}
 
-		leftStr, leftParams, err := p.serializeColumn(e.Left)
+		leftStr, leftParams, err := s.serializeColumn(e.Left)
 		if err != nil {
-			leftStr, leftParams, err = p.serializeValue(e.Left)
+			leftStr, leftParams, err = s.serializeValue(e.Left)
 			if err != nil {
-				return p.Base.RenderParam(e)
+				return s.Base.RenderParam(e)
 			}
 		}
 
@@ -228,15 +265,15 @@ func (p *PostgresJSONBDriver) renderBinary(e *expr.Expression) (string, []any, e
 		rightExpr, rightIsExpr := e.Right.(*expr.Expression)
 
 		if !leftIsExpr || !rightIsExpr {
-			return p.Base.RenderParam(e)
+			return s.Base.RenderParam(e)
 		}
 
-		leftStr, leftParams, err := p.renderParamInternal(leftExpr)
+		leftStr, leftParams, err := s.renderParamInternal(leftExpr)
 		if err != nil {
 			return "", nil, err
 		}
 
-		rightStr, rightParams, err := p.renderParamInternal(rightExpr)
+		rightStr, rightParams, err := s.renderParamInternal(rightExpr)
 		if err != nil {
 			return "", nil, err
 		}
@@ -253,16 +290,16 @@ func (p *PostgresJSONBDriver) renderBinary(e *expr.Expression) (string, []any, e
 	}
 }
 
-func (p *PostgresJSONBDriver) serializeColumn(in any) (string, []any, error) {
+func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
 	switch v := in.(type) {
 	case expr.Column:
 		colStr := string(v)
-		if isJSONBSyntax(colStr) {
+		if isJSONSyntax(colStr) {
 			return colStr, nil, nil
 		}
 		return fmt.Sprintf(`"%s"`, colStr), nil, nil
 	case string:
-		if isJSONBSyntax(v) {
+		if isJSONSyntax(v) {
 			return v, nil, nil
 		}
 		return fmt.Sprintf(`"%s"`, v), nil, nil
@@ -270,20 +307,20 @@ func (p *PostgresJSONBDriver) serializeColumn(in any) (string, []any, error) {
 		if v.Op == expr.Literal && v.Left != nil {
 			if col, ok := v.Left.(expr.Column); ok {
 				colStr := string(col)
-				if isJSONBSyntax(colStr) {
+				if isJSONSyntax(colStr) {
 					return colStr, nil, nil
 				}
 				return fmt.Sprintf(`"%s"`, colStr), nil, nil
 			}
 		}
-		return p.renderParamInternal(v)
+		return s.renderParamInternal(v)
 	default:
 		return "", nil, fmt.Errorf("unexpected column type: %T", v)
 	}
 }
 
 // serializeValue converts Lucene wildcards (* and ?) to SQL wildcards (% and _).
-func (p *PostgresJSONBDriver) serializeValue(in any) (string, []any, error) {
+func (s *SQLDriver) serializeValue(in any) (string, []any, error) {
 	switch v := in.(type) {
 	case string:
 		return "?", []any{convertWildcards(v)}, nil
@@ -296,7 +333,7 @@ func (p *PostgresJSONBDriver) serializeValue(in any) (string, []any, error) {
 			literalVal := fmt.Sprintf("%v", v.Left)
 			return "?", []any{convertWildcards(literalVal)}, nil
 		}
-		return p.renderParamInternal(v)
+		return s.renderParamInternal(v)
 	case nil:
 		return "", nil, fmt.Errorf("nil value in expression")
 	default:
@@ -304,55 +341,66 @@ func (p *PostgresJSONBDriver) serializeValue(in any) (string, []any, error) {
 	}
 }
 
-// processJSONBFields recursively processes the expression tree to convert
-// field.subfield notation to PostgreSQL JSONB syntax field->>'subfield'.
-func (p *PostgresJSONBDriver) processJSONBFields(e *expr.Expression) {
+// processJSONFields recursively processes the expression tree to convert
+// field.subfield notation to provider-specific JSON syntax.
+func (s *SQLDriver) processJSONFields(e *expr.Expression) {
 	if e == nil {
 		return
 	}
 
 	// Process left side if it's a column
 	if col, ok := e.Left.(expr.Column); ok {
-		e.Left = p.formatFieldName(string(col))
+		e.Left = s.formatFieldName(string(col))
 	}
 
 	// Recursively process expressions
 	if leftExpr, ok := e.Left.(*expr.Expression); ok {
-		p.processJSONBFields(leftExpr)
+		s.processJSONFields(leftExpr)
 	}
 	if rightExpr, ok := e.Right.(*expr.Expression); ok {
-		p.processJSONBFields(rightExpr)
+		s.processJSONFields(rightExpr)
 	}
 
 	// Process expression slices
 	if exprs, ok := e.Left.([]*expr.Expression); ok {
 		for _, ex := range exprs {
-			p.processJSONBFields(ex)
+			s.processJSONFields(ex)
 		}
 	}
 	if exprs, ok := e.Right.([]*expr.Expression); ok {
 		for _, ex := range exprs {
-			p.processJSONBFields(ex)
+			s.processJSONFields(ex)
 		}
 	}
 }
 
-// formatFieldName converts field.subfield to JSONB syntax if the base field supports nested access.
-func (p *PostgresJSONBDriver) formatFieldName(fieldName string) expr.Column {
+// formatFieldName converts field.subfield to provider-specific JSON syntax.
+func (s *SQLDriver) formatFieldName(fieldName string) expr.Column {
 	parts := strings.SplitN(fieldName, ".", 2)
 	if len(parts) == 2 {
 		baseField := parts[0]
 		subField := parts[1]
 
-		if field, exists := p.fields[baseField]; exists && canUseNestedAccess(field.Type) {
-			// Return as JSONB operator syntax
-			return expr.Column(fmt.Sprintf("%s->>'%s'", baseField, subField))
+		if field, exists := s.fields[baseField]; exists && canUseNestedAccess(field.Type) {
+			switch s.provider {
+			case "postgresql":
+				// PostgreSQL: JSONB operator ->>
+				return expr.Column(fmt.Sprintf("%s->>'%s'", baseField, subField))
+
+			case "mysql":
+				// MySQL 5.7+: JSON_UNQUOTE(JSON_EXTRACT(column, '$.field'))
+				return expr.Column(fmt.Sprintf("JSON_UNQUOTE(JSON_EXTRACT(%s, '$.%s'))", baseField, subField))
+
+			case "sqlite":
+				// SQLite: JSON_EXTRACT(column, '$.field')
+				return expr.Column(fmt.Sprintf("JSON_EXTRACT(%s, '$.%s')", baseField, subField))
+			}
 		}
 	}
 	return expr.Column(fieldName)
 }
 
-// Helper functions for PostgreSQL driver
+// Helper functions for SQL driver
 
 // convertWildcards converts Lucene wildcards to SQL wildcards.
 // * (any characters) → % (SQL wildcard)
@@ -380,8 +428,17 @@ func convertWildcards(s string) string {
 	return result.String()
 }
 
-func isJSONBSyntax(col string) bool {
-	return strings.Contains(col, "->>")
+// isJSONSyntax checks if a column string contains provider-specific JSON syntax.
+func isJSONSyntax(col string) bool {
+	// Check for PostgreSQL JSONB operator
+	if strings.Contains(col, "->>") {
+		return true
+	}
+	// Check for MySQL/SQLite JSON_EXTRACT
+	if strings.Contains(col, "JSON_EXTRACT") || strings.Contains(col, "JSON_UNQUOTE") {
+		return true
+	}
+	return false
 }
 
 // isNullValue checks if a value represents null in Lucene query syntax.
@@ -431,8 +488,8 @@ func extractLiteralValue(v any) string {
 }
 
 // renderRange handles range queries including open-ended ranges with wildcards (*).
-func (p *PostgresJSONBDriver) renderRange(e *expr.Expression) (string, []any, error) {
-	colStr, _, err := p.serializeColumn(e.Left)
+func (s *SQLDriver) renderRange(e *expr.Expression) (string, []any, error) {
+	colStr, _, err := s.serializeColumn(e.Left)
 	if err != nil {
 		return "", nil, err
 	}

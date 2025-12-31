@@ -239,7 +239,7 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 		// Parse Lucene query
 		destType := reflect.TypeOf(dest).Elem().Elem()
 		model := reflect.New(destType).Elem().Interface()
-		parser, _ := lucene.NewParserFromType(model)
+		parser, _ := lucene.NewParser(model)
 		whereClause, params, _ := parser.ParseToDynamoDBPartiQL(query)
 
 		// Build query

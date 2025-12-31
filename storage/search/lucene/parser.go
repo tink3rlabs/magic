@@ -211,9 +211,10 @@ func (p *Parser) ParseToMap(query string) (map[string]any, error) {
 	return p.exprToMap(e), nil
 }
 
-// ParseToSQL parses a Lucene query and converts it to PostgreSQL SQL with parameters.
-// Creates a PostgreSQL driver on-demand for rendering.
-func (p *Parser) ParseToSQL(query string) (string, []any, error) {
+// ParseToSQL parses a Lucene query and converts it to SQL with parameters for the specified provider.
+// Creates a SQL driver on-demand for rendering with provider-specific syntax.
+// Provider should be one of: "postgresql", "mysql", "sqlite"
+func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error) {
 	slog.Debug(fmt.Sprintf(`Parsing query to SQL: %s`, query))
 
 	if err := p.validateQuery(query); err != nil {
@@ -234,8 +235,8 @@ func (p *Parser) ParseToSQL(query string) (string, []any, error) {
 		return "", nil, err
 	}
 
-	// Create PostgreSQL driver on-demand and render
-	driver := NewPostgresDriver(p.Fields)
+	// Create SQL driver on-demand for the specified provider and render
+	driver := NewSQLDriver(p.Fields, provider)
 	sql, params, err := driver.RenderParam(e)
 	if err != nil {
 		return "", nil, err

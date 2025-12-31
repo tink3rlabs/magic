@@ -288,7 +288,8 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 		return "", err
 	}
 
-	whereClause, queryParams, err := parser.ParseToSQL(query)
+	// Pass the SQL provider to generate provider-specific SQL syntax
+	whereClause, queryParams, err := parser.ParseToSQL(query, string(s.provider))
 	if err != nil {
 		slog.Error("Filter parsing failed", "error", err)
 		// Wrap InvalidFieldError as BadRequest for proper HTTP 400 response

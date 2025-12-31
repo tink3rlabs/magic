@@ -98,7 +98,7 @@ func TestBasicFieldSearch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, vals, err := parser.ParseToSQL(tt.query)
+			sql, vals, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -148,7 +148,7 @@ func TestBooleanOperators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -192,7 +192,7 @@ func TestRequiredProhibited(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -246,7 +246,7 @@ func TestRangeQueries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -285,7 +285,7 @@ func TestQuotedPhrases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -324,7 +324,7 @@ func TestEscapedCharacters(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -374,7 +374,7 @@ func TestComplexQueries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if (err != nil) != tt.shouldErr {
 				t.Fatalf("ParseToSQL() error = %v, shouldErr = %v", err, tt.shouldErr)
 			}
@@ -418,7 +418,7 @@ func TestImplicitSearch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, params, err := parser.ParseToSQL(tt.query)
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -458,7 +458,7 @@ func TestJSONBFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err != nil {
 				t.Fatalf("ParseToSQL() error = %v", err)
 			}
@@ -560,7 +560,7 @@ func TestFieldValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := parser.ParseToSQL(tt.query)
+			_, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseToSQL() error = %v, wantErr = %v", err, tt.wantErr)
 			}
@@ -623,7 +623,7 @@ func TestNullValueQueries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseToSQL() error = %v, wantErr = %v", err, tt.wantErr)
 			}
@@ -641,7 +641,7 @@ func TestEmptyAsLiteralValue(t *testing.T) {
 		t.Fatalf("NewParser() error = %v", err)
 	}
 
-	sql, params, err := parser.ParseToSQL("status:empty")
+	sql, params, err := parser.ParseToSQL("status:empty", "postgresql")
 	if err != nil {
 		t.Fatalf("ParseToSQL() error = %v", err)
 	}
@@ -691,7 +691,7 @@ func TestFuzzySearch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseToSQL() error = %v, wantErr = %v", err, tt.wantErr)
 			}
@@ -740,7 +740,7 @@ func TestEscaping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query)
+			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseToSQL() error = %v, wantErr = %v", err, tt.wantErr)
 			}
@@ -777,7 +777,7 @@ func TestBoostOperatorError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := parser.ParseToSQL(tt.query)
+			_, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if err == nil {
 				t.Errorf("ParseToSQL(%q) expected error but got none", tt.query)
 				return
@@ -796,6 +796,6 @@ func BenchmarkParser(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = parser.ParseToSQL(query)
+		_, _, _ = parser.ParseToSQL(query, "postgresql")
 	}
 }

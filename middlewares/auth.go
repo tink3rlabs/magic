@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware/v2"
@@ -132,6 +133,7 @@ func (c *customClaims) Validate(ctx context.Context) error {
 type validatedClaims struct {
 	Subject      string
 	CustomClaims *customClaims
+	ClaimsConfig ClaimsConfig
 }
 
 // Core Middleware
@@ -200,6 +202,162 @@ func EnsureValidToken(cfg EnsureValidTokenConfig) func(http.Handler) http.Handle
 	}
 }
 
+// ProviderConfig holds the configuration for a single JWT provider
+type ProviderConfig struct {
+	IssuerURL        string
+	Audience         []string
+	AllowedClockSkew time.Duration
+	// ClaimsConfig specifies the claim keys for this provider. If not set, DefaultClaimsConfig is used.
+	ClaimsConfig *ClaimsConfig
+}
+
+// EnsureValidTokenMultiProviderConfig holds the configuration for the multi-provider middleware
+type EnsureValidTokenMultiProviderConfig struct {
+	Enabled   bool
+	Providers []ProviderConfig
+}
+
+// EnsureValidTokenMultiProvider is a middleware that validates JWT tokens against multiple providers
+// It tries each provider in sequence until one succeeds, or returns unauthorized if all fail.
+// This is useful when you need to accept tokens from multiple OIDC providers (e.g., Auth0 and another provider).
+//
+// Example usage:
+//
+//	cfg := EnsureValidTokenMultiProviderConfig{
+//	  Enabled: true,
+//	  Providers: []ProviderConfig{
+//	    {
+//	      IssuerURL: "https://your-tenant.auth0.com/",
+//	      Audience: []string{"https://api.example.com"},
+//	      AllowedClockSkew: 5 * time.Second,
+//	      // Uses DefaultClaimsConfig (org_id, email, roles, groups)
+//	    },
+//	    {
+//	      IssuerURL: "https://other-provider.com",
+//	      Audience: []string{"https://api.example.com"},
+//	      AllowedClockSkew: 5 * time.Second,
+//	      ClaimsConfig: &ClaimsConfig{
+//	        TenantIdKey: "tenant_id",  // Different claim key for this provider
+//	        EmailKey:    "email",
+//	        RolesKey:    "user_roles",
+//	        GroupsKey:   "user_groups",
+//	      },
+//	    },
+//	  },
+//	}
+//	router.Use(middlewares.EnsureValidTokenMultiProvider(cfg))
+func EnsureValidTokenMultiProvider(cfg EnsureValidTokenMultiProviderConfig) func(http.Handler) http.Handler {
+	if !cfg.Enabled {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})
+		}
+	}
+
+	if len(cfg.Providers) == 0 {
+		logger.Fatal("EnsureValidTokenMultiProvider requires at least one provider configuration")
+	}
+
+	// Create validators for each provider
+	type validatorWithConfig struct {
+		validator    *validator.Validator
+		claimsConfig ClaimsConfig
+	}
+	validators := make([]validatorWithConfig, 0, len(cfg.Providers))
+	for _, providerCfg := range cfg.Providers {
+		issuerURL, err := url.Parse(providerCfg.IssuerURL)
+		if err != nil {
+			logger.Fatal("failed to parse issuer URL", slog.String("issuer", providerCfg.IssuerURL), slog.Any("error", err.Error()))
+		}
+
+		provider := jwks.NewCachingProvider(issuerURL, 5*time.Minute)
+
+		jwtValidator, err := validator.New(
+			provider.KeyFunc,
+			validator.RS256,
+			issuerURL.String(),
+			providerCfg.Audience,
+			validator.WithCustomClaims(func() validator.CustomClaims { return &customClaims{} }),
+			validator.WithAllowedClockSkew(providerCfg.AllowedClockSkew),
+		)
+		if err != nil {
+			logger.Fatal("failed to set up JWT validator", slog.String("issuer", providerCfg.IssuerURL), slog.Any("error", err.Error()))
+		}
+
+		// Use provider-specific claims config or fall back to default
+		claimsConfig := DefaultClaimsConfig
+		if providerCfg.ClaimsConfig != nil {
+			claimsConfig = *providerCfg.ClaimsConfig
+		}
+
+		validators = append(validators, validatorWithConfig{
+			validator:    jwtValidator,
+			claimsConfig: claimsConfig,
+		})
+	}
+
+	errorHandler := func(w http.ResponseWriter, r *http.Request, err error) {
+		slog.Error("JWT validation failed against all providers", slog.Any("error", err.Error()))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"status":"Unauthorized","error":"authentication required"}`))
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Extract token from Authorization header
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				errorHandler(w, r, nil)
+				return
+			}
+
+			// Support "Bearer <token>" format
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+				errorHandler(w, r, nil)
+				return
+			}
+
+			token := parts[1]
+
+			// Try validating against each provider
+			var lastErr error
+			for i, vc := range validators {
+				ctx := r.Context()
+				claims, err := vc.validator.ValidateToken(ctx, token)
+				if err != nil {
+					slog.Debug("Token validation failed for provider",
+						slog.Int("provider_index", i),
+						slog.String("issuer", cfg.Providers[i].IssuerURL),
+						slog.Any("error", err.Error()))
+					lastErr = err
+					continue
+				}
+
+				// Token is valid for this provider
+				if vclaims, ok := claims.(*validator.ValidatedClaims); ok {
+					sub := vclaims.RegisteredClaims.Subject
+					cc, _ := vclaims.CustomClaims.(*customClaims)
+					validated := &validatedClaims{
+						Subject:      sub,
+						CustomClaims: cc,
+						ClaimsConfig: vc.claimsConfig,
+					}
+					ctx := context.WithValue(r.Context(), contextKeyValidatedClaims{}, validated)
+					r = r.WithContext(ctx)
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+
+			// All providers failed
+			errorHandler(w, r, lastErr)
+		})
+	}
+}
+
 // Middlewares to inject claims into context
 
 // TenantRequestContext injects the tenant ID from claims into the request context
@@ -208,7 +366,8 @@ func TenantRequestContext(next http.Handler) http.Handler {
 		claims := getValidatedClaims(r.Context())
 		tenantId := ""
 		if claims != nil && claims.CustomClaims != nil {
-			tenantId = getTenant(claims.CustomClaims, DefaultClaimsConfig)
+			claimsConfig := getClaimsConfig(claims.ClaimsConfig)
+			tenantId = getTenant(claims.CustomClaims, claimsConfig)
 		}
 		ctx := context.WithValue(r.Context(), DefaultContextKeys.Tenant, tenantId)
 		next.ServeHTTP(rw, r.WithContext(ctx))
@@ -225,10 +384,11 @@ func UserRequestContext(next http.Handler) http.Handler {
 		roles := []string{}
 		groups := []string{}
 		if claims != nil && claims.CustomClaims != nil {
+			claimsConfig := getClaimsConfig(claims.ClaimsConfig)
 			sub = claims.Subject
-			email = getEmail(claims.CustomClaims, DefaultClaimsConfig)
-			roles = getRoles(claims.CustomClaims, DefaultClaimsConfig)
-			groups = getGroups(claims.CustomClaims, DefaultClaimsConfig)
+			email = getEmail(claims.CustomClaims, claimsConfig)
+			roles = getRoles(claims.CustomClaims, claimsConfig)
+			groups = getGroups(claims.CustomClaims, claimsConfig)
 		}
 		ctx := context.WithValue(r.Context(), DefaultContextKeys.UserId, sub)
 		ctx = context.WithValue(ctx, DefaultContextKeys.UserEmail, email)
@@ -253,7 +413,8 @@ func RequireRole(roleName string) func(http.Handler) http.Handler {
 				_, _ = rw.Write([]byte(`{"status":"Unauthorized","error":"authentication required"}`))
 				return
 			}
-			roles := getRoles(claims.CustomClaims, DefaultClaimsConfig)
+			claimsConfig := getClaimsConfig(claims.ClaimsConfig)
+			roles := getRoles(claims.CustomClaims, claimsConfig)
 			for _, role := range roles {
 				if role == roleName {
 					next.ServeHTTP(rw, r)
@@ -382,4 +543,14 @@ func getEmail(c *customClaims, cfg ClaimsConfig) string {
 		}
 	}
 	return ""
+}
+
+// getClaimsConfig returns the provided claims config if it's been explicitly set (non-zero),
+// otherwise returns DefaultClaimsConfig
+func getClaimsConfig(cfg ClaimsConfig) ClaimsConfig {
+	// Check if any field is set (non-empty), indicating it was explicitly configured
+	if cfg.TenantIdKey != "" || cfg.EmailKey != "" || cfg.RolesKey != "" || cfg.GroupsKey != "" {
+		return cfg
+	}
+	return DefaultClaimsConfig
 }

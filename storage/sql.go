@@ -18,8 +18,8 @@ import (
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 
+	serviceErrors "github.com/tink3rlabs/magic/errors"
 	slogger "github.com/tink3rlabs/magic/logger"
-
 	"github.com/tink3rlabs/magic/storage/search/lucene"
 )
 
@@ -270,15 +270,20 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 	destType := reflect.TypeOf(dest).Elem().Elem()
 	model := reflect.New(destType).Elem().Interface()
 
-	parser, err := lucene.NewParserFromType(model)
+	parser, err := lucene.NewParser(model)
 	if err != nil {
 		slog.Error("Parser creation failed", "error", err)
 		return "", err
 	}
 
-	whereClause, queryParams, err := parser.ParseToSQL(query)
+	// Pass the SQL provider to generate provider-specific SQL syntax
+	whereClause, queryParams, err := parser.ParseToSQL(query, string(s.provider))
 	if err != nil {
 		slog.Error("Filter parsing failed", "error", err)
+		// Wrap InvalidFieldError as BadRequest for proper HTTP 400 response
+		if _, ok := err.(*lucene.InvalidFieldError); ok {
+			return "", &serviceErrors.BadRequest{Message: err.Error()}
+		}
 		return "", err
 	}
 

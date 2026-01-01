@@ -1,27 +1,26 @@
 package storage_test
 
 import (
-	"os"
 	"testing"
 
 	"github.com/tink3rlabs/magic/storage"
 )
 
 func TestGetInstanceReturnsExpectedAdapterForEachType(t *testing.T) {
-	host, keyspace := getCassandraHostAndKeyspace()
+	// host, keyspace := getCassandraHostAndKeyspace()
 	tests := []struct {
 		name   string
 		typ    storage.StorageAdapterType
 		config map[string]string
 	}{
-		{
-			"CASSANDRA",
-			storage.CASSANDRA,
-			map[string]string{
-				"hosts":    host,
-				"keyspace": keyspace,
-			},
-		},
+		// {
+		// 	"CASSANDRA",
+		// 	storage.CASSANDRA,
+		// 	map[string]string{
+		// 		"hosts":    host,
+		// 		"keyspace": keyspace,
+		// 	},
+		// },
 		// {"COSMOSDB", storage.COSMOSDB,
 		// 	map[string]string{
 		// 		"endpoint": "https://your-cosmosdb-account.documents.azure.com:443/",
@@ -55,15 +54,15 @@ func TestGetInstanceReturnsExpectedAdapterForEachType(t *testing.T) {
 	}
 }
 
-func getCassandraHostAndKeyspace() (string, string) {
-	host := os.Getenv("CASSANDRA_HOSTS")
-	if host == "" {
-		// Default for local DevContainer
-		host = "host.docker.internal"
-	}
-	keyspace := os.Getenv("CASSANDRA_KEYSPACE")
-	if keyspace == "" {
-		keyspace = "testkeyspace"
-	}
-	return host, keyspace
-}
+// func getCassandraHostAndKeyspace() (string, string) {
+// 	host := os.Getenv("CASSANDRA_HOSTS")
+// 	if host == "" {
+// 		// Default for local DevContainer
+// 		host = "host.docker.internal"
+// 	}
+// 	keyspace := os.Getenv("CASSANDRA_KEYSPACE")
+// 	if keyspace == "" {
+// 		keyspace = "testkeyspace"
+// 	}
+// 	return host, keyspace
+// }

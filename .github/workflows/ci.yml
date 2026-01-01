@@ -60,17 +60,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 10
-    services:
-      cassandra:
-        image: cassandra:5 # Use a specific version if needed
-        ports:
-          - 9042:9042
-        options: >-
-          --hostname cassandra
-          --health-cmd "cqlsh --debug -e 'DESCRIBE KEYSPACES' || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 7
+    # services:
+    #   cassandra:
+    #     image: cassandra:5 # Use a specific version if needed
+    #     ports:
+    #       - 9042:9042
+    #     options: >-
+    #       --hostname cassandra
+    #       --health-cmd "cqlsh --debug -e 'DESCRIBE KEYSPACES' || exit 1"
+    #       --health-interval 10s
+    #       --health-timeout 5s
+    #       --health-retries 7
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,7 +81,7 @@ jobs:
           cache: true
       - name: Run tests
         run: go test -v -cover ./...
-        env:
-          CASSANDRA_HOSTS: "localhost"
-          CASSANDRA_KEYSPACE: "testkeyspace"
+        # env:
+        #   CASSANDRA_HOSTS: "localhost"
+        #   CASSANDRA_KEYSPACE: "testkeyspace"
 

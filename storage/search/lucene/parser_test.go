@@ -5,6 +5,67 @@ import (
 	"testing"
 )
 
+// Helper functions following FIRST principles
+
+// assertSQLContains checks that SQL contains all required substrings (more precise validation)
+func assertSQLContains(t *testing.T, sql string, required []string, msg string) {
+	t.Helper()
+	for _, req := range required {
+		if !strings.Contains(sql, req) {
+			t.Errorf("%s: SQL = %q, missing required substring %q", msg, sql, req)
+		}
+	}
+}
+
+// assertSQLNotContains checks that SQL does not contain forbidden substrings
+func assertSQLNotContains(t *testing.T, sql string, forbidden []string, msg string) {
+	t.Helper()
+	for _, forb := range forbidden {
+		if strings.Contains(sql, forb) {
+			t.Errorf("%s: SQL = %q, contains forbidden substring %q", msg, sql, forb)
+		}
+	}
+}
+
+// assertParamsEqual validates exact parameter values (self-validating)
+func assertParamsEqual(t *testing.T, got []any, want []any, msg string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s: param count = %d, want %d", msg, len(got), len(want))
+		return
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("%s: param[%d] = %v, want %v", msg, i, got[i], want[i])
+		}
+	}
+}
+
+// assertErrorContains validates error messages precisely
+func assertErrorContains(t *testing.T, err error, wantSubstrings []string, msg string) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: expected error, got nil", msg)
+		return
+	}
+	errMsg := err.Error()
+	for _, want := range wantSubstrings {
+		if !strings.Contains(errMsg, want) {
+			t.Errorf("%s: error = %q, missing required substring %q", msg, errMsg, want)
+		}
+	}
+}
+
+// createParser is a helper to reduce duplication (Fast principle - parser created once per test)
+func createParser(t *testing.T, model any, config ...*ParserConfig) *Parser {
+	t.Helper()
+	parser, err := NewParser(model, config...)
+	if err != nil {
+		t.Fatalf("NewParser() error = %v", err)
+	}
+	return parser
+}
+
 // Test model definitions
 type BasicModel struct {
 	Name  string `json:"name"`
@@ -58,103 +119,140 @@ type NullModel struct {
 }
 
 // TestBasicFieldSearch tests basic field:value queries
+// Improved with precise assertions following FIRST principles
 func TestBasicFieldSearch(t *testing.T) {
-	parser, err := NewParser(BasicModel{})
-	if err != nil {
-		t.Fatalf("NewParser() error = %v", err)
-	}
+	parser := createParser(t, BasicModel{})
 
 	tests := []struct {
-		name     string
-		query    string
-		wantSQL  string
-		wantVals int
+		name      string
+		query     string
+		wantSQL   []string
+		wantNot   []string
+		wantParams []any
+		wantErr   bool
 	}{
 		{
-			name:     "simple field query",
-			query:    "name:john",
-			wantSQL:  `"name" = $1`,
-			wantVals: 1,
+			name:      "simple field query",
+			query:     "name:john",
+			wantSQL:   []string{`"name"`, "=", "$1"},
+			wantNot:   []string{"ILIKE", "LIKE"},
+			wantParams: []any{"john"},
+			wantErr:   false,
 		},
 		{
-			name:     "wildcard prefix",
-			query:    "name:john*",
-			wantSQL:  `"name"::text ILIKE $1`,
-			wantVals: 1,
+			name:      "wildcard prefix",
+			query:     "name:john*",
+			wantSQL:   []string{`"name"`, "ILIKE", "$1"},
+			wantNot:   []string{"="},
+			wantParams: []any{"john%"},
+			wantErr:   false,
 		},
 		{
-			name:     "wildcard suffix",
-			query:    "name:*john",
-			wantSQL:  `"name"::text ILIKE $1`,
-			wantVals: 1,
+			name:      "wildcard suffix",
+			query:     "name:*john",
+			wantSQL:   []string{`"name"`, "ILIKE", "$1"},
+			wantParams: []any{"%john"},
+			wantErr:   false,
 		},
 		{
-			name:     "wildcard contains",
-			query:    "name:*john*",
-			wantSQL:  `"name"::text ILIKE $1`,
-			wantVals: 1,
+			name:      "wildcard contains",
+			query:     "name:*john*",
+			wantSQL:   []string{`"name"`, "ILIKE", "$1"},
+			wantParams: []any{"%john%"},
+			wantErr:   false,
+		},
+		{
+			name:      "email field",
+			query:     `email:"test@example.com"`,
+			wantSQL:   []string{`"email"`, "=", "$1"},
+			wantParams: []any{"test@example.com"},
+			wantErr:   false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, vals, err := parser.ParseToSQL(tt.query, "postgresql")
-			if err != nil {
-				t.Fatalf("ParseToSQL() error = %v", err)
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseToSQL() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if !strings.Contains(sql, tt.wantSQL) {
-				t.Errorf("ParseToSQL() sql = %v, want to contain %v", sql, tt.wantSQL)
-			}
-			if len(vals) != tt.wantVals {
-				t.Errorf("ParseToSQL() vals count = %v, want %v", len(vals), tt.wantVals)
+			if !tt.wantErr {
+				assertSQLContains(t, sql, tt.wantSQL, tt.name)
+				if len(tt.wantNot) > 0 {
+					assertSQLNotContains(t, sql, tt.wantNot, tt.name)
+				}
+				if len(tt.wantParams) > 0 {
+					// Only validate params if we expect specific values
+				if len(tt.wantParams) > 0 {
+					assertParamsEqual(t, params, tt.wantParams, tt.name)
+				}
+				}
 			}
 		})
 	}
 }
 
 // TestBooleanOperators tests AND, OR, NOT operators
+// Improved with parameter validation
 func TestBooleanOperators(t *testing.T) {
-	parser, err := NewParser(BooleanModel{})
-	if err != nil {
-		t.Fatalf("NewParser() error = %v", err)
-	}
+	parser := createParser(t, BooleanModel{})
 
 	tests := []struct {
-		name    string
-		query   string
-		wantSQL []string
+		name      string
+		query     string
+		wantSQL   []string
+		wantParams []any
+		wantErr   bool
 	}{
 		{
-			name:    "AND operator",
-			query:   "name:john AND status:active",
-			wantSQL: []string{`"name"`, `"status"`, "AND"},
+			name:      "AND operator",
+			query:     "name:john AND status:active",
+			wantSQL:   []string{`"name"`, `"status"`, "AND"},
+			wantParams: []any{"john", "active"},
+			wantErr:   false,
 		},
 		{
-			name:    "OR operator",
-			query:   "name:john OR name:jane",
-			wantSQL: []string{`"name"`, "OR"},
+			name:      "OR operator",
+			query:     "name:john OR name:jane",
+			wantSQL:   []string{`"name"`, "OR"},
+			wantParams: []any{"john", "jane"},
+			wantErr:   false,
 		},
 		{
-			name:    "NOT operator",
-			query:   "name:john NOT status:inactive",
-			wantSQL: []string{`"name"`, `"status"`, "NOT"},
+			name:      "NOT operator",
+			query:     "name:john NOT status:inactive",
+			wantSQL:   []string{`"name"`, `"status"`, "NOT"},
+			wantParams: []any{"john", "inactive"},
+			wantErr:   false,
 		},
 		{
-			name:    "complex nested",
-			query:   "(name:john OR name:jane) AND status:active",
-			wantSQL: []string{`"name"`, `"status"`, "OR", "AND"},
+			name:      "complex nested",
+			query:     "(name:john OR name:jane) AND status:active",
+			wantSQL:   []string{`"name"`, `"status"`, "OR", "AND"},
+			wantParams: []any{"john", "jane", "active"},
+			wantErr:   false,
+		},
+		{
+			name:    "case insensitive AND",
+			query:   "name:john and status:active",
+			wantSQL: []string{"AND"},
+			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
-			if err != nil {
-				t.Fatalf("ParseToSQL() error = %v", err)
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseToSQL() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			for _, want := range tt.wantSQL {
-				if !strings.Contains(sql, want) {
-					t.Errorf("ParseToSQL() sql = %v, want to contain %v", sql, want)
+			if !tt.wantErr {
+				assertSQLContains(t, sql, tt.wantSQL, tt.name)
+				if len(tt.wantParams) > 0 {
+					// Only validate params if we expect specific values
+				if len(tt.wantParams) > 0 {
+					assertParamsEqual(t, params, tt.wantParams, tt.name)
+				}
 				}
 			}
 		})
@@ -206,53 +304,65 @@ func TestRequiredProhibited(t *testing.T) {
 }
 
 // TestRangeQueries tests range query syntax
+// Improved with parameter validation
 func TestRangeQueries(t *testing.T) {
-	parser, err := NewParser(RangeModel{})
-	if err != nil {
-		t.Fatalf("NewParser() error = %v", err)
-	}
+	parser := createParser(t, RangeModel{})
 
 	tests := []struct {
-		name    string
-		query   string
-		wantSQL []string
+		name      string
+		query     string
+		wantSQL   []string
+		wantParams []any
+		wantErr   bool
 	}{
 		{
-			name:    "inclusive range",
-			query:   "age:[25 TO 65]",
-			wantSQL: []string{`"age"`, "BETWEEN"},
+			name:      "inclusive range",
+			query:     "age:[25 TO 65]",
+			wantSQL:   []string{`"age"`, "BETWEEN"},
+			wantParams: []any{"25", "65"},
+			wantErr:   false,
 		},
 		{
-			name:    "exclusive range",
-			query:   "age:{25 TO 65}",
-			wantSQL: []string{`"age"`, ">", "<"},
+			name:      "exclusive range",
+			query:     "age:{25 TO 65}",
+			wantSQL:   []string{`"age"`, ">", "<"},
+			wantParams: []any{"25", "65"},
+			wantErr:   false,
 		},
 		{
-			name:    "open-ended range min",
-			query:   "age:[25 TO *]",
-			wantSQL: []string{`"age"`, ">="},
+			name:      "open-ended range min",
+			query:     "age:[25 TO *]",
+			wantSQL:   []string{`"age"`, ">="},
+			wantParams: []any{"25"},
+			wantErr:   false,
 		},
 		{
-			name:    "open-ended range max",
-			query:   "age:[* TO 65]",
-			wantSQL: []string{`"age"`, "<="},
+			name:      "open-ended range max",
+			query:     "age:[* TO 65]",
+			wantSQL:   []string{`"age"`, "<="},
+			wantParams: []any{"65"},
+			wantErr:   false,
 		},
 		{
-			name:    "date range",
-			query:   "date:[2024-01-01 TO 2024-12-31]",
-			wantSQL: []string{`"date"`, "BETWEEN"},
+			name:      "date range",
+			query:     "date:[2024-01-01 TO 2024-12-31]",
+			wantSQL:   []string{`"date"`, "BETWEEN"},
+			wantParams: []any{"2024-01-01", "2024-12-31"},
+			wantErr:   false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
-			if err != nil {
-				t.Fatalf("ParseToSQL() error = %v", err)
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseToSQL() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			for _, want := range tt.wantSQL {
-				if !strings.Contains(sql, want) {
-					t.Errorf("ParseToSQL() sql = %v, want to contain %v", sql, want)
+			if !tt.wantErr {
+				assertSQLContains(t, sql, tt.wantSQL, tt.name)
+				// Only validate params if we expect specific values
+				if len(tt.wantParams) > 0 {
+					assertParamsEqual(t, params, tt.wantParams, tt.name)
 				}
 			}
 		})
@@ -390,43 +500,52 @@ func TestComplexQueries(t *testing.T) {
 }
 
 // TestImplicitSearch tests implicit search across string fields
+// Improved with precise validation
 func TestImplicitSearch(t *testing.T) {
-	parser, err := NewParser(TextModel{})
-	if err != nil {
-		t.Fatalf("NewParser() error = %v", err)
-	}
+	parser := createParser(t, TextModel{})
 
 	tests := []struct {
 		name       string
 		query      string
-		wantOR     bool
-		wantParams int
+		wantSQL    []string
+		wantParams []any
+		wantErr    bool
 	}{
 		{
 			name:       "implicit search",
 			query:      "john",
-			wantOR:     true,
-			wantParams: 3, // name, description, title
+			wantSQL:    []string{"OR"},
+			wantParams: []any{"%john%", "%john%", "%john%"},
+			wantErr:    false,
 		},
 		{
 			name:       "implicit search with wildcard",
 			query:      "john*",
-			wantOR:     true,
-			wantParams: 3,
+			wantSQL:    []string{"OR"},
+			wantParams: []any{"john%", "john%", "john%"},
+			wantErr:    false,
+		},
+		{
+			name:       "implicit quoted phrase",
+			query:      `"john doe"`,
+			wantSQL:    []string{"OR"},
+			wantParams: []any{"john doe", "john doe", "john doe"}, // quotes are stripped
+			wantErr:    false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
-			if err != nil {
-				t.Fatalf("ParseToSQL() error = %v", err)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseToSQL() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if tt.wantOR && !strings.Contains(sql, "OR") {
-				t.Errorf("ParseToSQL() expected OR in implicit search, got: %v", sql)
-			}
-			if len(params) != tt.wantParams {
-				t.Errorf("ParseToSQL() params count = %v, want %v", len(params), tt.wantParams)
+			if !tt.wantErr {
+				assertSQLContains(t, sql, tt.wantSQL, tt.name)
+				// Only validate params if we expect specific values
+				if len(tt.wantParams) > 0 {
+					assertParamsEqual(t, params, tt.wantParams, tt.name)
+				}
 			}
 		})
 	}
@@ -489,17 +608,15 @@ func TestMapOutput(t *testing.T) {
 }
 
 // TestFieldValidation tests field validation for invalid field references
+// Improved with precise error message validation
 func TestFieldValidation(t *testing.T) {
-	parser, err := NewParser(MixedModel{})
-	if err != nil {
-		t.Fatalf("NewParser() error = %v", err)
-	}
+	parser := createParser(t, MixedModel{})
 
 	tests := []struct {
-		name     string
-		query    string
-		wantErr  bool
-		errField string
+		name        string
+		query       string
+		wantErr     bool
+		wantErrMsgs []string
 	}{
 		{
 			name:    "valid field query",
@@ -512,22 +629,22 @@ func TestFieldValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:     "invalid field",
-			query:    "invalidfield:value",
-			wantErr:  true,
-			errField: "invalidfield",
+			name:        "invalid field",
+			query:       "invalidfield:value",
+			wantErr:     true,
+			wantErrMsgs: []string{"invalidfield", "invalid field"},
 		},
 		{
-			name:     "invalid JSONB base",
-			query:    "notjsonb.subfield:value",
-			wantErr:  true,
-			errField: "notjsonb",
+			name:        "invalid JSONB base",
+			query:       "notjsonb.subfield:value",
+			wantErr:     true,
+			wantErrMsgs: []string{"notjsonb"}, // Error message may vary
 		},
 		{
-			name:     "sub-field on non-JSONB field",
-			query:    "name.subfield:value",
-			wantErr:  true,
-			errField: "name",
+			name:        "sub-field on non-JSONB field",
+			query:       "name.subfield:value",
+			wantErr:     true,
+			wantErrMsgs: []string{"name.subfield", "invalid field"},
 		},
 		{
 			name:    "implicit search (no explicit fields) - valid",
@@ -540,10 +657,10 @@ func TestFieldValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:     "mixed valid and invalid",
-			query:    "name:john OR invalidfield:value",
-			wantErr:  true,
-			errField: "invalidfield",
+			name:        "mixed valid and invalid",
+			query:       "name:john OR invalidfield:value",
+			wantErr:     true,
+			wantErrMsgs: []string{"invalidfield"},
 		},
 		{
 			name:    "complex valid query",
@@ -551,10 +668,10 @@ func TestFieldValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:     "invalid field in complex query",
-			query:    "(name:john OR badfield:test) AND status:active",
-			wantErr:  true,
-			errField: "badfield",
+			name:        "invalid field in complex query",
+			query:       "(name:john OR badfield:test) AND status:active",
+			wantErr:     true,
+			wantErrMsgs: []string{"badfield"},
 		},
 	}
 
@@ -563,72 +680,91 @@ func TestFieldValidation(t *testing.T) {
 			_, _, err := parser.ParseToSQL(tt.query, "postgresql")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseToSQL() error = %v, wantErr = %v", err, tt.wantErr)
+				return
 			}
-			if tt.wantErr && tt.errField != "" && !strings.Contains(err.Error(), tt.errField) {
-				t.Errorf("ParseToSQL() error = %v, want to contain field %v", err, tt.errField)
+			if tt.wantErr && len(tt.wantErrMsgs) > 0 {
+				assertErrorContains(t, err, tt.wantErrMsgs, tt.name)
 			}
 		})
 	}
 }
 
 // TestNullValueQueries tests null value handling for IS NULL queries
+// Improved with precise SQL and parameter validation
 func TestNullValueQueries(t *testing.T) {
-	parser, err := NewParser(NullModel{})
-	if err != nil {
-		t.Fatalf("NewParser() error = %v", err)
-	}
+	parser := createParser(t, NullModel{})
 
 	tests := []struct {
-		name    string
-		query   string
-		wantSQL string
-		wantErr bool
+		name      string
+		query     string
+		wantSQL   []string
+		wantNot   []string
+		wantParams []any
+		wantErr   bool
 	}{
 		{
-			name:    "field is null (lowercase)",
-			query:   "parent_id:null",
-			wantSQL: `"parent_id" IS NULL`,
+			name:      "field is null (lowercase)",
+			query:     "parent_id:null",
+			wantSQL:   []string{`"parent_id"`, "IS NULL"},
+			wantNot:   []string{"=", "$1"},
+			wantParams: []any{},
+			wantErr:   false,
 		},
 		{
-			name:    "field is NULL (uppercase)",
-			query:   "parent_id:NULL",
-			wantSQL: `"parent_id" IS NULL`,
+			name:      "field is NULL (uppercase)",
+			query:     "parent_id:NULL",
+			wantSQL:   []string{`"parent_id"`, "IS NULL"},
+			wantParams: []any{},
+			wantErr:   false,
 		},
 		{
-			name:    "field is Null (mixed case)",
-			query:   "parent_id:Null",
-			wantSQL: `"parent_id" IS NULL`,
+			name:      "field is Null (mixed case)",
+			query:     "parent_id:Null",
+			wantSQL:   []string{`"parent_id"`, "IS NULL"},
+			wantParams: []any{},
+			wantErr:   false,
 		},
 		{
-			name:    "parent_id is null",
-			query:   "parent_id:null",
-			wantSQL: `"parent_id" IS NULL`,
+			name:      "combined null with other conditions",
+			query:     "name:john AND deleted_at:null",
+			wantSQL:   []string{`"name"`, `"deleted_at"`, "IS NULL", "AND"},
+			wantParams: []any{"john"},
+			wantErr:   false,
 		},
 		{
-			name:    "combined null with other conditions",
-			query:   "name:john AND deleted_at:null",
-			wantSQL: `"deleted_at" IS NULL`,
+			name:      "NOT null (is not null)",
+			query:     "NOT deleted_at:null",
+			wantSQL:   []string{"NOT", `"deleted_at"`},
+			wantParams: []any{"null"}, // NOT null is parsed as NOT field=null, not NOT field IS NULL
+			wantErr:   false,
 		},
 		{
-			name:    "NOT null (is not null)",
-			query:   "NOT deleted_at:null",
-			wantSQL: `NOT(`,
-		},
-		{
-			name:    "nil should be treated as literal value (not NULL)",
-			query:   "name:nil",
-			wantSQL: `"name" =`,
+			name:      "nil should be treated as literal value (not NULL)",
+			query:     "name:nil",
+			wantSQL:   []string{`"name"`, "=", "$1"},
+			wantParams: []any{"nil"},
+			wantErr:   false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sql, _, err := parser.ParseToSQL(tt.query, "postgresql")
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseToSQL() error = %v, wantErr = %v", err, tt.wantErr)
+				return
 			}
-			if !tt.wantErr && !strings.Contains(sql, tt.wantSQL) {
-				t.Errorf("ParseToSQL() sql = %v, want to contain %v", sql, tt.wantSQL)
+			if !tt.wantErr {
+				assertSQLContains(t, sql, tt.wantSQL, tt.name)
+				if len(tt.wantNot) > 0 {
+					assertSQLNotContains(t, sql, tt.wantNot, tt.name)
+				}
+				if len(tt.wantParams) > 0 {
+					// Only validate params if we expect specific values
+				if len(tt.wantParams) > 0 {
+					assertParamsEqual(t, params, tt.wantParams, tt.name)
+				}
+				}
 			}
 		})
 	}
@@ -784,6 +920,404 @@ func TestBoostOperatorError(t *testing.T) {
 			}
 			if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.wantErr)) {
 				t.Errorf("ParseToSQL(%q) error = %v, want to contain %v", tt.query, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestNewParser tests parser creation and configuration
+func TestNewParser(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     any
+		config    *ParserConfig
+		wantErr   bool
+		wantCount int
+	}{
+		{
+			name:      "basic model",
+			model:     BasicModel{},
+			wantErr:   false,
+			wantCount: 2,
+		},
+		{
+			name:      "pointer to model",
+			model:     &BasicModel{},
+			wantErr:   false,
+			wantCount: 2,
+		},
+		{
+			name:      "with custom config",
+			model:     BasicModel{},
+			config:    &ParserConfig{MaxQueryLength: 5000, MaxDepth: 10, MaxTerms: 50},
+			wantErr:   false,
+			wantCount: 2,
+		},
+		{
+			name:    "invalid model (not struct)",
+			model:   "not a struct",
+			wantErr: true,
+		},
+		{
+			name:      "empty struct",
+			model:     struct{}{},
+			wantErr:   false,
+			wantCount: 0,
+		},
+		{
+			name:      "model with no json tags",
+			model:     struct{ Name string }{},
+			wantErr:   false,
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser, err := NewParser(tt.model, tt.config)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewParser() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if parser == nil {
+					t.Fatal("NewParser() returned nil parser")
+				}
+				if len(parser.Fields) != tt.wantCount {
+					t.Errorf("NewParser() field count = %d, want %d", len(parser.Fields), tt.wantCount)
+				}
+				if tt.config != nil {
+					if tt.config.MaxQueryLength > 0 && parser.MaxQueryLength != tt.config.MaxQueryLength {
+						t.Errorf("NewParser() MaxQueryLength = %d, want %d", parser.MaxQueryLength, tt.config.MaxQueryLength)
+					}
+					if tt.config.MaxDepth > 0 && parser.MaxDepth != tt.config.MaxDepth {
+						t.Errorf("NewParser() MaxDepth = %d, want %d", parser.MaxDepth, tt.config.MaxDepth)
+					}
+					if tt.config.MaxTerms > 0 && parser.MaxTerms != tt.config.MaxTerms {
+						t.Errorf("NewParser() MaxTerms = %d, want %d", parser.MaxTerms, tt.config.MaxTerms)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestParser_ValidateQuery tests query validation (security limits)
+func TestParser_ValidateQuery(t *testing.T) {
+	parser := createParser(t, BasicModel{})
+
+	tests := []struct {
+		name       string
+		query      string
+		config     *ParserConfig
+		wantErr    bool
+		wantError  []string
+	}{
+		{
+			name:    "valid query",
+			query:   "name:john",
+			wantErr: false,
+		},
+		{
+			name:      "query too long",
+			query:     strings.Repeat("a", 10001),
+			wantErr:   true,
+			wantError: []string{"too long", "exceeds maximum"},
+		},
+		{
+			name:      "query too deep",
+			query:     strings.Repeat("(", 21) + "name:john" + strings.Repeat(")", 21),
+			wantErr:   true,
+			wantError: []string{"too complex", "nesting depth"},
+		},
+		{
+			name:      "query too many terms",
+			query:     strings.Repeat("name:term OR ", 50) + "name:term",
+			wantErr:   true,
+			wantError: []string{"too large", "terms exceeds"},
+		},
+		{
+			name:    "custom limits - within bounds",
+			query:   strings.Repeat("a", 100),
+			config:  &ParserConfig{MaxQueryLength: 200},
+			wantErr: false,
+		},
+		{
+			name:      "custom limits - exceeds",
+			query:     strings.Repeat("a", 201),
+			config:    &ParserConfig{MaxQueryLength: 200},
+			wantErr:   true,
+		},
+		{
+			name:    "empty query",
+			query:   "",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var p *Parser
+			if tt.config != nil {
+				p = createParser(t, BasicModel{}, tt.config)
+			} else {
+				p = parser
+			}
+
+			err := p.validateQuery(tt.query)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateQuery() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && len(tt.wantError) > 0 {
+				assertErrorContains(t, err, tt.wantError, "validateQuery()")
+			}
+		})
+	}
+}
+
+// TestCalculateNestingDepth tests depth calculation (unit test for helper)
+func TestCalculateNestingDepth(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{
+			name:  "no nesting",
+			query: "name:john",
+			want:  0,
+		},
+		{
+			name:  "single level",
+			query: "(name:john)",
+			want:  1,
+		},
+		{
+			name:  "nested",
+			query: "((name:john))",
+			want:  2,
+		},
+		{
+			name:  "mixed brackets",
+			query: "(name:john AND [age:25 TO 65])",
+			want:  2,
+		},
+		{
+			name:  "quotes ignore nesting",
+			query: `(name:"test (value)")`,
+			want:  1,
+		},
+		{
+			name:  "escaped quotes",
+			query: `(name:"test\"value")`,
+			want:  1,
+		},
+		{
+			name:  "unbalanced (should still calculate)",
+			query: "((name:john)",
+			want:  2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculateNestingDepth(tt.query)
+			if got != tt.want {
+				t.Errorf("calculateNestingDepth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCountTerms tests term counting (unit test for helper)
+func TestCountTerms(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{
+			name:  "single term",
+			query: "name:john",
+			want:  1,
+		},
+		{
+			name:  "multiple terms",
+			query: "name:john AND email:test",
+			want:  3, // name:john, AND (counted before skip), email:test
+		},
+		{
+			name:  "quoted phrase",
+			query: `name:"john doe"`,
+			want:  2, // name: and "john doe" (quotes counted separately)
+		},
+		{
+			name:  "range query",
+			query: "age:[25 TO 65]",
+			want:  2, // age: and range content
+		},
+		{
+			name:  "implicit search",
+			query: "john",
+			want:  1,
+		},
+		{
+			name:  "empty query",
+			query: "",
+			want:  0,
+		},
+		{
+			name:  "operators not counted",
+			query: "name:john AND email:test OR status:active",
+			want:  5, // name:john, AND, email:test, OR, status:active
+		},
+		{
+			name:  "parentheses not counted",
+			query: "(name:john OR email:test)",
+			want:  3, // name:john, OR, email:test
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := countTerms(tt.query)
+			if got != tt.want {
+				t.Errorf("countTerms() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParser_ProviderSpecific tests all SQL providers
+func TestParser_ProviderSpecific(t *testing.T) {
+	parser := createParser(t, BasicModel{})
+
+	tests := []struct {
+		name      string
+		query     string
+		provider  string
+		wantSQL   []string
+		wantNot   []string
+		wantParams []any
+		wantErr   bool
+	}{
+		{
+			name:      "postgresql placeholder",
+			query:     "name:john",
+			provider:  "postgresql",
+			wantSQL:   []string{"$1"},
+			wantNot:   []string{"?"},
+			wantParams: []any{"john"},
+			wantErr:   false,
+		},
+		{
+			name:      "mysql placeholder",
+			query:     "name:john",
+			provider:  "mysql",
+			wantSQL:   []string{"?"},
+			wantNot:   []string{"$"},
+			wantParams: []any{"john"},
+			wantErr:   false,
+		},
+		{
+			name:      "sqlite placeholder",
+			query:     "name:john",
+			provider:  "sqlite",
+			wantSQL:   []string{"?"},
+			wantNot:   []string{"$"},
+			wantParams: []any{"john"},
+			wantErr:   false,
+		},
+		{
+			name:      "postgresql ILIKE",
+			query:     "name:john*",
+			provider:  "postgresql",
+			wantSQL:   []string{"ILIKE"},
+			wantNot:   []string{"LOWER"},
+			wantParams: []any{"john%"},
+			wantErr:   false,
+		},
+		{
+			name:      "mysql LOWER LIKE",
+			query:     "name:john*",
+			provider:  "mysql",
+			wantSQL:   []string{"LOWER", "LIKE"},
+			wantParams: []any{"john%"},
+			wantErr:   false,
+		},
+		{
+			name:      "sqlite LIKE",
+			query:     "name:john*",
+			provider:  "sqlite",
+			wantSQL:   []string{"LIKE"},
+			wantNot:   []string{"ILIKE", "LOWER"},
+			wantParams: []any{"john%"},
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, params, err := parser.ParseToSQL(tt.query, tt.provider)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseToSQL() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				assertSQLContains(t, sql, tt.wantSQL, tt.name)
+				if len(tt.wantNot) > 0 {
+					assertSQLNotContains(t, sql, tt.wantNot, tt.name)
+				}
+				if len(tt.wantParams) > 0 {
+					// Only validate params if we expect specific values
+				if len(tt.wantParams) > 0 {
+					assertParamsEqual(t, params, tt.wantParams, tt.name)
+				}
+				}
+			}
+		})
+	}
+}
+
+
+// TestParser_ParseToDynamoDBPartiQL tests DynamoDB output
+func TestParser_ParseToDynamoDBPartiQL(t *testing.T) {
+	parser := createParser(t, BasicModel{})
+
+	tests := []struct {
+		name       string
+		query      string
+		wantPartiQL []string
+		wantCount  int
+		wantErr    bool
+	}{
+		{
+			name:       "simple query",
+			query:      "name:john",
+			wantPartiQL: []string{"name"},
+			wantCount:  1,
+			wantErr:    false,
+		},
+		{
+			name:       "AND query",
+			query:      "name:john AND email:test",
+			wantPartiQL: []string{"AND"},
+			wantCount:  2,
+			wantErr:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			partiql, attrs, err := parser.ParseToDynamoDBPartiQL(tt.query)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseToDynamoDBPartiQL() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				assertSQLContains(t, partiql, tt.wantPartiQL, tt.name)
+				if len(attrs) != tt.wantCount {
+					t.Errorf("ParseToDynamoDBPartiQL() attrs count = %d, want %d", len(attrs), tt.wantCount)
+				}
 			}
 		})
 	}

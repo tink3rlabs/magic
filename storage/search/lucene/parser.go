@@ -75,10 +75,10 @@ func NewParser(model any, config ...*ParserConfig) (*Parser, error) {
 		return nil, err
 	}
 
-	// Build field map
-	fieldMap := make(map[string]FieldInfo, len(fields))
-	for _, f := range fields {
-		fieldMap[f.Name] = f
+	// Build field map and validate for duplicates
+	fieldMap, err := buildFieldMap(fields)
+	if err != nil {
+		return nil, err
 	}
 
 	// Apply config or use defaults
@@ -147,6 +147,19 @@ func extractFields(model any) ([]FieldInfo, error) {
 	return fields, nil
 }
 
+// buildFieldMap builds a field map from a slice of fields and validates for duplicates.
+// Returns an error if duplicate field names are found.
+func buildFieldMap(fields []FieldInfo) (map[string]FieldInfo, error) {
+	fieldMap := make(map[string]FieldInfo, len(fields))
+	for _, f := range fields {
+		if existing, exists := fieldMap[f.Name]; exists {
+			return nil, fmt.Errorf("duplicate field name '%s': already defined with type %v, cannot redefine with type %v", f.Name, existing.Type, f.Type)
+		}
+		fieldMap[f.Name] = f
+	}
+	return fieldMap, nil
+}
+
 // canUseNestedAccess checks if a field type supports nested access (field.subfield syntax).
 func canUseNestedAccess(t reflect.Type) bool {
 	// Return false for nil types
@@ -211,14 +224,13 @@ func (p *Parser) ParseToMap(query string) (map[string]any, error) {
 	return p.exprToMap(e), nil
 }
 
-// ParseToSQL parses a Lucene query and converts it to SQL with parameters for the specified provider.
-// Creates a SQL driver on-demand for rendering with provider-specific syntax.
-// Provider should be one of: "postgresql", "mysql", "sqlite"
-func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error) {
-	slog.Debug(fmt.Sprintf(`Parsing query to SQL: %s`, query))
+// parseQueryCommon performs common parsing steps shared by ParseToSQL and ParseToDynamoDBPartiQL.
+// Returns the parsed expression or an error.
+func (p *Parser) parseQueryCommon(query string, queryType string) (*expr.Expression, error) {
+	slog.Debug(fmt.Sprintf(`Parsing query to %s: %s`, queryType, query))
 
 	if err := p.validateQuery(query); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
 	// Expand implicit terms first (for validation of the full query)
@@ -226,17 +238,32 @@ func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error
 
 	// Validate all field references exist in the model
 	if err := p.ValidateFields(expandedQuery); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 
 	// Parse using the library
 	e, err := p.parseWithImplicitSearch(query)
 	if err != nil {
+		return nil, err
+	}
+
+	return e, nil
+}
+
+// ParseToSQL parses a Lucene query and converts it to SQL with parameters for the specified provider.
+// Creates a SQL driver on-demand for rendering with provider-specific syntax.
+// Provider should be one of: "postgresql", "mysql", "sqlite"
+func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error) {
+	e, err := p.parseQueryCommon(query, "SQL")
+	if err != nil {
 		return "", nil, err
 	}
 
 	// Create SQL driver on-demand for the specified provider and render
-	driver := NewSQLDriver(p.Fields, provider)
+	driver, err := NewSQLDriver(p.Fields, provider)
+	if err != nil {
+		return "", nil, err
+	}
 	sql, params, err := driver.RenderParam(e)
 	if err != nil {
 		return "", nil, err
@@ -248,28 +275,16 @@ func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error
 // ParseToDynamoDBPartiQL parses a Lucene query and converts it to DynamoDB PartiQL.
 // Creates a DynamoDB driver on-demand for rendering.
 func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.AttributeValue, error) {
-	slog.Debug(fmt.Sprintf(`Parsing query to DynamoDB PartiQL: %s`, query))
-
-	if err := p.validateQuery(query); err != nil {
-		return "", nil, err
-	}
-
-	// Expand implicit terms first (for validation of the full query)
-	expandedQuery := p.expandImplicitTerms(query)
-
-	// Validate all field references exist in the model
-	if err := p.ValidateFields(expandedQuery); err != nil {
-		return "", nil, err
-	}
-
-	// Parse using the library
-	e, err := p.parseWithImplicitSearch(query)
+	e, err := p.parseQueryCommon(query, "DynamoDB PartiQL")
 	if err != nil {
 		return "", nil, err
 	}
 
 	// Create DynamoDB driver on-demand and render
-	driver := NewDynamoDBDriver(p.Fields)
+	driver, err := NewDynamoDBDriver(p.Fields)
+	if err != nil {
+		return "", nil, err
+	}
 	partiql, attrs, err := driver.RenderPartiQL(e)
 	if err != nil {
 		return "", nil, err
@@ -412,11 +427,13 @@ func countTerms(query string) int {
 				currentTerm = false
 				if len(remaining) >= 3 && (remaining[0] == 'A' || remaining[0] == 'a') {
 					i += 3
-				} else if len(remaining) >= 3 && (remaining[0] == 'N' || remaining[0] == 'n') {
-					i += 3
-				} else {
-					i += 2
+					continue
 				}
+				if len(remaining) >= 3 && (remaining[0] == 'N' || remaining[0] == 'n') {
+					i += 3
+					continue
+				}
+				i += 2
 				continue
 			}
 		}
@@ -488,6 +505,15 @@ func (p *Parser) validateFieldName(fieldName string) error {
 		}
 
 		baseField := parts[0]
+		subField := parts[1]
+
+		// Check for whitespace in field names (security: prevents obfuscation, OWASP A03)
+		if strings.TrimSpace(baseField) != baseField {
+			return fmt.Errorf("invalid field format '%s': whitespace not allowed in field names", fieldName)
+		}
+		if strings.TrimSpace(subField) != subField {
+			return fmt.Errorf("invalid field format '%s': whitespace not allowed in field names (use 'field.subfield' not 'field. subfield')", fieldName)
+		}
 
 		// Check if base field exists
 		field, exists := p.fieldMap[baseField]
@@ -720,7 +746,8 @@ func (p *Parser) parseWithImplicitSearch(query string) (*expr.Expression, error)
 	implicitFields := p.getImplicitSearchFields()
 	if len(implicitFields) > 0 {
 		fallbackField = implicitFields[0].Name
-	} else if len(p.Fields) > 0 {
+	}
+	if fallbackField == "" && len(p.Fields) > 0 {
 		fallbackField = p.Fields[0].Name
 	}
 

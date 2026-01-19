@@ -15,10 +15,10 @@ type DynamoDBPartiQLDriver struct {
 	fields map[string]FieldInfo
 }
 
-func NewDynamoDBDriver(fields []FieldInfo) *DynamoDBPartiQLDriver {
-	fieldMap := make(map[string]FieldInfo)
-	for _, f := range fields {
-		fieldMap[f.Name] = f
+func NewDynamoDBDriver(fields []FieldInfo) (*DynamoDBPartiQLDriver, error) {
+	fieldMap, err := buildFieldMap(fields)
+	if err != nil {
+		return nil, err
 	}
 
 	fns := map[expr.Operator]driver.RenderFN{
@@ -46,7 +46,7 @@ func NewDynamoDBDriver(fields []FieldInfo) *DynamoDBPartiQLDriver {
 			RenderFNs: fns,
 		},
 		fields: fieldMap,
-	}
+	}, nil
 }
 
 // RenderPartiQL renders the expression to DynamoDB PartiQL with AttributeValue parameters.
@@ -66,29 +66,69 @@ func (d *DynamoDBPartiQLDriver) RenderPartiQL(e *expr.Expression) (string, []typ
 	return str, attrValues, nil
 }
 
+// escapePartiQLString escapes a string value for safe use in PartiQL string literals.
+// Escapes single quotes by doubling them (PartiQL standard).
+func escapePartiQLString(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// escapePartiQLIdentifier escapes a field name for safe use in PartiQL.
+// Validates that the identifier contains only safe characters (alphanumeric, underscore).
+// Returns error if identifier contains potentially dangerous characters.
+func escapePartiQLIdentifier(identifier string) (string, error) {
+	// Validate identifier contains only safe characters
+	for _, r := range identifier {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return "", fmt.Errorf("invalid identifier: contains unsafe character '%c'", r)
+		}
+	}
+	return identifier, nil
+}
+
+// unquotePartiQLString safely removes surrounding quotes from a PartiQL string literal.
+// Handles already-escaped quotes correctly.
+func unquotePartiQLString(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 // dynamoDBLike implements LIKE using DynamoDB's begins_with and contains functions.
 func dynamoDBLike(left, right string) (string, error) {
-	// Remove quotes from right side to analyze pattern
-	pattern := strings.Trim(right, "'")
+	// Validate and escape field name (left)
+	safeLeft, err := escapePartiQLIdentifier(left)
+	if err != nil {
+		return "", fmt.Errorf("invalid field name: %w", err)
+	}
 
-	// Replace wildcards for analysis
-	hasPrefix := strings.HasPrefix(pattern, "%")
-	hasSuffix := strings.HasSuffix(pattern, "%")
+	// Extract the raw value from the right side (remove quotes if present)
+	rawValue := unquotePartiQLString(right)
+	
+	// Analyze pattern for wildcards
+	hasPrefix := strings.HasPrefix(rawValue, "%")
+	hasSuffix := strings.HasSuffix(rawValue, "%")
 
 	if hasPrefix && hasSuffix {
 		// %value% -> contains(field, value)
-		value := strings.Trim(pattern, "%")
-		return fmt.Sprintf("contains(%s, '%s')", left, value), nil
-	} else if !hasPrefix && hasSuffix {
+		value := strings.Trim(rawValue, "%")
+		escapedValue := escapePartiQLString(value)
+		return fmt.Sprintf("contains(%s, '%s')", safeLeft, escapedValue), nil
+	}
+	if !hasPrefix && hasSuffix {
 		// value% -> begins_with(field, value)
-		value := strings.TrimSuffix(pattern, "%")
-		return fmt.Sprintf("begins_with(%s, '%s')", left, value), nil
-	} else if hasPrefix && !hasSuffix {
+		value := strings.TrimSuffix(rawValue, "%")
+		escapedValue := escapePartiQLString(value)
+		return fmt.Sprintf("begins_with(%s, '%s')", safeLeft, escapedValue), nil
+	}
+	if hasPrefix && !hasSuffix {
 		// %value -> contains(field, value) (DynamoDB doesn't have ends_with)
-		value := strings.TrimPrefix(pattern, "%")
-		return fmt.Sprintf("contains(%s, '%s')", left, value), nil
+		value := strings.TrimPrefix(rawValue, "%")
+		escapedValue := escapePartiQLString(value)
+		return fmt.Sprintf("contains(%s, '%s')", safeLeft, escapedValue), nil
 	}
 
-	// Exact match
-	return fmt.Sprintf("%s = %s", left, right), nil
+	// Exact match - escape the value and wrap in quotes
+	escapedValue := escapePartiQLString(rawValue)
+	return fmt.Sprintf("%s = '%s'", safeLeft, escapedValue), nil
 }

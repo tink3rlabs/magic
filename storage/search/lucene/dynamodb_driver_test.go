@@ -11,14 +11,16 @@ import (
 
 func TestNewDynamoDBDriver(t *testing.T) {
 	tests := []struct {
-		name   string
-		fields []FieldInfo
-		want   map[string]FieldInfo
+		name    string
+		fields  []FieldInfo
+		want    map[string]FieldInfo
+		wantErr bool
 	}{
 		{
-			name:   "empty fields",
-			fields: []FieldInfo{},
-			want:   map[string]FieldInfo{},
+			name:    "empty fields",
+			fields:  []FieldInfo{},
+			want:    map[string]FieldInfo{},
+			wantErr: false,
 		},
 		{
 			name: "single field",
@@ -28,6 +30,7 @@ func TestNewDynamoDBDriver(t *testing.T) {
 			want: map[string]FieldInfo{
 				"name": {Name: "name", Type: reflect.TypeOf("")},
 			},
+			wantErr: false,
 		},
 		{
 			name: "multiple fields",
@@ -41,22 +44,48 @@ func TestNewDynamoDBDriver(t *testing.T) {
 				"email": {Name: "email", Type: reflect.TypeOf("")},
 				"age":   {Name: "age", Type: reflect.TypeOf(0)},
 			},
+			wantErr: false,
 		},
 		{
-			name: "duplicate field names (last wins)",
+			name: "duplicate field names returns error",
 			fields: []FieldInfo{
 				{Name: "name", Type: reflect.TypeOf("")},
 				{Name: "name", Type: reflect.TypeOf(0)},
 			},
-			want: map[string]FieldInfo{
-				"name": {Name: "name", Type: reflect.TypeOf(0)},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "multiple duplicate field names",
+			fields: []FieldInfo{
+				{Name: "name", Type: reflect.TypeOf("")},
+				{Name: "email", Type: reflect.TypeOf("")},
+				{Name: "name", Type: reflect.TypeOf(0)},
 			},
+			want:    nil,
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewDynamoDBDriver(tt.fields)
+			driver, err := NewDynamoDBDriver(tt.fields)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewDynamoDBDriver() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("NewDynamoDBDriver() expected error but got nil")
+				}
+				if driver != nil {
+					t.Errorf("NewDynamoDBDriver() expected nil driver on error, got %v", driver)
+				}
+				if err != nil && !strings.Contains(err.Error(), "duplicate field name") {
+					t.Errorf("NewDynamoDBDriver() error message should contain 'duplicate field name', got: %v", err)
+				}
+				return
+			}
 			if driver == nil {
 				t.Fatalf("NewDynamoDBDriver() returned nil")
 			}
@@ -83,7 +112,10 @@ func TestDynamoDBDriver_RenderPartiQL(t *testing.T) {
 		{Name: "email", Type: reflect.TypeOf("")},
 		{Name: "age", Type: reflect.TypeOf(0)},
 	}
-	driver := NewDynamoDBDriver(fields)
+	driver, err := NewDynamoDBDriver(fields)
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver() error = %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -268,10 +300,10 @@ func TestDynamoDBLike(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "quoted value without quotes in pattern",
+			name:    "unquoted value (no quotes in pattern)",
 			left:    "name",
 			right:   "john",
-			want:    "name = john",
+			want:    "name = 'john'",
 			wantErr: false,
 		},
 		{
@@ -287,6 +319,69 @@ func TestDynamoDBLike(t *testing.T) {
 			right:   "'%%%'",
 			want:    "contains(name, '')",
 			wantErr: false,
+		},
+		{
+			name:    "value with single quote in exact match",
+			left:    "name",
+			right:   "'John's'",
+			want:    "name = 'John''s'",
+			wantErr: false,
+		},
+		{
+			name:    "value with single quote and wildcard prefix",
+			left:    "name",
+			right:   "'%test'value'",
+			want:    "contains(name, 'test''value')",
+			wantErr: false,
+		},
+		{
+			name:    "value with single quote and wildcard suffix",
+			left:    "name",
+			right:   "'test'value%'",
+			want:    "begins_with(name, 'test''value')",
+			wantErr: false,
+		},
+		{
+			name:    "value with single quote and wildcards both sides",
+			left:    "name",
+			right:   "'%test'value%'",
+			want:    "contains(name, 'test''value')",
+			wantErr: false,
+		},
+		{
+			name:    "value with multiple single quotes",
+			left:    "name",
+			right:   "'O'Brien'",
+			want:    "name = 'O''Brien'",
+			wantErr: false,
+		},
+		{
+			name:    "injection attempt: value with quote and OR (should be escaped)",
+			left:    "name",
+			right:   "'test') OR (1=1'",
+			want:    "name = 'test'') OR (1=1'",
+			wantErr: false,
+		},
+		{
+			name:      "invalid field name with special characters",
+			left:      "name; DROP TABLE users;--",
+			right:     "'test'",
+			want:      "",
+			wantErr:   true,
+		},
+		{
+			name:      "invalid field name with quotes",
+			left:      "name'",
+			right:     "'test'",
+			want:      "",
+			wantErr:   true,
+		},
+		{
+			name:      "invalid field name with spaces",
+			left:      "field name",
+			right:     "'test'",
+			want:      "",
+			wantErr:   true,
 		},
 	}
 
@@ -308,7 +403,10 @@ func TestDynamoDBDriver_EdgeCases(t *testing.T) {
 	fields := []FieldInfo{
 		{Name: "name", Type: reflect.TypeOf("")},
 	}
-	driver := NewDynamoDBDriver(fields)
+	driver, err := NewDynamoDBDriver(fields)
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver() error = %v", err)
+	}
 
 	tests := []struct {
 		name      string

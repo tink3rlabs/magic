@@ -16,12 +16,27 @@ type SQLDriver struct {
 	provider string               // SQL provider: "postgresql", "mysql", or "sqlite"
 }
 
+// validateProvider validates that the provider is one of the supported SQL providers.
+func validateProvider(provider string) error {
+	switch provider {
+	case "postgresql", "mysql", "sqlite":
+		return nil
+	default:
+		return fmt.Errorf("unsupported SQL provider: %s (supported: postgresql, mysql, sqlite)", provider)
+	}
+}
+
 // NewSQLDriver creates a new SQL driver for the specified provider.
 // Provider should be one of: "postgresql", "mysql", "sqlite"
-func NewSQLDriver(fields []FieldInfo, provider string) *SQLDriver {
-	fieldMap := make(map[string]FieldInfo)
-	for _, f := range fields {
-		fieldMap[f.Name] = f
+// Returns an error if duplicate field names are found or provider is invalid.
+func NewSQLDriver(fields []FieldInfo, provider string) (*SQLDriver, error) {
+	if err := validateProvider(provider); err != nil {
+		return nil, err
+	}
+
+	fieldMap, err := buildFieldMap(fields)
+	if err != nil {
+		return nil, err
 	}
 
 	// RenderFNs map - we handle most operators in renderParamInternal
@@ -52,7 +67,7 @@ func NewSQLDriver(fields []FieldInfo, provider string) *SQLDriver {
 		},
 		fields:   fieldMap,
 		provider: provider,
-	}
+	}, nil
 }
 
 // RenderParam renders the expression with provider-specific parameter placeholders.
@@ -231,23 +246,22 @@ func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
 			return "", nil, fmt.Errorf("%s operator requires a left operand", e.Op)
 		}
 
+		var leftStr string
+		var leftParams []any
+		var err error
+
 		if leftExpr, ok := e.Left.(*expr.Expression); ok {
-			leftStr, leftParams, err := s.renderParamInternal(leftExpr)
+			leftStr, leftParams, err = s.renderParamInternal(leftExpr)
 			if err != nil {
 				return "", nil, err
 			}
-
-			if e.Op == expr.Must {
-				return leftStr, leftParams, nil
-			}
-			return fmt.Sprintf("NOT (%s)", leftStr), leftParams, nil
-		}
-
-		leftStr, leftParams, err := s.serializeColumn(e.Left)
-		if err != nil {
-			leftStr, leftParams, err = s.serializeValue(e.Left)
+		} else {
+			leftStr, leftParams, err = s.serializeColumn(e.Left)
 			if err != nil {
-				return s.Base.RenderParam(e)
+				leftStr, leftParams, err = s.serializeValue(e.Left)
+				if err != nil {
+					return s.Base.RenderParam(e)
+				}
 			}
 		}
 
@@ -290,27 +304,24 @@ func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
 	}
 }
 
+// quoteColumnName quotes a column name if it's not already JSON syntax.
+func quoteColumnName(colStr string) string {
+	if isJSONSyntax(colStr) {
+		return colStr
+	}
+	return fmt.Sprintf(`"%s"`, colStr)
+}
+
 func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
 	switch v := in.(type) {
 	case expr.Column:
-		colStr := string(v)
-		if isJSONSyntax(colStr) {
-			return colStr, nil, nil
-		}
-		return fmt.Sprintf(`"%s"`, colStr), nil, nil
+		return quoteColumnName(string(v)), nil, nil
 	case string:
-		if isJSONSyntax(v) {
-			return v, nil, nil
-		}
-		return fmt.Sprintf(`"%s"`, v), nil, nil
+		return quoteColumnName(v), nil, nil
 	case *expr.Expression:
 		if v.Op == expr.Literal && v.Left != nil {
 			if col, ok := v.Left.(expr.Column); ok {
-				colStr := string(col)
-				if isJSONSyntax(colStr) {
-					return colStr, nil, nil
-				}
-				return fmt.Sprintf(`"%s"`, colStr), nil, nil
+				return quoteColumnName(string(col)), nil, nil
 			}
 		}
 		return s.renderParamInternal(v)
@@ -319,18 +330,24 @@ func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
 	}
 }
 
+// extractLiteralString extracts a string value from an expression for wildcard conversion.
+func extractLiteralString(v *expr.Expression) (string, bool) {
+	if v.Left == nil {
+		return "", false
+	}
+	if v.Op == expr.Literal || v.Op == expr.Wild {
+		return fmt.Sprintf("%v", v.Left), true
+	}
+	return "", false
+}
+
 // serializeValue converts Lucene wildcards (* and ?) to SQL wildcards (% and _).
 func (s *SQLDriver) serializeValue(in any) (string, []any, error) {
 	switch v := in.(type) {
 	case string:
 		return "?", []any{convertWildcards(v)}, nil
 	case *expr.Expression:
-		if v.Op == expr.Literal && v.Left != nil {
-			literalVal := fmt.Sprintf("%v", v.Left)
-			return "?", []any{convertWildcards(literalVal)}, nil
-		}
-		if v.Op == expr.Wild && v.Left != nil {
-			literalVal := fmt.Sprintf("%v", v.Left)
+		if literalVal, ok := extractLiteralString(v); ok {
 			return "?", []any{convertWildcards(literalVal)}, nil
 		}
 		return s.renderParamInternal(v)
@@ -374,26 +391,71 @@ func (s *SQLDriver) processJSONFields(e *expr.Expression) {
 	}
 }
 
+// validateSubFieldName validates that a subfield name contains only safe characters.
+// Subfield names should be alphanumeric with underscores and dots for nested paths.
+// This prevents injection attacks via JSON path manipulation.
+func validateSubFieldName(subField string) error {
+	if subField == "" {
+		return fmt.Errorf("subfield name cannot be empty")
+	}
+	
+	// Allow alphanumeric, underscore, and dot (for nested paths like "user.name")
+	// Reject any characters that could be used for injection (quotes, semicolons, etc.)
+	for _, r := range subField {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.') {
+			return fmt.Errorf("invalid subfield name '%s': contains unsafe character '%c'", subField, r)
+		}
+	}
+	return nil
+}
+
+// escapeJSONPathSegment escapes a JSON path segment for safe use in JSON path expressions.
+// For PostgreSQL: escapes single quotes in the key name (used in ->>'key' syntax)
+// For MySQL/SQLite: escapes special characters in JSON path (though validation should prevent most)
+func escapeJSONPathSegment(segment string) string {
+	// Replace single quote with escaped single quote (for PostgreSQL ->>'key' syntax)
+	result := strings.ReplaceAll(segment, "'", "''")
+	return result
+}
+
 // formatFieldName converts field.subfield to provider-specific JSON syntax.
+// Validates and escapes subfield names to prevent injection attacks.
 func (s *SQLDriver) formatFieldName(fieldName string) expr.Column {
 	parts := strings.SplitN(fieldName, ".", 2)
 	if len(parts) == 2 {
 		baseField := parts[0]
 		subField := parts[1]
 
+		// Validate subfield name for security (prevents injection)
+		if err := validateSubFieldName(subField); err != nil {
+			// If validation fails, return original field name (will be caught by field validation)
+			return expr.Column(fieldName)
+		}
+
 		if field, exists := s.fields[baseField]; exists && canUseNestedAccess(field.Type) {
+			// Escape subfield name for safe interpolation
+			// PostgreSQL uses ->>'key' syntax where key is in quotes, so we need to escape quotes
+			escapedSubField := escapeJSONPathSegment(subField)
+			
 			switch s.provider {
 			case "postgresql":
 				// PostgreSQL: JSONB operator ->>
-				return expr.Column(fmt.Sprintf("%s->>'%s'", baseField, subField))
+				// Key is in single quotes, so we escape single quotes
+				return expr.Column(fmt.Sprintf("%s->>'%s'", baseField, escapedSubField))
 
 			case "mysql":
 				// MySQL 5.7+: JSON_UNQUOTE(JSON_EXTRACT(column, '$.field'))
+				// Path is '$.field' - field name is not separately quoted, but validation ensures it's safe
 				return expr.Column(fmt.Sprintf("JSON_UNQUOTE(JSON_EXTRACT(%s, '$.%s'))", baseField, subField))
 
 			case "sqlite":
 				// SQLite: JSON_EXTRACT(column, '$.field')
+				// Path is '$.field' - field name is not separately quoted, but validation ensures it's safe
 				return expr.Column(fmt.Sprintf("JSON_EXTRACT(%s, '$.%s')", baseField, subField))
+
+			default:
+				// Should never happen due to validateProvider, but defensive programming
+				return expr.Column(fieldName)
 			}
 		}
 	}

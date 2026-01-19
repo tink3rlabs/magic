@@ -50,11 +50,64 @@ func TestNewSQLDriver(t *testing.T) {
 			provider: "postgresql",
 			wantErr:  false,
 		},
+		{
+			name: "duplicate field names returns error (postgresql)",
+			fields: []FieldInfo{
+				{Name: "name", Type: reflect.TypeOf("")},
+				{Name: "name", Type: reflect.TypeOf(0)},
+			},
+			provider: "postgresql",
+			wantErr:  true,
+		},
+		{
+			name: "duplicate field names returns error (mysql)",
+			fields: []FieldInfo{
+				{Name: "name", Type: reflect.TypeOf("")},
+				{Name: "name", Type: reflect.TypeOf(0)},
+			},
+			provider: "mysql",
+			wantErr:  true,
+		},
+		{
+			name: "duplicate field names returns error (sqlite)",
+			fields: []FieldInfo{
+				{Name: "name", Type: reflect.TypeOf("")},
+				{Name: "name", Type: reflect.TypeOf(0)},
+			},
+			provider: "sqlite",
+			wantErr:  true,
+		},
+		{
+			name: "multiple duplicate field names (postgresql)",
+			fields: []FieldInfo{
+				{Name: "name", Type: reflect.TypeOf("")},
+				{Name: "email", Type: reflect.TypeOf("")},
+				{Name: "name", Type: reflect.TypeOf(0)},
+			},
+			provider: "postgresql",
+			wantErr:  true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(tt.fields, tt.provider)
+			driver, err := NewSQLDriver(tt.fields, tt.provider)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NewSQLDriver() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("NewSQLDriver() expected error but got nil")
+				}
+				if driver != nil {
+					t.Errorf("NewSQLDriver() expected nil driver on error, got %v", driver)
+				}
+				if err != nil && !strings.Contains(err.Error(), "duplicate field name") {
+					t.Errorf("NewSQLDriver() error message should contain 'duplicate field name', got: %v", err)
+				}
+				return
+			}
 			if driver == nil {
 				t.Fatalf("NewSQLDriver() returned nil")
 			}
@@ -122,7 +175,10 @@ func TestSQLDriver_RenderParam(t *testing.T) {
 	for _, provider := range providers {
 		for _, tt := range tests {
 			t.Run(provider+"/"+tt.name, func(t *testing.T) {
-				driver := NewSQLDriver(fields, provider)
+				driver, err := NewSQLDriver(fields, provider)
+				if err != nil {
+					t.Fatalf("NewSQLDriver() error = %v", err)
+				}
 				sql, params, err := driver.RenderParam(tt.expr)
 				if (err != nil) != tt.wantErr {
 					t.Errorf("RenderParam() error = %v, wantErr %v", err, tt.wantErr)
@@ -240,7 +296,10 @@ func TestSQLDriver_RenderLikeOrWild(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			sql, params, err := driver.renderLikeOrWild(tt.expr)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("renderLikeOrWild() error = %v, wantErr %v", err, tt.wantErr)
@@ -345,7 +404,10 @@ func TestSQLDriver_RenderFuzzy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			sql, params, err := driver.renderFuzzy(tt.expr)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("renderFuzzy() error = %v, wantErr %v", err, tt.wantErr)
@@ -445,7 +507,10 @@ func TestSQLDriver_RenderComparison(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			var left expr.Column
 			if strings.Contains(tt.name, "age") || tt.op == expr.Greater || tt.op == expr.Less || tt.op == expr.GreaterEq || tt.op == expr.LessEq {
 				left = expr.Column("age")
@@ -560,7 +625,10 @@ func TestSQLDriver_RenderBinary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			e := &expr.Expression{
 				Op:    tt.op,
 				Left:  tt.left,
@@ -691,7 +759,10 @@ func TestSQLDriver_RenderRange(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			var e *expr.Expression
 			if tt.rangeExpr == nil {
 				e = &expr.Expression{
@@ -730,7 +801,10 @@ func TestSQLDriver_SerializeColumn(t *testing.T) {
 		{Name: "name", Type: reflect.TypeOf("")},
 		{Name: "metadata", Type: reflect.TypeOf(map[string]interface{}{})},
 	}
-	driver := NewSQLDriver(fields, "postgresql")
+	driver, err := NewSQLDriver(fields, "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver() error = %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -802,7 +876,10 @@ func TestSQLDriver_SerializeColumn(t *testing.T) {
 
 func TestSQLDriver_SerializeValue(t *testing.T) {
 	fields := []FieldInfo{{Name: "name", Type: reflect.TypeOf("")}}
-	driver := NewSQLDriver(fields, "postgresql")
+	driver, err := NewSQLDriver(fields, "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver() error = %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -924,7 +1001,10 @@ func TestSQLDriver_FormatFieldName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			got := driver.formatFieldName(tt.field)
 			if string(got) != tt.want {
 				t.Errorf("formatFieldName() = %v, want %v", got, tt.want)
@@ -1230,7 +1310,10 @@ func TestSQLDriver_ProcessJSONFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			driver.processJSONFields(tt.expr)
 			if tt.check != nil {
 				tt.check(t, tt.expr)
@@ -1243,7 +1326,10 @@ func TestSQLDriver_RenderParamInternal(t *testing.T) {
 	fields := []FieldInfo{
 		{Name: "name", Type: reflect.TypeOf("")},
 	}
-	driver := NewSQLDriver(fields, "postgresql")
+	driver, err := NewSQLDriver(fields, "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver() error = %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -1437,7 +1523,10 @@ func TestSQLDriver_ProviderSpecific(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			driver := NewSQLDriver(fields, tt.provider)
+			driver, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
 			sql, params, err := driver.RenderParam(tt.expr)
 			if err != nil {
 				t.Fatalf("RenderParam() error = %v", err)

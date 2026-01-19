@@ -1,6 +1,7 @@
 package lucene
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -294,18 +295,24 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 }
 
 func (p *Parser) validateQuery(query string) error {
+	var errs []error
+
 	if len(query) > p.MaxQueryLength {
-		return fmt.Errorf("query too long: %d bytes exceeds maximum of %d bytes", len(query), p.MaxQueryLength)
+		errs = append(errs, fmt.Errorf("query too long: %d bytes exceeds maximum of %d bytes", len(query), p.MaxQueryLength))
 	}
 
 	depth := calculateNestingDepth(query)
 	if depth > p.MaxDepth {
-		return fmt.Errorf("query too complex: nesting depth %d exceeds maximum of %d", depth, p.MaxDepth)
+		errs = append(errs, fmt.Errorf("query too complex: nesting depth %d exceeds maximum of %d", depth, p.MaxDepth))
 	}
 
 	terms := countTerms(query)
 	if terms > p.MaxTerms {
-		return fmt.Errorf("query too large: %d terms exceeds maximum of %d", terms, p.MaxTerms)
+		errs = append(errs, fmt.Errorf("query too large: %d terms exceeds maximum of %d", terms, p.MaxTerms))
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 
 	return nil

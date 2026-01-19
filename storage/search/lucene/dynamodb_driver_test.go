@@ -185,8 +185,8 @@ func TestDynamoDBDriver_RenderPartiQL(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name: "nil expression",
-			expr: nil,
+			name:    "nil expression",
+			expr:    nil,
 			wantErr: false,
 		},
 	}
@@ -230,11 +230,11 @@ func TestDynamoDBDriver_RenderPartiQL(t *testing.T) {
 
 func TestDynamoDBLike(t *testing.T) {
 	tests := []struct {
-		name      string
-		left      string
-		right     string
-		want      string
-		wantErr   bool
+		name    string
+		left    string
+		right   string
+		want    string
+		wantErr bool
 	}{
 		{
 			name:    "contains pattern %value%",
@@ -363,25 +363,25 @@ func TestDynamoDBLike(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:      "invalid field name with special characters",
-			left:      "name; DROP TABLE users;--",
-			right:     "'test'",
-			want:      "",
-			wantErr:   true,
+			name:    "invalid field name with special characters",
+			left:    "name; DROP TABLE users;--",
+			right:   "'test'",
+			want:    "",
+			wantErr: true,
 		},
 		{
-			name:      "invalid field name with quotes",
-			left:      "name'",
-			right:     "'test'",
-			want:      "",
-			wantErr:   true,
+			name:    "invalid field name with quotes",
+			left:    "name'",
+			right:   "'test'",
+			want:    "",
+			wantErr: true,
 		},
 		{
-			name:      "invalid field name with spaces",
-			left:      "field name",
-			right:     "'test'",
-			want:      "",
-			wantErr:   true,
+			name:    "invalid field name with spaces",
+			left:    "field name",
+			right:   "'test'",
+			want:    "",
+			wantErr: true,
 		},
 	}
 

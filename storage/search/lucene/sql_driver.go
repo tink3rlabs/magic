@@ -2,6 +2,7 @@ package lucene
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/grindlemire/go-lucene/pkg/driver"
@@ -391,6 +392,11 @@ func (s *SQLDriver) processJSONFields(e *expr.Expression) {
 	}
 }
 
+var (
+	// jsonSubFieldPattern matches valid JSON subfield names (alphanumeric, underscore, and dot for nested paths)
+	jsonSubFieldPattern = regexp.MustCompile(`^[a-zA-Z0-9_.]+$`)
+)
+
 // validateSubFieldName validates that a subfield name contains only safe characters.
 // Subfield names should be alphanumeric with underscores and dots for nested paths.
 // This prevents injection attacks via JSON path manipulation.
@@ -399,12 +405,8 @@ func validateSubFieldName(subField string) error {
 		return fmt.Errorf("subfield name cannot be empty")
 	}
 	
-	// Allow alphanumeric, underscore, and dot (for nested paths like "user.name")
-	// Reject any characters that could be used for injection (quotes, semicolons, etc.)
-	for _, r := range subField {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.') {
-			return fmt.Errorf("invalid subfield name '%s': contains unsafe character '%c'", subField, r)
-		}
+	if !jsonSubFieldPattern.MatchString(subField) {
+		return fmt.Errorf("invalid subfield name '%s': contains unsafe characters (only alphanumeric, underscore, and dot allowed)", subField)
 	}
 	return nil
 }
@@ -436,7 +438,7 @@ func (s *SQLDriver) formatFieldName(fieldName string) expr.Column {
 			// Escape subfield name for safe interpolation
 			// PostgreSQL uses ->>'key' syntax where key is in quotes, so we need to escape quotes
 			escapedSubField := escapeJSONPathSegment(subField)
-			
+
 			switch s.provider {
 			case "postgresql":
 				// PostgreSQL: JSONB operator ->>

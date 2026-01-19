@@ -2,6 +2,7 @@ package lucene
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -72,15 +73,17 @@ func escapePartiQLString(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
 
+var (
+	// partiQLIdentifierPattern matches valid PartiQL identifiers (alphanumeric and underscore only)
+	partiQLIdentifierPattern = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+)
+
 // escapePartiQLIdentifier escapes a field name for safe use in PartiQL.
 // Validates that the identifier contains only safe characters (alphanumeric, underscore).
 // Returns error if identifier contains potentially dangerous characters.
 func escapePartiQLIdentifier(identifier string) (string, error) {
-	// Validate identifier contains only safe characters
-	for _, r := range identifier {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
-			return "", fmt.Errorf("invalid identifier: contains unsafe character '%c'", r)
-		}
+	if !partiQLIdentifierPattern.MatchString(identifier) {
+		return "", fmt.Errorf("invalid identifier: contains unsafe characters (only alphanumeric and underscore allowed)")
 	}
 	return identifier, nil
 }
@@ -104,7 +107,7 @@ func dynamoDBLike(left, right string) (string, error) {
 
 	// Extract the raw value from the right side (remove quotes if present)
 	rawValue := unquotePartiQLString(right)
-	
+
 	// Analyze pattern for wildcards
 	hasPrefix := strings.HasPrefix(rawValue, "%")
 	hasSuffix := strings.HasSuffix(rawValue, "%")

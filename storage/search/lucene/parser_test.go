@@ -124,49 +124,49 @@ func TestBasicFieldSearch(t *testing.T) {
 	parser := createParser(t, BasicModel{})
 
 	tests := []struct {
-		name      string
-		query     string
-		wantSQL   []string
-		wantNot   []string
+		name       string
+		query      string
+		wantSQL    []string
+		wantNot    []string
 		wantParams []any
-		wantErr   bool
+		wantErr    bool
 	}{
 		{
-			name:      "simple field query",
-			query:     "name:john",
-			wantSQL:   []string{`"name"`, "=", "$1"},
-			wantNot:   []string{"ILIKE", "LIKE"},
+			name:       "simple field query",
+			query:      "name:john",
+			wantSQL:    []string{`"name"`, "=", "$1"},
+			wantNot:    []string{"ILIKE", "LIKE"},
 			wantParams: []any{"john"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "wildcard prefix",
-			query:     "name:john*",
-			wantSQL:   []string{`"name"`, "ILIKE", "$1"},
-			wantNot:   []string{"="},
+			name:       "wildcard prefix",
+			query:      "name:john*",
+			wantSQL:    []string{`"name"`, "ILIKE", "$1"},
+			wantNot:    []string{"="},
 			wantParams: []any{"john%"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "wildcard suffix",
-			query:     "name:*john",
-			wantSQL:   []string{`"name"`, "ILIKE", "$1"},
+			name:       "wildcard suffix",
+			query:      "name:*john",
+			wantSQL:    []string{`"name"`, "ILIKE", "$1"},
 			wantParams: []any{"%john"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "wildcard contains",
-			query:     "name:*john*",
-			wantSQL:   []string{`"name"`, "ILIKE", "$1"},
+			name:       "wildcard contains",
+			query:      "name:*john*",
+			wantSQL:    []string{`"name"`, "ILIKE", "$1"},
 			wantParams: []any{"%john%"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "email field",
-			query:     `email:"test@example.com"`,
-			wantSQL:   []string{`"email"`, "=", "$1"},
+			name:       "email field",
+			query:      `email:"test@example.com"`,
+			wantSQL:    []string{`"email"`, "=", "$1"},
 			wantParams: []any{"test@example.com"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 	}
 
@@ -183,9 +183,9 @@ func TestBasicFieldSearch(t *testing.T) {
 				}
 				if len(tt.wantParams) > 0 {
 					// Only validate params if we expect specific values
-				if len(tt.wantParams) > 0 {
-					assertParamsEqual(t, params, tt.wantParams, tt.name)
-				}
+					if len(tt.wantParams) > 0 {
+						assertParamsEqual(t, params, tt.wantParams, tt.name)
+					}
 				}
 			}
 		})
@@ -198,39 +198,39 @@ func TestBooleanOperators(t *testing.T) {
 	parser := createParser(t, BooleanModel{})
 
 	tests := []struct {
-		name      string
-		query     string
-		wantSQL   []string
+		name       string
+		query      string
+		wantSQL    []string
 		wantParams []any
-		wantErr   bool
+		wantErr    bool
 	}{
 		{
-			name:      "AND operator",
-			query:     "name:john AND status:active",
-			wantSQL:   []string{`"name"`, `"status"`, "AND"},
+			name:       "AND operator",
+			query:      "name:john AND status:active",
+			wantSQL:    []string{`"name"`, `"status"`, "AND"},
 			wantParams: []any{"john", "active"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "OR operator",
-			query:     "name:john OR name:jane",
-			wantSQL:   []string{`"name"`, "OR"},
+			name:       "OR operator",
+			query:      "name:john OR name:jane",
+			wantSQL:    []string{`"name"`, "OR"},
 			wantParams: []any{"john", "jane"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "NOT operator",
-			query:     "name:john NOT status:inactive",
-			wantSQL:   []string{`"name"`, `"status"`, "NOT"},
+			name:       "NOT operator",
+			query:      "name:john NOT status:inactive",
+			wantSQL:    []string{`"name"`, `"status"`, "NOT"},
 			wantParams: []any{"john", "inactive"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "complex nested",
-			query:     "(name:john OR name:jane) AND status:active",
-			wantSQL:   []string{`"name"`, `"status"`, "OR", "AND"},
+			name:       "complex nested",
+			query:      "(name:john OR name:jane) AND status:active",
+			wantSQL:    []string{`"name"`, `"status"`, "OR", "AND"},
 			wantParams: []any{"john", "jane", "active"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
 			name:    "case insensitive AND",
@@ -250,9 +250,9 @@ func TestBooleanOperators(t *testing.T) {
 				assertSQLContains(t, sql, tt.wantSQL, tt.name)
 				if len(tt.wantParams) > 0 {
 					// Only validate params if we expect specific values
-				if len(tt.wantParams) > 0 {
-					assertParamsEqual(t, params, tt.wantParams, tt.name)
-				}
+					if len(tt.wantParams) > 0 {
+						assertParamsEqual(t, params, tt.wantParams, tt.name)
+					}
 				}
 			}
 		})
@@ -309,46 +309,46 @@ func TestRangeQueries(t *testing.T) {
 	parser := createParser(t, RangeModel{})
 
 	tests := []struct {
-		name      string
-		query     string
-		wantSQL   []string
+		name       string
+		query      string
+		wantSQL    []string
 		wantParams []any
-		wantErr   bool
+		wantErr    bool
 	}{
 		{
-			name:      "inclusive range",
-			query:     "age:[25 TO 65]",
-			wantSQL:   []string{`"age"`, "BETWEEN"},
+			name:       "inclusive range",
+			query:      "age:[25 TO 65]",
+			wantSQL:    []string{`"age"`, "BETWEEN"},
 			wantParams: []any{"25", "65"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "exclusive range",
-			query:     "age:{25 TO 65}",
-			wantSQL:   []string{`"age"`, ">", "<"},
+			name:       "exclusive range",
+			query:      "age:{25 TO 65}",
+			wantSQL:    []string{`"age"`, ">", "<"},
 			wantParams: []any{"25", "65"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "open-ended range min",
-			query:     "age:[25 TO *]",
-			wantSQL:   []string{`"age"`, ">="},
+			name:       "open-ended range min",
+			query:      "age:[25 TO *]",
+			wantSQL:    []string{`"age"`, ">="},
 			wantParams: []any{"25"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "open-ended range max",
-			query:     "age:[* TO 65]",
-			wantSQL:   []string{`"age"`, "<="},
+			name:       "open-ended range max",
+			query:      "age:[* TO 65]",
+			wantSQL:    []string{`"age"`, "<="},
 			wantParams: []any{"65"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "date range",
-			query:     "date:[2024-01-01 TO 2024-12-31]",
-			wantSQL:   []string{`"date"`, "BETWEEN"},
+			name:       "date range",
+			query:      "date:[2024-01-01 TO 2024-12-31]",
+			wantSQL:    []string{`"date"`, "BETWEEN"},
 			wantParams: []any{"2024-01-01", "2024-12-31"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 	}
 
@@ -695,55 +695,55 @@ func TestNullValueQueries(t *testing.T) {
 	parser := createParser(t, NullModel{})
 
 	tests := []struct {
-		name      string
-		query     string
-		wantSQL   []string
-		wantNot   []string
+		name       string
+		query      string
+		wantSQL    []string
+		wantNot    []string
 		wantParams []any
-		wantErr   bool
+		wantErr    bool
 	}{
 		{
-			name:      "field is null (lowercase)",
-			query:     "parent_id:null",
-			wantSQL:   []string{`"parent_id"`, "IS NULL"},
-			wantNot:   []string{"=", "$1"},
+			name:       "field is null (lowercase)",
+			query:      "parent_id:null",
+			wantSQL:    []string{`"parent_id"`, "IS NULL"},
+			wantNot:    []string{"=", "$1"},
 			wantParams: []any{},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "field is NULL (uppercase)",
-			query:     "parent_id:NULL",
-			wantSQL:   []string{`"parent_id"`, "IS NULL"},
+			name:       "field is NULL (uppercase)",
+			query:      "parent_id:NULL",
+			wantSQL:    []string{`"parent_id"`, "IS NULL"},
 			wantParams: []any{},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "field is Null (mixed case)",
-			query:     "parent_id:Null",
-			wantSQL:   []string{`"parent_id"`, "IS NULL"},
+			name:       "field is Null (mixed case)",
+			query:      "parent_id:Null",
+			wantSQL:    []string{`"parent_id"`, "IS NULL"},
 			wantParams: []any{},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "combined null with other conditions",
-			query:     "name:john AND deleted_at:null",
-			wantSQL:   []string{`"name"`, `"deleted_at"`, "IS NULL", "AND"},
+			name:       "combined null with other conditions",
+			query:      "name:john AND deleted_at:null",
+			wantSQL:    []string{`"name"`, `"deleted_at"`, "IS NULL", "AND"},
 			wantParams: []any{"john"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "NOT null (is not null)",
-			query:     "NOT deleted_at:null",
-			wantSQL:   []string{"NOT", `"deleted_at"`},
+			name:       "NOT null (is not null)",
+			query:      "NOT deleted_at:null",
+			wantSQL:    []string{"NOT", `"deleted_at"`},
 			wantParams: []any{"null"}, // NOT null is parsed as NOT field=null, not NOT field IS NULL
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "nil should be treated as literal value (not NULL)",
-			query:     "name:nil",
-			wantSQL:   []string{`"name"`, "=", "$1"},
+			name:       "nil should be treated as literal value (not NULL)",
+			query:      "name:nil",
+			wantSQL:    []string{`"name"`, "=", "$1"},
 			wantParams: []any{"nil"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 	}
 
@@ -761,9 +761,9 @@ func TestNullValueQueries(t *testing.T) {
 				}
 				if len(tt.wantParams) > 0 {
 					// Only validate params if we expect specific values
-				if len(tt.wantParams) > 0 {
-					assertParamsEqual(t, params, tt.wantParams, tt.name)
-				}
+					if len(tt.wantParams) > 0 {
+						assertParamsEqual(t, params, tt.wantParams, tt.name)
+					}
 				}
 			}
 		})
@@ -1007,11 +1007,11 @@ func TestParser_ValidateQuery(t *testing.T) {
 	parser := createParser(t, BasicModel{})
 
 	tests := []struct {
-		name       string
-		query      string
-		config     *ParserConfig
-		wantErr    bool
-		wantError  []string
+		name      string
+		query     string
+		config    *ParserConfig
+		wantErr   bool
+		wantError []string
 	}{
 		{
 			name:    "valid query",
@@ -1043,10 +1043,10 @@ func TestParser_ValidateQuery(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:      "custom limits - exceeds",
-			query:     strings.Repeat("a", 201),
-			config:    &ParserConfig{MaxQueryLength: 200},
-			wantErr:   true,
+			name:    "custom limits - exceeds",
+			query:   strings.Repeat("a", 201),
+			config:  &ParserConfig{MaxQueryLength: 200},
+			wantErr: true,
 		},
 		{
 			name:    "empty query",
@@ -1194,66 +1194,66 @@ func TestParser_ProviderSpecific(t *testing.T) {
 	parser := createParser(t, BasicModel{})
 
 	tests := []struct {
-		name      string
-		query     string
-		provider  string
-		wantSQL   []string
-		wantNot   []string
+		name       string
+		query      string
+		provider   string
+		wantSQL    []string
+		wantNot    []string
 		wantParams []any
-		wantErr   bool
+		wantErr    bool
 	}{
 		{
-			name:      "postgresql placeholder",
-			query:     "name:john",
-			provider:  "postgresql",
-			wantSQL:   []string{"$1"},
-			wantNot:   []string{"?"},
+			name:       "postgresql placeholder",
+			query:      "name:john",
+			provider:   "postgresql",
+			wantSQL:    []string{"$1"},
+			wantNot:    []string{"?"},
 			wantParams: []any{"john"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "mysql placeholder",
-			query:     "name:john",
-			provider:  "mysql",
-			wantSQL:   []string{"?"},
-			wantNot:   []string{"$"},
+			name:       "mysql placeholder",
+			query:      "name:john",
+			provider:   "mysql",
+			wantSQL:    []string{"?"},
+			wantNot:    []string{"$"},
 			wantParams: []any{"john"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "sqlite placeholder",
-			query:     "name:john",
-			provider:  "sqlite",
-			wantSQL:   []string{"?"},
-			wantNot:   []string{"$"},
+			name:       "sqlite placeholder",
+			query:      "name:john",
+			provider:   "sqlite",
+			wantSQL:    []string{"?"},
+			wantNot:    []string{"$"},
 			wantParams: []any{"john"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "postgresql ILIKE",
-			query:     "name:john*",
-			provider:  "postgresql",
-			wantSQL:   []string{"ILIKE"},
-			wantNot:   []string{"LOWER"},
+			name:       "postgresql ILIKE",
+			query:      "name:john*",
+			provider:   "postgresql",
+			wantSQL:    []string{"ILIKE"},
+			wantNot:    []string{"LOWER"},
 			wantParams: []any{"john%"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "mysql LOWER LIKE",
-			query:     "name:john*",
-			provider:  "mysql",
-			wantSQL:   []string{"LOWER", "LIKE"},
+			name:       "mysql LOWER LIKE",
+			query:      "name:john*",
+			provider:   "mysql",
+			wantSQL:    []string{"LOWER", "LIKE"},
 			wantParams: []any{"john%"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 		{
-			name:      "sqlite LIKE",
-			query:     "name:john*",
-			provider:  "sqlite",
-			wantSQL:   []string{"LIKE"},
-			wantNot:   []string{"ILIKE", "LOWER"},
+			name:       "sqlite LIKE",
+			query:      "name:john*",
+			provider:   "sqlite",
+			wantSQL:    []string{"LIKE"},
+			wantNot:    []string{"ILIKE", "LOWER"},
 			wantParams: []any{"john%"},
-			wantErr:   false,
+			wantErr:    false,
 		},
 	}
 
@@ -1270,40 +1270,39 @@ func TestParser_ProviderSpecific(t *testing.T) {
 				}
 				if len(tt.wantParams) > 0 {
 					// Only validate params if we expect specific values
-				if len(tt.wantParams) > 0 {
-					assertParamsEqual(t, params, tt.wantParams, tt.name)
-				}
+					if len(tt.wantParams) > 0 {
+						assertParamsEqual(t, params, tt.wantParams, tt.name)
+					}
 				}
 			}
 		})
 	}
 }
 
-
 // TestParser_ParseToDynamoDBPartiQL tests DynamoDB output
 func TestParser_ParseToDynamoDBPartiQL(t *testing.T) {
 	parser := createParser(t, BasicModel{})
 
 	tests := []struct {
-		name       string
-		query      string
+		name        string
+		query       string
 		wantPartiQL []string
-		wantCount  int
-		wantErr    bool
+		wantCount   int
+		wantErr     bool
 	}{
 		{
-			name:       "simple query",
-			query:      "name:john",
+			name:        "simple query",
+			query:       "name:john",
 			wantPartiQL: []string{"name"},
-			wantCount:  1,
-			wantErr:    false,
+			wantCount:   1,
+			wantErr:     false,
 		},
 		{
-			name:       "AND query",
-			query:      "name:john AND email:test",
+			name:        "AND query",
+			query:       "name:john AND email:test",
 			wantPartiQL: []string{"AND"},
-			wantCount:  2,
-			wantErr:    false,
+			wantCount:   2,
+			wantErr:     false,
 		},
 	}
 

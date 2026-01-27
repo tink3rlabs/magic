@@ -93,7 +93,7 @@ func (l *LeaderElection) createLeadershipTable() error {
 		case string(storage.MYSQL):
 			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (id VARCHAR(50) PRIMARY KEY, registration BIGINT, heartbeat BIGINT)", l.storage.GetSchemaName(), l.tableName)
 		case string(storage.SQLITE):
-			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (id TEXT PRIMARY KEY, registration INTEGER, heartbeat INTEGER)", l.storage.GetSchemaName(), l.tableName)
+			statement = fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (id TEXT PRIMARY KEY, registration INTEGER, heartbeat INTEGER)", l.tableName)
 		}
 		return l.storage.Execute(statement)
 
@@ -161,7 +161,15 @@ func (l *LeaderElection) updateMembershipTable() error {
 
 	switch l.storageType {
 	case string(storage.SQL):
-		statement := fmt.Sprintf(`INSERT INTO %s.%s VALUES('%v', %v, %v)`, l.storage.GetSchemaName(), l.tableName, l.Id, now, now)
+		var statement string
+
+		switch l.storageProvider {
+		case string(storage.SQLITE):
+			statement = fmt.Sprintf(`INSERT INTO %s VALUES('%v', %v, %v)`, l.tableName, l.Id, now, now)
+		default:
+			statement = fmt.Sprintf(`INSERT INTO %s.%s VALUES('%v', %v, %v)`, l.storage.GetSchemaName(), l.tableName, l.Id, now, now)
+		}
+
 		return l.storage.Execute(statement)
 	case string(storage.DYNAMODB):
 		statement := fmt.Sprintf(`INSERT INTO %s VALUE {'id': '%v', 'registration': %v, 'heartbeat': %v}`, l.tableName, l.Id, now, now)
@@ -276,7 +284,13 @@ func (l *LeaderElection) getLeader() (Member, error) {
 	switch l.storageType {
 	case string(storage.SQL):
 		a := l.storage.(*storage.SQLAdapter)
-		statement := fmt.Sprintf(`SELECT * FROM %s.%s WHERE id='%s'`, l.storage.GetSchemaName(), l.tableName, l.Leader.Id)
+		var statement string
+		switch l.storageProvider {
+		case string(storage.SQLITE):
+			statement = fmt.Sprintf(`SELECT * FROM %s WHERE id='%s'`, l.tableName, l.Leader.Id)
+		default:
+			statement = fmt.Sprintf(`SELECT * FROM %s.%s WHERE id='%s'`, l.storage.GetSchemaName(), l.tableName, l.Leader.Id)
+		}
 		result := a.DB.Raw(statement).Scan(&member)
 
 		if result.Error != nil {
@@ -310,7 +324,13 @@ func (l *LeaderElection) Members() ([]Member, error) {
 
 	switch l.storageType {
 	case string(storage.SQL):
-		statement := fmt.Sprintf("SELECT * FROM %s.%s", l.storage.GetSchemaName(), l.tableName)
+		var statement string
+		switch l.storageProvider {
+		case string(storage.SQLITE):
+			statement = fmt.Sprintf(`SELECT * FROM %s`, l.tableName)
+		default:
+			statement = fmt.Sprintf("SELECT * FROM %s.%s", l.storage.GetSchemaName(), l.tableName)
+		}
 		a := l.storage.(*storage.SQLAdapter)
 		result := a.DB.Raw(statement).Scan(&members)
 		if result.Error != nil {

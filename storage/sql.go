@@ -124,6 +124,7 @@ func (s *SQLAdapter) CreateSchema() error {
 	}
 	return nil
 }
+
 func (s *SQLAdapter) CreateMigrationTable() error {
 	var statement string
 	switch s.GetProvider() {
@@ -139,6 +140,7 @@ func (s *SQLAdapter) CreateMigrationTable() error {
 	return s.Execute(statement)
 
 }
+
 func (s *SQLAdapter) UpdateMigrationTable(id int, name string, desc string) error {
 	var statement string
 	switch s.GetProvider() {
@@ -150,15 +152,25 @@ func (s *SQLAdapter) UpdateMigrationTable(id int, name string, desc string) erro
 	return s.Execute(statement)
 
 }
+
 func (s *SQLAdapter) GetLatestMigration() (int, error) {
 	var statement string
 	var latestMigration int
-	statement = fmt.Sprintf("SELECT max(id) from %s.migrations", s.GetSchemaName())
+	var fromSource string
+	switch s.GetProvider() {
+	case SQLITE:
+		fromSource = "migrations"
+	default:
+		fromSource = fmt.Sprintf("%s.migrations", s.GetSchemaName())
+
+	}
+
+	statement = fmt.Sprintf("SELECT max(id) from %s", fromSource)
 	result := s.DB.Raw(statement).Scan(&latestMigration)
 	if result.Error != nil {
 		//either a real issue or there are no migrations yet check if we can query the migration table
 		var count int
-		statement = fmt.Sprintf("SELECT count(*) from %s.migrations", s.GetSchemaName())
+		statement = fmt.Sprintf("SELECT count(*) from %s", fromSource)
 		countResult := s.DB.Raw(statement).Scan(&count)
 		if countResult.Error != nil {
 			return latestMigration, result.Error

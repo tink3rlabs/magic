@@ -82,14 +82,10 @@ func (s *SQLDriver) RenderParam(e *expr.Expression) (string, []any, error) {
 		return "", nil, err
 	}
 
-	// Convert ? placeholders to provider-specific format
-	// PostgreSQL uses $1, $2, $3; MySQL and SQLite use ?
-	switch s.provider {
-	case "postgresql":
-		str = convertToPostgresPlaceholders(str)
-	case "mysql", "sqlite":
-		// Already uses ? placeholders, no conversion needed
-	}
+	// Keep ? placeholders for all providers.
+	// GORM's PostgreSQL driver handles ? → $N conversion automatically,
+	// so pre-converting here would conflict with additional WHERE clauses
+	// (e.g. cursor pagination) that GORM adds with its own ? placeholders.
 
 	return str, params, nil
 }
@@ -404,7 +400,7 @@ func validateSubFieldName(subField string) error {
 	if subField == "" {
 		return fmt.Errorf("subfield name cannot be empty")
 	}
-	
+
 	if !jsonSubFieldPattern.MatchString(subField) {
 		return fmt.Errorf("invalid subfield name '%s': contains unsafe characters (only alphanumeric, underscore, and dot allowed)", subField)
 	}

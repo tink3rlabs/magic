@@ -250,7 +250,7 @@ func (s *SQLAdapter) executePaginatedQuery(
 	nextCursor := ""
 	if destSlice.Len() > limit {
 		lastItem := destSlice.Index(limit - 1)
-		field := reflect.Indirect(lastItem).FieldByName(sortKey)
+		field := findFieldByJSONTag(reflect.Indirect(lastItem), sortKey)
 		if field.IsValid() && field.Kind() == reflect.String {
 			nextCursor = base64.StdEncoding.EncodeToString([]byte(field.String()))
 		}
@@ -260,6 +260,23 @@ func (s *SQLAdapter) executePaginatedQuery(
 	}
 
 	return nextCursor, nil
+}
+
+// findFieldByJSONTag looks up a struct field by its json tag name.
+// This is needed because sortKey uses the JSON/column name (e.g. "id")
+// while Go struct fields use PascalCase (e.g. "Id").
+func findFieldByJSONTag(v reflect.Value, tag string) reflect.Value {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		jsonTag := t.Field(i).Tag.Get("json")
+		if idx := strings.Index(jsonTag, ","); idx != -1 {
+			jsonTag = jsonTag[:idx]
+		}
+		if jsonTag == tag {
+			return v.Field(i)
+		}
+	}
+	return reflect.Value{}
 }
 
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {

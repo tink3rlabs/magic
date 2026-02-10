@@ -204,14 +204,9 @@ func TestSQLDriver_RenderParam(t *testing.T) {
 				if len(params) != tt.wantCount {
 					t.Errorf("RenderParam() params count = %v, want %v", len(params), tt.wantCount)
 				}
-				if provider == "postgresql" {
-					if !strings.Contains(sql, "$") {
-						t.Errorf("RenderParam() expected PostgreSQL placeholders ($1, $2), got %v", sql)
-					}
-				} else {
-					if strings.Contains(sql, "$") && !strings.Contains(sql, "?") {
-						t.Errorf("RenderParam() expected ? placeholders for %v, got %v", provider, sql)
-					}
+				// All providers use ? placeholders; GORM handles $N conversion for PostgreSQL
+				if tt.wantCount > 0 && !strings.Contains(sql, "?") {
+					t.Errorf("RenderParam() expected ? placeholders for %v, got %v", provider, sql)
 				}
 			})
 		}
@@ -1443,11 +1438,11 @@ func TestSQLDriver_ProviderSpecific(t *testing.T) {
 				Left:  expr.Column("name"),
 				Right: &expr.Expression{Op: expr.Literal, Left: "john"},
 			},
-			wantSQL:   []string{"$1"},
+			wantSQL:   []string{"?"},
 			wantCount: 1,
 			checkFunc: func(t *testing.T, sql string, params []any) {
-				if !strings.Contains(sql, "$") {
-					t.Errorf("expected PostgreSQL placeholder ($1), got %v", sql)
+				if !strings.Contains(sql, "?") {
+					t.Errorf("expected ? placeholder, got %v", sql)
 				}
 			},
 		},

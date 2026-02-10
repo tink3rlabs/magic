@@ -260,11 +260,11 @@ func (s *SQLAdapter) executePaginatedQuery(
 	nextCursor := ""
 	if destSlice.Len() > limit {
 		lastItem := destSlice.Index(limit - 1)
-		field := reflect.Indirect(lastItem).FieldByName(sortKey)
+		field := findFieldByJSONTag(reflect.Indirect(lastItem), sortKey)
 		if !field.IsValid() {
-			slog.Warn("cursor extraction failed: sort_key does not match any exported struct field",
+			slog.Warn("cursor extraction failed: sort_key does not match any json tag on the struct",
 				"sort_key", sortKey,
-				"hint", "sort_key must be the Go struct field name (e.g. 'CreatedAt'), not the DB column name (e.g. 'created_at')")
+				"hint", "sort_key must match a json tag (e.g. 'created_at'), not the Go field name (e.g. 'CreatedAt')")
 		} else if field.Kind() != reflect.String {
 			slog.Warn("cursor extraction failed: struct field is not a string",
 				"sort_key", sortKey,
@@ -276,6 +276,23 @@ func (s *SQLAdapter) executePaginatedQuery(
 	}
 
 	return nextCursor, nil
+}
+
+// findFieldByJSONTag looks up a struct field by its json tag name.
+// This is needed because sortKey uses the JSON/column name (e.g. "id")
+// while Go struct fields use PascalCase (e.g. "Id").
+func findFieldByJSONTag(v reflect.Value, tag string) reflect.Value {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		jsonTag := t.Field(i).Tag.Get("json")
+		if idx := strings.Index(jsonTag, ","); idx != -1 {
+			jsonTag = jsonTag[:idx]
+		}
+		if jsonTag == tag {
+			return v.Field(i)
+		}
+	}
+	return reflect.Value{}
 }
 
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {

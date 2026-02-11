@@ -18,8 +18,8 @@ import (
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 
+	serviceErrors "github.com/tink3rlabs/magic/errors"
 	slogger "github.com/tink3rlabs/magic/logger"
-
 	"github.com/tink3rlabs/magic/storage/search/lucene"
 )
 
@@ -250,7 +250,7 @@ func (s *SQLAdapter) executePaginatedQuery(
 	nextCursor := ""
 	if destSlice.Len() > limit {
 		lastItem := destSlice.Index(limit - 1)
-		field := reflect.Indirect(lastItem).FieldByName(sortKey)
+		field := findFieldByJSONTag(reflect.Indirect(lastItem), sortKey)
 		if field.IsValid() && field.Kind() == reflect.String {
 			nextCursor = base64.StdEncoding.EncodeToString([]byte(field.String()))
 		}
@@ -260,6 +260,23 @@ func (s *SQLAdapter) executePaginatedQuery(
 	}
 
 	return nextCursor, nil
+}
+
+// findFieldByJSONTag looks up a struct field by its json tag name.
+// This is needed because sortKey uses the JSON/column name (e.g. "id")
+// while Go struct fields use PascalCase (e.g. "Id").
+func findFieldByJSONTag(v reflect.Value, tag string) reflect.Value {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		jsonTag := t.Field(i).Tag.Get("json")
+		if idx := strings.Index(jsonTag, ","); idx != -1 {
+			jsonTag = jsonTag[:idx]
+		}
+		if jsonTag == tag {
+			return v.Field(i)
+		}
+	}
+	return reflect.Value{}
 }
 
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
@@ -282,15 +299,20 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 	destType := reflect.TypeOf(dest).Elem().Elem()
 	model := reflect.New(destType).Elem().Interface()
 
-	parser, err := lucene.NewParserFromType(model)
+	parser, err := lucene.NewParser(model)
 	if err != nil {
 		slog.Error("Parser creation failed", "error", err)
 		return "", err
 	}
 
-	whereClause, queryParams, err := parser.ParseToSQL(query)
+	// Pass the SQL provider to generate provider-specific SQL syntax
+	whereClause, queryParams, err := parser.ParseToSQL(query, string(s.provider))
 	if err != nil {
 		slog.Error("Filter parsing failed", "error", err)
+		// Wrap InvalidFieldError as BadRequest for proper HTTP 400 response
+		if _, ok := err.(*lucene.InvalidFieldError); ok {
+			return "", &serviceErrors.BadRequest{Message: err.Error()}
+		}
 		return "", err
 	}
 

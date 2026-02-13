@@ -20,5 +20,6 @@
 			"type": "bind"
 		}
 	],
-	"remoteUser": "vscode"
+	"remoteUser": "vscode",
+	"postCreateCommand": "curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin latest"
 }

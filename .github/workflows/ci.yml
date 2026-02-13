@@ -54,6 +54,8 @@ jobs:
           args: --timeout=5m
           skip-cache: true
           skip-save-cache: true
+        env:
+          GOPROXY: https://proxy.golang.org,direct
   
   test:
     name: Test

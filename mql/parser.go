@@ -135,6 +135,13 @@ func (p *Parser) parseTerm() (Expr, error) {
 	return nil, fmt.Errorf("expected ':' or IN after key")
 }
 
+// isLogicalOperator checks if the remaining string starts with a logical operator
+func isLogicalOperator(remaining string) bool {
+	return strings.HasPrefix(remaining, "AND") ||
+		strings.HasPrefix(remaining, "OR") ||
+		strings.HasPrefix(remaining, "NOT")
+}
+
 // parseValueFromPos reads a value from the input string starting at the given position (1-based scanner position)
 // It continues reading until it hits whitespace or a logical operator (AND, OR, NOT)
 func (p *Parser) parseValueFromPos(startPos int) string {
@@ -187,18 +194,14 @@ func (p *Parser) parseValueFromPos(startPos int) string {
 
 		// Stop at whitespace
 		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-			// Check if what follows is a logical operator
+			// Check if what follows is a logical operator - if so, stop here
+			// Otherwise, whitespace also ends the value
 			remaining := strings.TrimSpace(p.input[i:])
-			if strings.HasPrefix(remaining, "AND") ||
-				strings.HasPrefix(remaining, "OR") ||
-				strings.HasPrefix(remaining, "NOT") {
+			//nolint:staticcheck // SA4017: false positive - return value is used in condition
+			if isLogicalOperator(remaining) {
 				break
 			}
-			// Also stop at closing parenthesis
-			if strings.HasPrefix(remaining, ")") {
-				break
-			}
-			// For unquoted values, whitespace typically ends the value
+			// For unquoted values, whitespace ends the value
 			break
 		}
 

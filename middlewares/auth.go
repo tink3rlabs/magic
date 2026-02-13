@@ -398,12 +398,12 @@ func UserRequestContext(next http.Handler) http.Handler {
 	})
 }
 
-// RequireRole is a middleware that checks if the user has the required role
-// If the user does not have the role, it returns a 403 Forbidden response
-// If the user is not authenticated, it returns a 401 Unauthorized response
-// Usage: router.Use(RequireRole("admin"))
-// If the user has the role, it calls the next handler in the chain
-func RequireRole(roleName string) func(http.Handler) http.Handler {
+// RequireRole is a middleware that checks if the user has at least one of the required roles.
+// If the user does not have any of the roles, it returns a 403 Forbidden response.
+// If the user is not authenticated, it returns a 401 Unauthorized response.
+// Usage: router.Use(RequireRole("admin")) or router.Use(RequireRole("admin", "editor"))
+// If the user has any of the roles, it calls the next handler in the chain
+func RequireRole(roleNames ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			claims := getValidatedClaims(r.Context())
@@ -414,11 +414,13 @@ func RequireRole(roleName string) func(http.Handler) http.Handler {
 				return
 			}
 			claimsConfig := getClaimsConfig(claims.ClaimsConfig)
-			roles := getRoles(claims.CustomClaims, claimsConfig)
-			for _, role := range roles {
-				if role == roleName {
-					next.ServeHTTP(rw, r)
-					return
+			userRoles := getRoles(claims.CustomClaims, claimsConfig)
+			for _, userRole := range userRoles {
+				for _, allowedRole := range roleNames {
+					if userRole == allowedRole {
+						next.ServeHTTP(rw, r)
+						return
+					}
 				}
 			}
 			rw.Header().Set("Content-Type", "application/json")

@@ -11,7 +11,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.56.2
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.11
+	github.com/gocql/gocql v1.7.0
 	github.com/grindlemire/go-lucene v0.0.26
+	github.com/scylladb/go-reflectx v1.0.1
+	github.com/scylladb/gocqlx/v2 v2.8.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.1
 )

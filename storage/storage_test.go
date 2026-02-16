@@ -13,23 +13,11 @@ func TestGetInstanceReturnsExpectedAdapterForEachType(t *testing.T) {
 		typ    storage.StorageAdapterType
 		config map[string]string
 	}{
-		{
-			"CASSANDRA",
-			storage.CASSANDRA,
-			func() map[string]string {
-				host, keyspace := getCassandraHostAndKeyspace()
-				return map[string]string{
-					"hosts":    host,
-					"keyspace": keyspace,
-				}
-			}(),
+		{"CASSANDRA", storage.CASSANDRA,
+			getCassandraHostAndKeyspace(),
 		},
 		{"COSMOSDB", storage.COSMOSDB,
-			map[string]string{
-				"endpoint": "https://your-cosmosdb-account.documents.azure.com:443/",
-				"key":      "your-cosmosdb-key",
-				"database": "magic",
-			},
+			getCosmosDBConfig(),
 		},
 		{"DYNAMODB", storage.DYNAMODB,
 			map[string]string{
@@ -57,7 +45,7 @@ func TestGetInstanceReturnsExpectedAdapterForEachType(t *testing.T) {
 	}
 }
 
-func getCassandraHostAndKeyspace() (string, string) {
+func getCassandraHostAndKeyspace() map[string]string {
 	host := os.Getenv("CASSANDRA_HOSTS")
 	if host == "" {
 		// Default for local DevContainer
@@ -67,5 +55,28 @@ func getCassandraHostAndKeyspace() (string, string) {
 	if keyspace == "" {
 		keyspace = "testkeyspace"
 	}
-	return host, keyspace
+	return map[string]string{
+		"hosts":    host,
+		"keyspace": keyspace,
+	}
+}
+
+func getCosmosDBConfig() map[string]string {
+	endpoint := os.Getenv("COSMOSDB_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "https://localhost:8081/"
+	}
+	key := os.Getenv("COSMOSDB_KEY")
+	if key == "" {
+		key = "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGg=="
+	}
+	database := os.Getenv("COSMOSDB_DATABASE")
+	if database == "" {
+		database = "magic"
+	}
+	return map[string]string{
+		"endpoint": endpoint,
+		"key":      key,
+		"database": database,
+	}
 }

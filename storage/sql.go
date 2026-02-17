@@ -217,6 +217,7 @@ func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[strin
 func (s *SQLAdapter) executePaginatedQuery(
 	dest any,
 	sortKey string,
+	sortDirection string,
 	limit int,
 	cursor string,
 	builder queryBuilder,
@@ -231,10 +232,14 @@ func (s *SQLAdapter) executePaginatedQuery(
 	}
 	q := s.DB.Model(dest).Scopes(builder)
 
-	q = q.Limit(limit + 1).Order(fmt.Sprintf("%s ASC", sortKey))
+	q = q.Limit(limit + 1).Order(fmt.Sprintf("%s %s", sortKey, sortDirection))
 
 	if cursorValue != "" {
-		q = q.Where(fmt.Sprintf("%s > ?", sortKey), cursorValue)
+		cursorOp := ">"
+		if sortDirection == "DESC" {
+			cursorOp = "<"
+		}
+		q = q.Where(fmt.Sprintf("%s %s ?", sortKey, cursorOp), cursorValue)
 	}
 
 	if result := q.Find(dest); result.Error != nil {
@@ -263,7 +268,8 @@ func (s *SQLAdapter) executePaginatedQuery(
 }
 
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
+	sortDirection := extractSortDirection(extractParams(params...))
+	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
 			query, bindings := s.buildQuery(filter)
 			return q.Where(query, bindings)
@@ -273,8 +279,9 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 }
 
 func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+	sortDirection := extractSortDirection(extractParams(params...))
 	if query == "" {
-		return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
+		return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 			return q
 		})
 	}
@@ -296,7 +303,7 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 
 	slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, queryParams))
 
-	return s.executePaginatedQuery(dest, sortKey, limit, cursor, func(q *gorm.DB) *gorm.DB {
+	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if whereClause != "" {
 			return q.Where(whereClause, queryParams...)
 		}
@@ -322,6 +329,29 @@ func (s *SQLAdapter) Count(dest any, filter map[string]any, params ...map[string
 
 func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return "", fmt.Errorf("not implemented yet")
+}
+
+func extractParams(params ...map[string]any) map[string]any {
+	paramMap := make(map[string]any)
+	for _, param := range params {
+		for k, v := range param {
+			paramMap[k] = v
+		}
+	}
+	return paramMap
+}
+
+func extractSortDirection(paramMap map[string]any) string {
+	sortDirection := "ASC"
+	if dir, exists := paramMap["sort_direction"]; exists {
+		if dirStr, ok := dir.(string); ok {
+			sortDirection = strings.ToUpper(dirStr)
+			if sortDirection != "ASC" && sortDirection != "DESC" {
+				sortDirection = "ASC"
+			}
+		}
+	}
+	return sortDirection
 }
 
 func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any) {

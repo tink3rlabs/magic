@@ -218,7 +218,7 @@ func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[strin
 func (s *SQLAdapter) executePaginatedQuery(
 	dest any,
 	sortKey string,
-	sortDirection string,
+	sortDirection SortingDirection,
 	limit int,
 	cursor string,
 	builder queryBuilder,
@@ -237,7 +237,7 @@ func (s *SQLAdapter) executePaginatedQuery(
 
 	if cursorValue != "" {
 		cursorOp := ">"
-		if sortDirection == "DESC" {
+		if sortDirection == Descending {
 			cursorOp = "<"
 		}
 		q = q.Where(fmt.Sprintf("%s %s ?", sortKey, cursorOp), cursorValue)
@@ -340,17 +340,15 @@ func extractParams(params ...map[string]any) map[string]any {
 	return flatParams
 }
 
-func extractSortDirection(paramMap map[string]any) string {
-	sortDirection := "ASC"
-	if dir, exists := paramMap["sort_direction"]; exists {
+func extractSortDirection(paramMap map[string]any) SortingDirection {
+	if dir, exists := paramMap[SortDirectionKey]; exists {
 		if dirStr, ok := dir.(string); ok {
-			sortDirection = strings.ToUpper(dirStr)
-			if sortDirection != "ASC" && sortDirection != "DESC" {
-				sortDirection = "ASC"
+			if SortingDirection(strings.ToUpper(dirStr)) == Descending {
+				return Descending
 			}
 		}
 	}
-	return sortDirection
+	return Ascending
 }
 
 func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any) {

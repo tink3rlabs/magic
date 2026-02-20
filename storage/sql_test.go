@@ -1,6 +1,9 @@
 package storage
 
-import "testing"
+import (
+	"maps"
+	"testing"
+)
 
 func TestExtractSortDirection(t *testing.T) {
 	tests := []struct {
@@ -38,14 +41,8 @@ func TestExtractParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractParams(tt.input...)
-			if len(got) != len(tt.expected) {
-				t.Errorf("extractParams len = %d; want %d", len(got), len(tt.expected))
-				return
-			}
-			for k, want := range tt.expected {
-				if got[k] != want {
-					t.Errorf("extractParams[%q] = %v; want %v", k, got[k], want)
-				}
+			if !maps.Equal(got, tt.expected) {
+				t.Errorf("extractParams(%v) = %v; want %v", tt.input, got, tt.expected)
 			}
 		})
 	}

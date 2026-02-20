@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -165,7 +164,7 @@ func (s *CosmosDBAdapter) GetLatestMigration() (int, error) {
 
 func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
 	// Extract provider-specific parameters
-	paramMap := s.extractParams(params...)
+	paramMap := extractParams(params...)
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -231,7 +230,7 @@ func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, params ...map[str
 	}
 
 	// Extract provider-specific parameters
-	paramMap := s.extractParams(params...)
+	paramMap := extractParams(params...)
 
 	containerName := s.getContainerName(dest)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -303,7 +302,7 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[
 	}
 
 	// Extract provider-specific parameters
-	paramMap := s.extractParams(params...)
+	paramMap := extractParams(params...)
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -389,7 +388,7 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 	}
 
 	// Extract provider-specific parameters
-	paramMap := s.extractParams(params...)
+	paramMap := extractParams(params...)
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -429,8 +428,8 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 
 func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	// Extract sort direction from params
-	paramMap := s.extractParams(params...)
-	sortDirection := s.extractSortDirection(paramMap)
+	paramMap := extractParams(params...)
+	sortDirection := extractSortDirection(paramMap)
 
 	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, filter, params...)
 }
@@ -442,8 +441,8 @@ func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit i
 	// For custom queries, use the Query method instead
 
 	// Extract sort direction from params
-	paramMap := s.extractParams(params...)
-	sortDirection := s.extractSortDirection(paramMap)
+	paramMap := extractParams(params...)
+	sortDirection := extractSortDirection(paramMap)
 
 	// Use executePaginatedQuery with empty filter (the query parameter is ignored for CosmosDB)
 	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, map[string]any{}, params...)
@@ -525,7 +524,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	params ...map[string]any,
 ) (string, error) {
 	// Extract provider-specific parameters
-	paramMap := s.extractParams(params...)
+	paramMap := extractParams(params...)
 
 	containerName := s.getContainerName(dest)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -705,28 +704,6 @@ func (s *CosmosDBAdapter) executeQuery(
 	}
 
 	return page, err
-}
-
-// extractParams merges all provided parameter maps into a single map
-func (s *CosmosDBAdapter) extractParams(params ...map[string]any) map[string]any {
-	flatParams := make(map[string]any)
-	for _, param := range params {
-		maps.Copy(flatParams, param)
-	}
-	return flatParams
-}
-
-// extractSortDirection extracts and validates sort direction from params
-func (s *CosmosDBAdapter) extractSortDirection(paramMap map[string]any) SortingDirection {
-	if dir, exists := paramMap[SortDirectionKey]; exists {
-		if dirStr, ok := dir.(string); ok {
-			switch SortingDirection(strings.ToUpper(dirStr)) {
-			case Descending:
-				return Descending
-			}
-		}
-	}
-	return Ascending
 }
 
 // buildFilter constructs WHERE clause conditions from filter map

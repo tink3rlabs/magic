@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -517,7 +518,7 @@ func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor st
 func (s *CosmosDBAdapter) executePaginatedQuery(
 	dest any,
 	sortKey string,
-	sortDirection string,
+	sortDirection SortingDirection,
 	limit int,
 	cursor string,
 	filter map[string]any,
@@ -708,27 +709,24 @@ func (s *CosmosDBAdapter) executeQuery(
 
 // extractParams merges all provided parameter maps into a single map
 func (s *CosmosDBAdapter) extractParams(params ...map[string]any) map[string]any {
-	paramMap := make(map[string]any)
+	flatParams := make(map[string]any)
 	for _, param := range params {
-		for k, v := range param {
-			paramMap[k] = v
-		}
+		maps.Copy(flatParams, param)
 	}
-	return paramMap
+	return flatParams
 }
 
 // extractSortDirection extracts and validates sort direction from params
-func (s *CosmosDBAdapter) extractSortDirection(paramMap map[string]any) string {
-	sortDirection := "ASC" // Default to ASC
-	if dir, exists := paramMap["sort_direction"]; exists {
+func (s *CosmosDBAdapter) extractSortDirection(paramMap map[string]any) SortingDirection {
+	if dir, exists := paramMap[SortDirectionKey]; exists {
 		if dirStr, ok := dir.(string); ok {
-			sortDirection = strings.ToUpper(dirStr)
-			if sortDirection != "ASC" && sortDirection != "DESC" {
-				sortDirection = "ASC" // Fallback to ASC for invalid values
+			switch SortingDirection(strings.ToUpper(dirStr)) {
+			case Descending:
+				return Descending
 			}
 		}
 	}
-	return sortDirection
+	return Ascending
 }
 
 // buildFilter constructs WHERE clause conditions from filter map

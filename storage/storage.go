@@ -47,6 +47,15 @@ const (
 	COSMOSDB_PROVIDER StorageProviders = "cosmosdb"
 )
 
+type SortingDirection string
+
+const (
+	Ascending  SortingDirection = "ASC"
+	Descending SortingDirection = "DESC"
+)
+
+const SortDirectionKey = "sort_direction"
+
 func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, config any) (StorageAdapter, error) {
 	if config == nil {
 		config = make(map[string]string)

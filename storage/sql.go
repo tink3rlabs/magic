@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"strings"
 	"sync"
@@ -332,13 +333,11 @@ func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string,
 }
 
 func extractParams(params ...map[string]any) map[string]any {
-	paramMap := make(map[string]any)
+	flatParams := make(map[string]any)
 	for _, param := range params {
-		for k, v := range param {
-			paramMap[k] = v
-		}
+		maps.Copy(flatParams, param)
 	}
-	return paramMap
+	return flatParams
 }
 
 func extractSortDirection(paramMap map[string]any) string {

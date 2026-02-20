@@ -343,7 +343,8 @@ func extractParams(params ...map[string]any) map[string]any {
 func extractSortDirection(paramMap map[string]any) SortingDirection {
 	if dir, exists := paramMap[SortDirectionKey]; exists {
 		if dirStr, ok := dir.(string); ok {
-			if SortingDirection(strings.ToUpper(dirStr)) == Descending {
+			switch SortingDirection(strings.ToUpper(dirStr)) {
+			case Descending:
 				return Descending
 			}
 		}

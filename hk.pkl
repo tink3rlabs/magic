@@ -1,0 +1,56 @@
+amends "package://github.com/jdx/hk/releases/download/v1.36.0/hk@1.36.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.36.0/hk@1.36.0#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+    ["shellcheck"] = Builtins.shellcheck
+    ["golangci-lint"] = (Builtins.golangci_lint) {
+        // Run on the whole project instead of individual files
+        check = "golangci-lint run --fix=false ./..."
+        fix = "golangci-lint run --fix ./..."
+        // Disable batching since we aren't passing specific files anymore
+        batch = false
+      }
+    ["yamllint"] = Builtins.yamllint
+    ["mixed-line-ending"] = Builtins.mixed_line_ending
+    ["end-of-line-fixer"] = Builtins.newlines
+    // ["go-sec"] = (Builtins.go_sec) {
+    //     // Run on the whole project instead of individual files
+    //     check = "gosec ./..."
+    //     // Disable batching since we aren't passing specific files anymore
+    //     batch = false
+    // }
+    // ["go-vet"] = (Builtins.go_vet) {
+    //     // Run on the whole project instead of individual files
+    //     check = "go vet ./..."
+    //     // Disable batching since we aren't passing specific files anymore
+    //     batch = false
+    // }
+    // ["go-vuln-check"] = (Builtins.go_vuln_check) {
+    //     // Run on the whole project instead of individual files
+    //     check = "govulncheck ./..."
+    //     // Disable batching since we aren't passing specific files anymore
+    //     batch = false
+    // }
+    // ["zizmor"] = Builtins.zizmor # Lint Github Actions workflows
+
+    // Or define custom steps:
+    // ["custom"] {
+    //     glob = "**/*.py"
+    //     check = "mypy {{ files }}"
+    // }
+}
+
+hooks {
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps = linters
+    }
+    ["fix"] {
+        fix = true
+        steps = linters
+    }
+    ["check"] {
+        steps = linters
+    }
+}

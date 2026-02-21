@@ -1,25 +1,64 @@
 {
-	"name": "Go",
-	"image": "mcr.microsoft.com/devcontainers/go:1.25-bookworm",
-	"runArgs": [
-		"--add-host=host.docker.internal:host-gateway"
-	],
-	"customizations": {
-		"vscode": {
-			"extensions": [
-				"streetsidesoftware.code-spell-checker",
-				"golang.go",
-				"DavidAnson.vscode-markdownlint"
-			]
-		}
-	},
-	"mounts": [
-		{
-			"source": "${localEnv:HOME}/.ssh",
-			"target": "/home/vscode/.ssh",
-			"type": "bind"
-		}
-	],
-	"remoteUser": "vscode",
-	"postCreateCommand": "curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin latest"
+  "name": "Go",
+  "image": "mcr.microsoft.com/devcontainers/go:1.25-bookworm",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/mise:1": {},
+    "ghcr.io/roul/devcontainer-features/mise-golang:1": {
+      "version": "1.25.3"
+    }
+  },
+  "runArgs": ["--add-host=host.docker.internal:host-gateway"],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "DavidAnson.vscode-markdownlint",
+        "golang.go",
+        "hverlin.mise-vscode",
+        "streetsidesoftware.code-spell-checker",
+        "EditorConfig.EditorConfig",
+        "tamasfe.even-better-toml",
+        "timonwong.shellcheck",
+        "/workspaces/magic/.devcontainer/extensions/pkl-vscode-0.21.0.vsix"
+      ],
+      "settings": {
+        "go.testFlags": ["-v", "-race"],
+        "go.coverOnSingleTest": true,
+        "go.coverOnSingleTestFile": true,
+        "go.coverOnTestPackage": true,
+        "go.lintTool": "golangci-lint",
+        "go.lintOnSave": "package",
+        "[go]": {
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "always"
+          }
+        },
+        "gopls": {
+          "usePlaceholders": false,
+          "staticcheck": true,
+          "formatting.gofumpt": true
+        },
+        "editor.rulers": [120, 180]
+      }
+    }
+  },
+  "mounts": [
+    {
+      "source": "${localEnv:HOME}/.ssh",
+      "target": "/home/vscode/.ssh",
+      "type": "bind"
+    },
+    {
+      "source": "mise-data-volume",
+      "target": "/mnt/mise-data",
+      "type": "volume"
+    }
+  ],
+  "containerEnv": {
+    "MISE_DATA_DIR": "/mnt/mise-data"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/mnt/mise-data/shims"
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "bash .devcontainer/post-create.sh"
 }

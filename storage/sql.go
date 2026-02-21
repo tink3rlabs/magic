@@ -31,8 +31,10 @@ type SQLAdapter struct {
 	provider StorageProviders
 }
 
-var sqlAdapterLock = &sync.Mutex{}
-var sqlAdapterInstance *SQLAdapter
+var (
+	sqlAdapterLock     = &sync.Mutex{}
+	sqlAdapterInstance *SQLAdapter
+)
 
 func GetSQLAdapterInstance(config map[string]string) *SQLAdapter {
 	if sqlAdapterInstance == nil {
@@ -138,7 +140,6 @@ func (s *SQLAdapter) CreateMigrationTable() error {
 		statement = "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY, name TEXT, description TEXT, timestamp INTEGER)"
 	}
 	return s.Execute(statement)
-
 }
 
 func (s *SQLAdapter) UpdateMigrationTable(id int, name string, desc string) error {
@@ -150,7 +151,6 @@ func (s *SQLAdapter) UpdateMigrationTable(id int, name string, desc string) erro
 		statement = fmt.Sprintf(`INSERT INTO %s.migrations VALUES(%v, '%v', '%v', %v)`, s.GetSchemaName(), id, name, desc, time.Now().UnixMilli())
 	}
 	return s.Execute(statement)
-
 }
 
 func (s *SQLAdapter) GetLatestMigration() (int, error) {
@@ -168,7 +168,7 @@ func (s *SQLAdapter) GetLatestMigration() (int, error) {
 	statement = fmt.Sprintf("SELECT max(id) from %s", fromSource)
 	result := s.DB.Raw(statement).Scan(&latestMigration)
 	if result.Error != nil {
-		//either a real issue or there are no migrations yet check if we can query the migration table
+		// either a real issue or there are no migrations yet check if we can query the migration table
 		var count int
 		statement = fmt.Sprintf("SELECT count(*) from %s", fromSource)
 		countResult := s.DB.Raw(statement).Scan(&count)

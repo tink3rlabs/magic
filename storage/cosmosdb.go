@@ -27,8 +27,10 @@ type CosmosDBAdapter struct {
 	databaseName   string
 }
 
-var cosmosDBAdapterLock = &sync.Mutex{}
-var cosmosDBAdapterInstance *CosmosDBAdapter
+var (
+	cosmosDBAdapterLock     = &sync.Mutex{}
+	cosmosDBAdapterInstance *CosmosDBAdapter
+)
 
 func GetCosmosDBAdapterInstance(config map[string]string) *CosmosDBAdapter {
 	if cosmosDBAdapterInstance == nil {

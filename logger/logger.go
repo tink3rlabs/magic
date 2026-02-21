@@ -27,7 +27,6 @@ func MapLogLevel(levelStr string) slog.Level {
 }
 
 func Init(config *Config) {
-
 	var handler slog.Handler
 
 	// Choose the handler based on the format and log level from the config
@@ -41,12 +40,11 @@ func Init(config *Config) {
 	// logger.LogLevel = logger.LogLevel(config.Level)
 	logger := slog.New(handler)
 
-	//Set the global default logger this is the logger that will be used when slog.<LevelName>() functions are used
+	// Set the global default logger this is the logger that will be used when slog.<LevelName>() functions are used
 	slog.SetDefault(logger)
-
 }
 
-// slog doesn't have fatal, hence creating the function
+// Fatal augments slog that missing the function and exits the program with a non-zero status code
 func Fatal(msg string, args ...any) {
 	slog.Error(msg, args...)
 	os.Exit(1)

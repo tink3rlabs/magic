@@ -17,12 +17,14 @@ import (
 
 // internal context key types
 
-type contextKeyTenant struct{}
-type contextKeyUserId struct{}
-type contextKeyUserEmail struct{}
-type contextKeyRoles struct{}
-type contextKeyGroups struct{}
-type contextKeyValidatedClaims struct{}
+type (
+	contextKeyTenant          struct{}
+	contextKeyUserId          struct{}
+	contextKeyUserEmail       struct{}
+	contextKeyRoles           struct{}
+	contextKeyGroups          struct{}
+	contextKeyValidatedClaims struct{}
+)
 
 // ClaimsConfig allows you to configure claim keys. These must match the keys used by your IDP
 type ClaimsConfig struct {

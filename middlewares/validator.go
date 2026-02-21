@@ -31,7 +31,6 @@ func JSONSchemaValidator(schema string, data interface{}) (ValidationResult, err
 	documentLoader := gojsonschema.NewGoLoader(data)
 
 	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
-
 	if err != nil {
 		slog.Error("gojsonschema validation function failed", slog.Any("error", err))
 		return ValidationResult{}, err

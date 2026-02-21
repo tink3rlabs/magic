@@ -1,7 +1,8 @@
+---
 name: Bug Report
 description: Create a detailed bug report to help ups improve magic
-title: 'issue: '
-labels: ['bug', 'triage']
+title: "issue: "
+labels: ["bug", "triage"]
 assignees: []
 body:
   - type: markdown
@@ -60,7 +61,7 @@ body:
     attributes:
       label: Logs & Screenshots
       description: Include relevant logs, errors, screenshots, magic dust or anything that might help us identify the bug.
-      placeholder: 'Attach logs from the browser console or error messages.'
+      placeholder: "Attach logs from the browser console or error messages."
     validations:
       required: true
 

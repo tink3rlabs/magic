@@ -216,6 +216,9 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 }
 
 func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+	if err := validateSortKey(sortKey); err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
 
@@ -235,6 +238,9 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 }
 
 func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+	if err := validateSortKey(sortKey); err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Parse Lucene query
 		destType := reflect.TypeOf(dest).Elem().Elem()

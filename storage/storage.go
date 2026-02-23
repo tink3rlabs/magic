@@ -3,6 +3,10 @@ package storage
 import (
 	"embed"
 	"errors"
+	"fmt"
+	"maps"
+	"regexp"
+	"strings"
 )
 
 var ConfigFs embed.FS
@@ -55,6 +59,47 @@ const (
 )
 
 const SortDirectionKey = "sort_direction"
+
+// extractParams merges all provided parameter maps into a single flat map.
+// When keys collide, later maps win.
+func extractParams(params ...map[string]any) map[string]any {
+	flatParams := make(map[string]any)
+	for _, param := range params {
+		maps.Copy(flatParams, param)
+	}
+	return flatParams
+}
+
+// extractSortDirection reads SortDirectionKey from paramMap and returns the corresponding SortingDirection.
+// Defaults to Ascending when the key is absent.
+// Returns an error if the value is present but not a valid SortingDirection ("ASC" or "DESC", case-insensitive).
+func extractSortDirection(paramMap map[string]any) (SortingDirection, error) {
+	if dir, exists := paramMap[SortDirectionKey]; exists {
+		if dirStr, ok := dir.(string); ok {
+			switch SortingDirection(strings.ToUpper(dirStr)) {
+			case Ascending:
+				return Ascending, nil
+			case Descending:
+				return Descending, nil
+			}
+		}
+		return "", fmt.Errorf("invalid sort direction: %v", dir)
+	}
+	return Ascending, nil
+}
+
+// validColumnName matches identifiers safe to interpolate as SQL/NoSQL column names.
+// Allows letters, digits, and underscores; must start with a letter.
+var validColumnName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+
+// validateSortKey returns an error if key contains characters that could enable
+// injection via ORDER BY or similar clauses where parameterization is not available.
+func validateSortKey(key string) error {
+	if !validColumnName.MatchString(key) {
+		return fmt.Errorf("invalid sort key %q: must match [a-zA-Z][a-zA-Z0-9_]*", key)
+	}
+	return nil
+}
 
 func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, config any) (StorageAdapter, error) {
 	if config == nil {

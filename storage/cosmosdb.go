@@ -429,7 +429,10 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	// Extract sort direction from params
 	paramMap := extractParams(params...)
-	sortDirection := extractSortDirection(paramMap)
+	sortDirection, err := extractSortDirection(paramMap)
+	if err != nil {
+		return "", err
+	}
 
 	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, filter, params...)
 }
@@ -442,7 +445,10 @@ func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit i
 
 	// Extract sort direction from params
 	paramMap := extractParams(params...)
-	sortDirection := extractSortDirection(paramMap)
+	sortDirection, err := extractSortDirection(paramMap)
+	if err != nil {
+		return "", err
+	}
 
 	// Use executePaginatedQuery with empty filter (the query parameter is ignored for CosmosDB)
 	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, map[string]any{}, params...)
@@ -523,6 +529,10 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	filter map[string]any,
 	params ...map[string]any,
 ) (string, error) {
+	if err := validateSortKey(sortKey); err != nil {
+		return "", err
+	}
+
 	// Extract provider-specific parameters
 	paramMap := extractParams(params...)
 

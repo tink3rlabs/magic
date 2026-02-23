@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+func TestListRejectsMaliciousSortKey(t *testing.T) {
+	// Reset singleton so we get a fresh SQLite adapter
+	sqlAdapterInstance = nil
+	adapter := GetSQLAdapterInstance(map[string]string{
+		"provider": "sqlite",
+	})
+	type Row struct {
+		ID string `gorm:"primaryKey"`
+	}
+	_ = adapter.DB.AutoMigrate(&Row{})
+
+	var rows []Row
+	_, err := adapter.List(&rows, "id; DROP TABLE rows", map[string]any{}, 10, "")
+	if err == nil {
+		t.Error("expected error for malicious sortKey, got nil")
+	}
+}
+
 func TestValidateSortKey(t *testing.T) {
 	tests := []struct {
 		name    string

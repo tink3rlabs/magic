@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"reflect"
 	"strings"
 	"sync"
@@ -223,6 +222,9 @@ func (s *SQLAdapter) executePaginatedQuery(
 	cursor string,
 	builder queryBuilder,
 ) (string, error) {
+	if err := validateSortKey(sortKey); err != nil {
+		return "", err
+	}
 	var cursorValue string
 	if cursor != "" {
 		bytes, err := base64.StdEncoding.DecodeString(cursor)
@@ -269,7 +271,10 @@ func (s *SQLAdapter) executePaginatedQuery(
 }
 
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	sortDirection := extractSortDirection(extractParams(params...))
+	sortDirection, err := extractSortDirection(extractParams(params...))
+	if err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
 			query, bindings := s.buildQuery(filter)
@@ -280,7 +285,10 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 }
 
 func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	sortDirection := extractSortDirection(extractParams(params...))
+	sortDirection, err := extractSortDirection(extractParams(params...))
+	if err != nil {
+		return "", err
+	}
 	if query == "" {
 		return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 			return q
@@ -332,25 +340,6 @@ func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string,
 	return "", fmt.Errorf("not implemented yet")
 }
 
-func extractParams(params ...map[string]any) map[string]any {
-	flatParams := make(map[string]any)
-	for _, param := range params {
-		maps.Copy(flatParams, param)
-	}
-	return flatParams
-}
-
-func extractSortDirection(paramMap map[string]any) SortingDirection {
-	if dir, exists := paramMap[SortDirectionKey]; exists {
-		if dirStr, ok := dir.(string); ok {
-			switch SortingDirection(strings.ToUpper(dirStr)) {
-			case Descending:
-				return Descending
-			}
-		}
-	}
-	return Ascending
-}
 
 func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any) {
 	clauses := []string{}

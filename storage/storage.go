@@ -89,14 +89,14 @@ func extractSortDirection(paramMap map[string]any) (SortingDirection, error) {
 }
 
 // validColumnName matches identifiers safe to interpolate as SQL/NoSQL column names.
-// Allows letters, digits, and underscores; must start with a letter.
-var validColumnName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+// Allows letters, digits, and underscores; may start with a letter or underscore.
+var validColumnName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // validateSortKey returns an error if key contains characters that could enable
 // injection via ORDER BY or similar clauses where parameterization is not available.
 func validateSortKey(key string) error {
 	if !validColumnName.MatchString(key) {
-		return fmt.Errorf("invalid sort key %q: must match [a-zA-Z][a-zA-Z0-9_]*", key)
+		return fmt.Errorf("invalid sort key %q: must match [a-zA-Z_][a-zA-Z0-9_]*", key)
 	}
 	return nil
 }

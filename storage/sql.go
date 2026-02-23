@@ -259,12 +259,18 @@ func (s *SQLAdapter) executePaginatedQuery(
 	if destSlice.Len() > limit {
 		lastItem := destSlice.Index(limit - 1)
 		field := reflect.Indirect(lastItem).FieldByName(sortKey)
-		if field.IsValid() && field.Kind() == reflect.String {
+		if !field.IsValid() {
+			slog.Warn("cursor extraction failed: sortKey does not match any exported struct field",
+				"sortKey", sortKey,
+				"hint", "sortKey must be the Go struct field name (e.g. 'CreatedAt'), not the DB column name (e.g. 'created_at')")
+		} else if field.Kind() != reflect.String {
+			slog.Warn("cursor extraction failed: struct field is not a string",
+				"sortKey", sortKey,
+				"kind", field.Kind().String())
+		} else {
 			nextCursor = base64.StdEncoding.EncodeToString([]byte(field.String()))
 		}
 		destSlice.Set(destSlice.Slice(0, limit))
-	} else {
-		nextCursor = ""
 	}
 
 	return nextCursor, nil

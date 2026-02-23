@@ -23,6 +23,9 @@ func TestValidateSortKey(t *testing.T) {
 		{"table.column dot", "t.col", true},
 		{"SQL comment", "id--", true},
 		{"single quote", "id'", true},
+		{"underscore prefix", "_ts", false},          // CosmosDB system fields like _ts are valid
+		{"null byte", "id\x00DROP", true},            // null byte injection rejected
+		{"unicode lookalike", "iа", true},            // Cyrillic а (U+0430) rejected, not ASCII
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

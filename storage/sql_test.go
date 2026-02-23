@@ -7,7 +7,9 @@ import (
 
 func TestListRejectsMaliciousSortKey(t *testing.T) {
 	// Reset singleton so we get a fresh SQLite adapter
+	prev := sqlAdapterInstance
 	sqlAdapterInstance = nil
+	t.Cleanup(func() { sqlAdapterInstance = prev })
 	adapter := GetSQLAdapterInstance(map[string]string{
 		"provider": "sqlite",
 	})

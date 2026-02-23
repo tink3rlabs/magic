@@ -520,6 +520,10 @@ func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor st
 	return nextCursor, nil
 }
 
+// executePaginatedQuery runs a cursor-paginated Cosmos DB query against the container for dest.
+// sortKey must be a valid field identifier (see validateSortKey).
+// sortDirection defaults to Ascending when not supplied by the caller.
+// Returns the Cosmos DB continuation token as the next cursor, or "" on the final page.
 func (s *CosmosDBAdapter) executePaginatedQuery(
 	dest any,
 	sortKey string,

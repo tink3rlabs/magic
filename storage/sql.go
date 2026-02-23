@@ -214,6 +214,11 @@ func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[strin
 	return result.Error
 }
 
+// executePaginatedQuery runs a cursor-paginated SELECT using the provided query builder scope.
+// sortKey must be the Go struct field name (e.g. "CreatedAt"), not the DB column name — it is
+// used both in the ORDER BY clause and for cursor extraction via reflection.
+// sortDirection defaults to Ascending when not supplied by the caller.
+// Returns a base64-encoded cursor for the next page, or "" on the final page.
 func (s *SQLAdapter) executePaginatedQuery(
 	dest any,
 	sortKey string,

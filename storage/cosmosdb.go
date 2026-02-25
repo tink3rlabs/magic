@@ -431,7 +431,7 @@ func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 	paramMap := extractParams(params...)
 	sortDirection, err := extractSortDirection(paramMap)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list: %w", err)
 	}
 
 	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, filter, params...)
@@ -447,7 +447,7 @@ func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit i
 	paramMap := extractParams(params...)
 	sortDirection, err := extractSortDirection(paramMap)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to search: %w", err)
 	}
 
 	// Use executePaginatedQuery with empty filter (the query parameter is ignored for CosmosDB)

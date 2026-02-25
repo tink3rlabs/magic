@@ -281,7 +281,7 @@ func (s *SQLAdapter) executePaginatedQuery(
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	sortDirection, err := extractSortDirection(extractParams(params...))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list: %w", err)
 	}
 	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
@@ -295,7 +295,7 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	sortDirection, err := extractSortDirection(extractParams(params...))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to search: %w", err)
 	}
 	if query == "" {
 		return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {

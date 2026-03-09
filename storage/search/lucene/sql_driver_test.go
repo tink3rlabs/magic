@@ -536,6 +536,65 @@ func TestSQLDriver_RenderComparison(t *testing.T) {
 	}
 }
 
+func TestSQLDriver_GroupedFieldOR(t *testing.T) {
+	fields := []FieldInfo{
+		{Name: "tenant_id", Type: reflect.TypeOf("")},
+		{Name: "id", Type: reflect.TypeOf("")},
+	}
+
+	// Simulate go-lucene output for: tenant_id:(abc123 OR null)
+	// EQUALS(tenant_id, OR(EQUALS(default_field/id, abc123), EQUALS(default_field/id, null)))
+	innerOR := &expr.Expression{
+		Op: expr.Or,
+		Left: &expr.Expression{
+			Op:    expr.Equals,
+			Left:  expr.Column("id"), // default field — wrong field, bug we're fixing
+			Right: &expr.Expression{Op: expr.Literal, Left: "abc123"},
+		},
+		Right: &expr.Expression{
+			Op:    expr.Equals,
+			Left:  expr.Column("id"), // default field — wrong field, bug we're fixing
+			Right: false,             // go-lucene represents null as bool(false)
+		},
+	}
+	outerEq := &expr.Expression{
+		Op:    expr.Equals,
+		Left:  expr.Column("tenant_id"),
+		Right: innerOR,
+	}
+
+	for _, provider := range []string{"postgresql", "mysql", "sqlite"} {
+		t.Run("tenant_id grouped OR with null keyword/"+provider, func(t *testing.T) {
+			driver, err := NewSQLDriver(fields, provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver() error = %v", err)
+			}
+			sql, params, err := driver.RenderParam(outerEq)
+			if err != nil {
+				t.Fatalf("RenderParam() error = %v", err)
+			}
+			// Must use tenant_id, not id
+			if strings.Contains(sql, `"id"`) {
+				t.Errorf("RenderParam() sql = %v — uses wrong field 'id', want 'tenant_id'", sql)
+			}
+			if !strings.Contains(sql, `"tenant_id"`) {
+				t.Errorf("RenderParam() sql = %v — missing 'tenant_id'", sql)
+			}
+			if !strings.Contains(sql, "IS NULL") {
+				t.Errorf("RenderParam() sql = %v — missing IS NULL for null value", sql)
+			}
+			if !strings.Contains(sql, "OR") {
+				t.Errorf("RenderParam() sql = %v — missing OR", sql)
+			}
+			// Should have exactly 1 param (for abc123), null uses IS NULL not a placeholder
+			if len(params) != 1 {
+				t.Errorf("RenderParam() params count = %v, want 1", len(params))
+			}
+			t.Logf("SQL: %s | Params: %v", sql, params)
+		})
+	}
+}
+
 func TestSQLDriver_RenderBinary(t *testing.T) {
 	fields := []FieldInfo{
 		{Name: "name", Type: reflect.TypeOf("")},

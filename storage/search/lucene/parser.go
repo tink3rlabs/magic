@@ -671,7 +671,11 @@ func (p *Parser) expandImplicitTerms(query string) string {
 	return strings.Join(result, " ")
 }
 
-// tokenizeQuery splits query into tokens, preserving quoted strings and range brackets.
+// tokenizeQuery splits query into tokens, preserving quoted strings, range brackets,
+// and field-grouped expressions (field:(a OR b OR null)).
+// When a field: token is immediately followed by '(', the entire field:(...) construct
+// is kept as a single token so that expandImplicitTerms does not incorrectly expand
+// the inner terms as bare implicit search terms.
 func tokenizeQuery(query string) []string {
 	var tokens []string
 	var current strings.Builder
@@ -716,8 +720,41 @@ func tokenizeQuery(query string) []string {
 			continue
 		}
 
-		// Handle parentheses as separate tokens
-		if !inQuotes && !inRange && (c == '(' || c == ')') {
+		// Handle parentheses.
+		// If the current buffer ends with ':' (i.e. we just finished a field name like "field:"),
+		// treat the entire field:(...) grouped expression as one token so that terms inside
+		// the group are not mistakenly treated as implicit search terms.
+		if !inQuotes && !inRange && c == '(' {
+			if current.Len() > 0 && current.String()[current.Len()-1] == ':' {
+				// Consume the entire parenthesised group as part of this token.
+				current.WriteByte(c)
+				parenDepth := 1
+				i++
+				for i < len(query) && parenDepth > 0 {
+					ch := query[i]
+					current.WriteByte(ch)
+					if ch == '(' {
+						parenDepth++
+					} else if ch == ')' {
+						parenDepth--
+					}
+					if parenDepth > 0 {
+						i++
+					}
+				}
+				// The loop exits with i pointing at the closing ')' already written.
+				continue
+			}
+			// Standalone '(' — emit as its own token.
+			if current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+			tokens = append(tokens, string(c))
+			continue
+		}
+
+		if !inQuotes && !inRange && c == ')' {
 			if current.Len() > 0 {
 				tokens = append(tokens, current.String())
 				current.Reset()

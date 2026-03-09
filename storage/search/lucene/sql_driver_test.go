@@ -1153,6 +1153,16 @@ func TestIsNullValue(t *testing.T) {
 		{
 			name:  "nil value",
 			input: nil,
+			want:  true,
+		},
+		{
+			name:  "bool false (go-lucene grouped OR null representation)",
+			input: false,
+			want:  true,
+		},
+		{
+			name:  "bool true (not null)",
+			input: true,
 			want:  false,
 		},
 		{

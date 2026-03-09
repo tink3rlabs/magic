@@ -211,18 +211,18 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 	}
 
 	// When go-lucene parses grouped OR/AND expressions like field:(a OR b OR null) with a
-	// default field set, it produces EQUALS(field, OR(EQUALS(field, a), EQUALS(field, null))).
-	// The right side is already a fully-formed boolean expression — render it directly instead
-	// of wrapping it in another equality comparison (which would produce invalid SQL like
-	// "field" = (("field" = ?) OR ("field" IS NULL))).
+	// default field set, it produces EQUALS(outer_field, OR(EQUALS(default_field, a), EQUALS(default_field, null))).
+	// The inner leaves use the default field, not the outer field. We must re-render each leaf
+	// using leftStr (the correct outer field) to avoid producing wrong SQL like
+	// ("id" = ?) OR ("id" IS NULL) when the query was tenant_id:(abc123 OR null).
 	if rightExpr, ok := e.Right.(*expr.Expression); ok && e.Op == expr.Equals {
 		switch rightExpr.Op {
 		case expr.Or, expr.And:
-			rightStr, rightParams, err := s.renderParamInternal(rightExpr)
+			groupStr, groupParams, err := s.renderGroupedFieldExpr(leftStr, rightExpr)
 			if err != nil {
 				return "", nil, err
 			}
-			return rightStr, append(leftParams, rightParams...), nil
+			return groupStr, append(leftParams, groupParams...), nil
 		}
 	}
 
@@ -248,6 +248,54 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 	}
 
 	return fmt.Sprintf("%s %s %s", leftStr, opSymbol, rightStr), params, nil
+}
+
+// renderGroupedFieldExpr renders an OR/AND expression tree where each leaf comparison
+// should use the given fieldSQL column instead of whatever field the leaf has internally.
+// This handles go-lucene's behavior of wrapping grouped field expressions as
+// EQUALS(outer_field, OR(EQUALS(default_field, v1), EQUALS(default_field, v2))).
+func (s *SQLDriver) renderGroupedFieldExpr(fieldSQL string, e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := s.renderGroupedFieldLeaf(fieldSQL, e.Left)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if e.Right == nil {
+		return leftStr, leftParams, nil
+	}
+
+	rightStr, rightParams, err := s.renderGroupedFieldLeaf(fieldSQL, e.Right)
+	if err != nil {
+		return "", nil, err
+	}
+
+	op := " OR "
+	if e.Op == expr.And {
+		op = " AND "
+	}
+	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
+}
+
+// renderGroupedFieldLeaf renders a single node (leaf or sub-tree) in a grouped field expression,
+// always using fieldSQL as the column name regardless of what the node's own field is.
+func (s *SQLDriver) renderGroupedFieldLeaf(fieldSQL string, v any) (string, []any, error) {
+	if e, ok := v.(*expr.Expression); ok {
+		if e.Op == expr.Or || e.Op == expr.And {
+			return s.renderGroupedFieldExpr(fieldSQL, e)
+		}
+		if e.Op == expr.Equals {
+			// Use the value from this leaf but with the outer field
+			return s.renderGroupedFieldLeaf(fieldSQL, e.Right)
+		}
+	}
+	if isNullValue(v) {
+		return fmt.Sprintf("%s IS NULL", fieldSQL), nil, nil
+	}
+	valStr, valParams, err := s.serializeValue(v)
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("%s = %s", fieldSQL, valStr), valParams, nil
 }
 
 // renderBinary handles binary and unary logical operators recursively.

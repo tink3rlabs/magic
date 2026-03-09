@@ -114,6 +114,7 @@ type MixedModel struct {
 type NullModel struct {
 	Name          string `json:"name"`
 	ParentID      string `json:"parent_id"`
+	TenantID      string `json:"tenant_id"`
 	DeletedAt     string `json:"deleted_at"`
 	AttachmentIDs string `json:"attachment_ids"`
 }
@@ -766,6 +767,62 @@ func TestNullValueQueries(t *testing.T) {
 					}
 				}
 			}
+		})
+	}
+}
+
+// TestGroupedORWithNull tests that field:(value OR null) produces IS NULL for the null term.
+// Uses a single-field model to avoid implicit-search expansion of the bare terms.
+// Regression test for: go-lucene parses field:(a OR null) with WithDefaultField into
+// EQUALS(field, OR(EQUALS(field,a), EQUALS(field,"null"))), which must not wrap the OR
+// in another equality check.
+func TestGroupedORWithNull(t *testing.T) {
+	type TenantModel struct {
+		TenantID string `json:"tenant_id"`
+	}
+	parser := createParser(t, TenantModel{})
+
+	tests := []struct {
+		name       string
+		query      string
+		wantSQL    []string
+		wantNot    []string
+		wantParams []any
+	}{
+		{
+			name:       "grouped OR with null keyword",
+			query:      `tenant_id:(abc123 OR null)`,
+			wantSQL:    []string{`"tenant_id"`, "IS NULL", "OR"},
+			wantNot:    []string{"= FALSE", "= false", "ILIKE"},
+			wantParams: []any{"abc123"},
+		},
+		{
+			name:       "grouped OR with multiple values and null",
+			query:      `tenant_id:(abc123 OR def456 OR null)`,
+			wantSQL:    []string{`"tenant_id"`, "IS NULL", "OR"},
+			wantNot:    []string{"= FALSE", "= false"},
+			wantParams: []any{"abc123", "def456"},
+		},
+		{
+			name:       "grouped OR without null is unchanged",
+			query:      `tenant_id:(abc123 OR def456)`,
+			wantSQL:    []string{`"tenant_id"`, "OR"},
+			wantNot:    []string{"IS NULL", "= FALSE"},
+			wantParams: []any{"abc123", "def456"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q) error = %v", tt.query, err)
+			}
+			assertSQLContains(t, sql, tt.wantSQL, tt.name)
+			if len(tt.wantNot) > 0 {
+				assertSQLNotContains(t, sql, tt.wantNot, tt.name)
+			}
+			assertParamsEqual(t, params, tt.wantParams, tt.name)
 		})
 	}
 }

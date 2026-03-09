@@ -210,6 +210,22 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 		return "", nil, fmt.Errorf("cannot use comparison operators (>, <, >=, <=) with null value")
 	}
 
+	// When go-lucene parses grouped OR/AND expressions like field:(a OR b OR null) with a
+	// default field set, it produces EQUALS(field, OR(EQUALS(field, a), EQUALS(field, null))).
+	// The right side is already a fully-formed boolean expression — render it directly instead
+	// of wrapping it in another equality comparison (which would produce invalid SQL like
+	// "field" = (("field" = ?) OR ("field" IS NULL))).
+	if rightExpr, ok := e.Right.(*expr.Expression); ok && e.Op == expr.Equals {
+		switch rightExpr.Op {
+		case expr.Or, expr.And:
+			rightStr, rightParams, err := s.renderParamInternal(rightExpr)
+			if err != nil {
+				return "", nil, err
+			}
+			return rightStr, append(leftParams, rightParams...), nil
+		}
+	}
+
 	rightStr, rightParams, err := s.serializeValue(e.Right)
 	if err != nil {
 		return "", nil, err
@@ -502,16 +518,22 @@ func isJSONSyntax(col string) bool {
 }
 
 // isNullValue checks if a value represents null in Lucene query syntax.
-// Supports: null, NULL, Null (case-insensitive)
-// Note: This is a SQL-specific extension (vanilla Lucene doesn't support NULL values).
-// We intentionally do NOT support "empty" or "nil" as they could be legitimate search values.
+// Handles the string "null" (case-insensitive), Go nil, and Go bool(false).
+// Note: go-lucene parses the bare `null` keyword as bool(false) in grouped
+// expressions like field:(a OR null), bypassing the string literal path.
 func isNullValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	// go-lucene parses the bare `null` keyword as bool(false) in grouped OR/AND
+	if b, ok := v.(bool); ok && !b {
+		return true
+	}
 	strVal := extractStringValue(v)
 	if strVal == "" {
 		return false
 	}
-	lower := strings.ToLower(strVal)
-	return lower == "null"
+	return strings.ToLower(strVal) == "null"
 }
 
 func extractStringValue(v any) string {

@@ -733,9 +733,10 @@ func tokenizeQuery(query string) []string {
 				for i < len(query) && parenDepth > 0 {
 					ch := query[i]
 					current.WriteByte(ch)
-					if ch == '(' {
+					switch ch {
+					case '(':
 						parenDepth++
-					} else if ch == ')' {
+					case ')':
 						parenDepth--
 					}
 					if parenDepth > 0 {

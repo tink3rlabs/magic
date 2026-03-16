@@ -241,13 +241,19 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
-	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
-		// Parse Lucene query
-		destType := reflect.TypeOf(dest).Elem().Elem()
-		model := reflect.New(destType).Elem().Interface()
-		parser, _ := lucene.NewParser(model)
-		whereClause, params, _ := parser.ParseToDynamoDBPartiQL(query)
 
+	destType := reflect.TypeOf(dest).Elem().Elem()
+	model := reflect.New(destType).Elem().Interface()
+	parser, err := lucene.NewParser(model)
+	if err != nil {
+		return "", err
+	}
+	whereClause, dynamoParams, err := parser.ParseToDynamoDBPartiQL(query)
+	if err != nil {
+		return "", err
+	}
+
+	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Build query
 		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
 		if whereClause != "" {
@@ -258,7 +264,7 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 		}
 
 		input.Statement = aws.String(query)
-		input.Parameters = params
+		input.Parameters = dynamoParams
 		return input
 	})
 }

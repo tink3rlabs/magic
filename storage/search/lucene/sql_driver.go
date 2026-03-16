@@ -673,7 +673,7 @@ func convertToPostgresPlaceholders(query string) string {
 	result := strings.Builder{}
 	for i := 0; i < len(query); i++ {
 		if query[i] == '?' {
-			result.WriteString(fmt.Sprintf("$%d", paramIndex))
+			fmt.Fprintf(&result, "$%d", paramIndex)
 			paramIndex++
 		} else {
 			result.WriteByte(query[i])

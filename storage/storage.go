@@ -27,12 +27,12 @@ type StorageAdapter interface {
 	Update(item any, filter map[string]any, params ...map[string]any) error
 	Delete(item any, filter map[string]any, params ...map[string]any) error
 	// List returns a page of items matching filter, ordered by sortKey.
-	// sortKey must be the Go struct field name (e.g. "CreatedAt"), not the DB column name.
+	// sortKey must be the JSON/column name (e.g. "created_at"), not the Go struct field name.
 	// Pass SortDirectionKey via params to control order; defaults to Ascending.
 	// Returns a cursor for the next page, or "" on the final page.
 	List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error)
-	// Search returns a page of items matching a query string, ordered by sortKey.
-	// sortKey must be the Go struct field name (e.g. "CreatedAt"), not the DB column name.
+	// Search returns a page of items matching a Lucene query string, ordered by sortKey.
+	// sortKey must be the JSON/column name (e.g. "created_at"), not the Go struct field name.
 	// Pass SortDirectionKey via params to control order; defaults to Ascending.
 	// Returns a cursor for the next page, or "" on the final page.
 	Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error)

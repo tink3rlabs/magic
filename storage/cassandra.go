@@ -17,19 +17,16 @@ import (
 	"github.com/scylladb/gocqlx/v2"
 	"github.com/scylladb/gocqlx/v2/qb"
 	"github.com/scylladb/gocqlx/v2/table"
-	"github.com/tink3rlabs/magic/logger"
 )
 
 var (
-	cassandraAdapterLock     = &sync.Mutex{}
-	cassandraAdapterInstance *CassandraAdapter
+	cassandraAdapterLock = &sync.Mutex{}
+	instance             *CassandraAdapter
 )
 
 const (
 	hosts           = "hosts"
 	keyspace        = "keyspace"
-	tables          = "tables"
-	provider        = "provider"
 	username        = "username"
 	password        = "password"
 	protocolVersion = "protocolVersion"
@@ -42,30 +39,36 @@ type CassandraAdapter struct {
 	clusterConfig *gocql.ClusterConfig
 	provider      StorageProviders
 	tables        map[string]*table.Table
+	session       gocqlx.Session
 }
 
 func GetCassandraAdapter(config map[string]string) (*CassandraAdapter, error) {
-	if cassandraAdapterInstance == nil {
+	if instance == nil {
 		cassandraAdapterLock.Lock()
 		defer cassandraAdapterLock.Unlock()
-		if cassandraAdapterInstance == nil {
-			cassandraAdapterInstance = &CassandraAdapter{config: config}
-			cassandraAdapterInstance.initConfig()
+		if instance == nil {
+			instance = &CassandraAdapter{config: config}
+			err := instance.initConfig()
+			if err != nil {
+				return nil, fmt.Errorf("initConfig failed: %w", err)
+			}
+			if session, err := instance.createSession(); err != nil {
+				return nil, fmt.Errorf("failed to create session: %w", err)
+			} else {
+				instance.session = session
+			}
+
 			// The call to createSchema will set clusterConfig.Keyspace to the
 			// actual Keyspace, this is why its here.
-			if createSchemaErr := cassandraAdapterInstance.CreateSchema(); createSchemaErr != nil {
-				errMessage := "failed to call CreateSchema"
-				slog.Error(errMessage, slog.Any("error", createSchemaErr))
-				return nil, errors.Join(fmt.Errorf("%s", errMessage), createSchemaErr)
+			if createSchemaErr := instance.CreateSchema(); createSchemaErr != nil {
+				return nil, fmt.Errorf("failed to create schema: %w", createSchemaErr)
 			}
-			if err := cassandraAdapterInstance.initializeTableMappers(); err != nil {
-				errMessage := "failed to call initializeTableMappers"
-				slog.Error(errMessage, slog.Any("error", err))
-				return nil, errors.Join(fmt.Errorf("%s", errMessage), err)
+			if err := instance.initializeTableMappers(); err != nil {
+				return nil, fmt.Errorf("failed to initialize table mappers: %w", err)
 			}
 		}
 	}
-	return cassandraAdapterInstance, nil
+	return instance, nil
 
 }
 
@@ -81,35 +84,38 @@ func (c *CassandraAdapter) GetType() StorageAdapterType {
 	return CASSANDRA
 }
 
-func (c *CassandraAdapter) initConfig() {
+func (c *CassandraAdapter) initConfig() error {
 	c.clusterConfig = gocql.NewCluster(strings.Split(c.config[hosts], ",")...)
 
-	/**
-	 * Setting to "system" to handle the case where the actual
-	 * Keyspace does not exist yet, so createSchema() will create it, then
-	 * set the actual Keyspace in c.clusterConfig
-	 */
+	// Setting to "system" to handle the case where the actual
+	// Keyspace does not exist yet, so createSchema() will create it, then
+	// set the actual Keyspace in c.clusterConfig
 	c.clusterConfig.Keyspace = "system"
 	if username, ok := c.config[username]; ok {
-		c.clusterConfig.Authenticator = gocql.PasswordAuthenticator{
-			Username: username,
-			Password: c.config[password],
+		if password, ok := c.config[password]; !ok {
+			return fmt.Errorf("password is required when username is provided")
+		} else {
+			c.clusterConfig.Authenticator = gocql.PasswordAuthenticator{
+				Username: username,
+				Password: c.config[password],
+			}
 		}
 	}
 	if protoVersion, ok := c.config[protocolVersion]; ok {
 		parsedProtoVer, parseErr := strconv.Atoi(protoVersion)
 		if parseErr != nil {
-			logger.Fatal("failed to parse protocol version %s", protoVersion)
+			return fmt.Errorf("failed to parse protocolVersion %s: %w", protoVersion, parseErr)
 		}
 		c.clusterConfig.ProtoVersion = parsedProtoVer
 	}
 	if portStr, ok := c.config[port]; ok {
 		parsedPort, parseErr := strconv.Atoi(portStr)
 		if parseErr != nil {
-			logger.Fatal("failed to parse port %s", portStr)
+			return fmt.Errorf("failed to parse port %s: %w", portStr, parseErr)
 		}
 		c.clusterConfig.Port = parsedPort
 	}
+	return nil
 }
 
 func (c *CassandraAdapter) createSession() (gocqlx.Session, error) {
@@ -117,19 +123,9 @@ func (c *CassandraAdapter) createSession() (gocqlx.Session, error) {
 }
 
 func (c *CassandraAdapter) initializeTableMappers() error {
-	s, e := c.createSession()
-	if e != nil {
-		return errors.Join(
-			fmt.Errorf("failed creating a session"),
-			e,
-		)
-	}
-	metadata, mErr := s.KeyspaceMetadata(c.config[keyspace])
+	metadata, mErr := c.session.KeyspaceMetadata(c.config[keyspace])
 	if mErr != nil {
-		return errors.Join(
-			fmt.Errorf("failed reading tables metadata"),
-			mErr,
-		)
+		return fmt.Errorf("failed reading tables metadata: %w", mErr)
 	}
 
 	for _, t := range metadata.Tables {
@@ -167,27 +163,15 @@ func (c *CassandraAdapter) getTableForItem(item any) (*table.Table, error) {
 }
 
 func (c *CassandraAdapter) Execute(statement string) error {
-	if s, err := c.createSession(); err != nil {
-		return errors.Join(
-			fmt.Errorf("failed creating a session"),
-			err,
-		)
-	} else {
-		defer s.Close()
-		return s.ExecStmt(statement)
+	execErr := c.session.ExecStmt(statement)
+	if execErr != nil {
+		return fmt.Errorf("failed executing statement %s: %w", statement, execErr)
 	}
+	return nil
 }
 
 func (c *CassandraAdapter) Ping() error {
-	if s, err := c.createSession(); err != nil {
-		return errors.Join(
-			fmt.Errorf("failed creating a session to %v", c.clusterConfig.Hosts),
-			err,
-		)
-	} else {
-		defer s.Close()
-		return nil
-	}
+	return c.session.Query("SELECT now() FROM system.local", []string{}).ExecRelease()
 }
 
 // CreateSchema is a function that will create the application Cassandra Keyspace
@@ -208,14 +192,8 @@ func (c *CassandraAdapter) CreateSchema() error {
 		),
 	)
 	if createKeyspaceErr != nil {
-		return errors.Join(
-			fmt.Errorf("failed creating keyspace %s", c.GetSchemaName()),
-			createKeyspaceErr,
-		)
+		return fmt.Errorf("failed creating keyspace %s: %w", c.GetSchemaName(), createKeyspaceErr)
 	}
-	slog.Debug("schema created, setting clusterConfig.Keyspace",
-		slog.String("keyspace", c.GetSchemaName()),
-	)
 	c.clusterConfig.Keyspace = c.config[keyspace]
 	return nil
 }
@@ -235,100 +213,70 @@ func (c *CassandraAdapter) CreateMigrationTable() error {
 func (c *CassandraAdapter) UpdateMigrationTable(id int, name string, desc string) error {
 	t, e := c.getTableForItem("migrations")
 	if e != nil {
-		return errors.Join(
-			fmt.Errorf("failed getting migration table"),
-			e,
-		)
+		return fmt.Errorf("failed getting migration table: %w", e)
 	}
-	s, sErr := c.createSession()
-	if sErr != nil {
-		return errors.Join(
-			fmt.Errorf("failed creating a session"),
-			sErr,
-		)
+	params := map[string]any{
+		"id":          id,
+		"name":        name,
+		"description": desc,
+		"timestamp":   time.Now().UnixMilli(),
 	}
-	params := map[string]any{}
-	params["id"] = id
-	params["name"] = name
-	params["description"] = desc
-	params["timestamp"] = time.Now().UnixMilli()
-	q := t.InsertQuery(s)
-	q = q.BindMap(params)
-	return q.ExecRelease()
+	q := t.InsertQuery(c.session).BindMap(params)
+	err := q.ExecRelease()
+	if err != nil {
+		return fmt.Errorf("failed updating migration table: %w", err)
+	}
+	return nil
 }
 
 func (c *CassandraAdapter) GetLatestMigration() (int, error) {
-	t, e := c.getTableForItem("migrations")
-	if e != nil {
-		return -1, errors.Join(
-			fmt.Errorf("failed getting migration table"),
-			e,
-		)
-	}
-	s, sErr := c.createSession()
-	if sErr != nil {
-		return -1, errors.Join(
-			fmt.Errorf("failed creating a session"),
-			e,
-		)
+	t, exist := c.tables["migrations"]
+	if !exist {
+		return -1, errors.New("failed getting migration table")
 	}
 	var latestMigration int
-	migrationErr := t.SelectBuilder("id").Max("id").Query(s).Bind(&latestMigration).ExecRelease()
-	if migrationErr != nil {
-		return -1, errors.Join(
-			fmt.Errorf("failed getLatestMigration"),
-			migrationErr,
-		)
+	err := t.SelectBuilder("id").
+		Max("id").
+		Query(c.session).
+		Bind(&latestMigration).
+		ExecRelease()
+	if err != nil {
+		return -1,
+			fmt.Errorf("failed getLatestMigration: %w", err)
 	}
 	return latestMigration, nil
 }
 
 func (c *CassandraAdapter) Create(item any, params ...map[string]any) error {
-	s, err := c.createSession()
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-
 	t, tableErr := c.getTableForItem(item)
 	if tableErr != nil {
-		return tableErr
+		return fmt.Errorf("failed to get table for item: %w", tableErr)
 	}
-	return t.InsertQuery(s).BindStruct(item).ExecRelease()
+	return t.InsertQuery(c.session).BindStruct(item).ExecRelease()
 }
-func (c *CassandraAdapter) Get(dest any, filters map[string]any, params ...map[string]any) error {
-	s, sessionErr := c.createSession()
-	if sessionErr != nil {
-		return errors.Join(fmt.Errorf("get failed to create session"), sessionErr)
-	}
-	defer s.Close()
 
+func (c *CassandraAdapter) Get(dest any, filters map[string]any, params ...map[string]any) error {
 	t, tableErr := c.getTableForItem(dest)
 	if tableErr != nil {
-		return errors.Join(fmt.Errorf("get failed getting table for item"), tableErr)
+		return fmt.Errorf("failed getting table for item: %w", tableErr)
 	}
-	return t.GetQuery(s).BindMap(filters).GetRelease(dest)
+	return t.GetQuery(c.session).BindMap(filters).GetRelease(dest)
 }
-func (c *CassandraAdapter) Update(item any, filters map[string]any, params ...map[string]any) error {
-	s, sessionErr := c.createSession()
-	if sessionErr != nil {
-		return errors.Join(fmt.Errorf("update failed to create session"), sessionErr)
-	}
-	defer s.Close()
 
+func (c *CassandraAdapter) Update(item any, filters map[string]any, params ...map[string]any) error {
 	t, tableErr := c.getTableForItem(item)
 	if tableErr != nil {
-		return errors.Join(fmt.Errorf("update failed getting table for item"), tableErr)
+		return fmt.Errorf("failed getting table for item: %w", tableErr)
 	}
 
 	marshalledItem, marshalErr := json.Marshal(item)
 	if marshalErr != nil {
-		return errors.Join(fmt.Errorf("updated failed json.Marshal"), marshalErr)
+		return fmt.Errorf("failed json.Marshal: %w", marshalErr)
 	}
 	var jsonMap map[string]any
 	unmarshalErr := json.Unmarshal(marshalledItem, &jsonMap)
 	if unmarshalErr != nil {
-		return errors.Join(fmt.Errorf("update failed json.Unmarshal"), unmarshalErr)
+		return fmt.Errorf("failed json.Unmarshal: %w", unmarshalErr)
 	}
 	columns := []string{}
 	for k := range jsonMap {
@@ -338,33 +286,32 @@ func (c *CassandraAdapter) Update(item any, filters map[string]any, params ...ma
 			slog.Debug("Column is part of primary key, excluding from columns slice", slog.String("pKeyColumn", k))
 		}
 	}
-	return t.UpdateQuery(s, columns...).BindStruct(item).ExecRelease()
-}
-func (c *CassandraAdapter) Delete(item any, filters map[string]any, params ...map[string]any) error {
-	s, sessionErr := c.createSession()
-	if sessionErr != nil {
-		return errors.Join(fmt.Errorf("delete failed to create session"), sessionErr)
+	err := t.UpdateQuery(c.session, columns...).BindStruct(item).ExecRelease()
+	if err != nil {
+		return fmt.Errorf("failed updating item: %w", err)
 	}
-	defer s.Close()
+	return nil
+}
 
+func (c *CassandraAdapter) Delete(item any, filters map[string]any, params ...map[string]any) error {
 	t, tableErr := c.getTableForItem(item)
 	if tableErr != nil {
-		return errors.Join(fmt.Errorf("delete failed getting table for item"), tableErr)
+		return fmt.Errorf("failed getting table for item: %w", tableErr)
 	}
-	return t.DeleteQuery(s).BindMap(filters).ExecRelease()
-}
-func (c *CassandraAdapter) List(dest any, sortKey string, filters map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	s, sessionErr := c.createSession()
-	if sessionErr != nil {
-		return "", errors.Join(fmt.Errorf("list failed to create session"), sessionErr)
-	}
-	defer s.Close()
 
+	err := t.DeleteQuery(c.session).BindMap(filters).ExecRelease()
+	if err != nil {
+		return fmt.Errorf("failed deleting item: %w", err)
+	}
+	return nil
+}
+
+func (c *CassandraAdapter) List(dest any, sortKey string, filters map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	t, tableErr := c.getTableForItem(dest)
 	if tableErr != nil {
-		return "", errors.Join(fmt.Errorf("list failed getting table for item"), tableErr)
+		return "", fmt.Errorf("list failed getting table for item: %w", tableErr)
 	}
-	q := t.SelectQuery(s).BindMap(filters)
+	q := t.SelectQuery(c.session).BindMap(filters)
 	if cursor != "" {
 		bytes, err := base64.StdEncoding.DecodeString(cursor)
 		if err != nil {
@@ -376,24 +323,30 @@ func (c *CassandraAdapter) List(dest any, sortKey string, filters map[string]any
 		q = q.PageSize(limit)
 	}
 	// TODO: Verify pagination behavior
-	return cursor, q.SelectRelease(dest)
+	err := q.SelectRelease(dest)
+	if err != nil {
+		return "", fmt.Errorf("list failed selecting release: %w", err)
+	}
+	return cursor, nil
 }
+
 func (c *CassandraAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return "", fmt.Errorf("unimplemented")
 }
-func (c *CassandraAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	s, sessionErr := c.createSession()
-	if sessionErr != nil {
-		return -1, errors.Join(fmt.Errorf("count failed to create session"), sessionErr)
-	}
-	defer s.Close()
 
+func (c *CassandraAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
 	t, tableErr := c.getTableForItem(dest)
 	if tableErr != nil {
-		return -1, errors.Join(fmt.Errorf("count failed getting table for item"), tableErr)
+		return -1, fmt.Errorf("count failed getting table for item: %w", tableErr)
 	}
-	return -1, t.SelectBuilder().CountAll().Query(s).BindStruct(dest).ExecRelease()
+	var count int64
+	err := t.SelectBuilder().CountAll().Query(c.session).GetRelease(count)
+	if err != nil {
+		return -1, fmt.Errorf("count failed executing count query: %w", err)
+	}
+	return count, nil
 }
+
 func (c *CassandraAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return "", fmt.Errorf("unimplemented")
 }

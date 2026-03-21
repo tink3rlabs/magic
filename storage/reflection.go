@@ -17,7 +17,7 @@ func GetValue(item any, field string) (any, error) {
 	}
 
 	if val.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("expected struct fot %s", val.Kind())
+		return nil, fmt.Errorf("expected struct for %s", val.Kind())
 	}
 
 	for fIdx := range val.NumField() {

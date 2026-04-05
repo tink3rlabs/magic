@@ -13,6 +13,14 @@ import (
 
 type ErrorHandler struct{}
 
+func writeError(w http.ResponseWriter, r *http.Request, statusCode int, message string) {
+	render.Status(r, statusCode)
+	render.JSON(w, r, types.ErrorResponse{
+		Status: http.StatusText(statusCode),
+		Error:  message,
+	})
+}
+
 func (e *ErrorHandler) Wrap(handler func(w http.ResponseWriter, r *http.Request) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var notFoundError *serviceErrors.NotFound
@@ -33,175 +41,50 @@ func (e *ErrorHandler) Wrap(handler func(w http.ResponseWriter, r *http.Request)
 		var notImplementedError *serviceErrors.NotImplemented
 
 		err := handler(w, r)
-
-		if (errors.As(err, &notFoundError)) || (errors.Is(err, storage.ErrNotFound)) {
-			render.Status(r, http.StatusNotFound)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusNotFound),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
+		if err == nil {
 			return
 		}
 
-		if errors.As(err, &badRequestError) {
-			render.Status(r, http.StatusBadRequest)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusBadRequest),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
+		statusCode := http.StatusInternalServerError
+		responseError := err.Error()
+
+		switch {
+		case errors.As(err, &notFoundError), errors.Is(err, storage.ErrNotFound):
+			statusCode = http.StatusNotFound
+		case errors.As(err, &badRequestError):
+			statusCode = http.StatusBadRequest
+		case errors.As(err, &serviceUnavailable):
+			statusCode = http.StatusServiceUnavailable
+		case errors.As(err, &forbiddenError):
+			statusCode = http.StatusForbidden
+		case errors.As(err, &unauthorizedError):
+			statusCode = http.StatusUnauthorized
+		case errors.As(err, &methodNotAllowedError):
+			statusCode = http.StatusMethodNotAllowed
+		case errors.As(err, &conflictError):
+			statusCode = http.StatusConflict
+		case errors.As(err, &goneError):
+			statusCode = http.StatusGone
+		case errors.As(err, &unsupportedMediaTypeError):
+			statusCode = http.StatusUnsupportedMediaType
+		case errors.As(err, &unprocessableEntityError):
+			statusCode = http.StatusUnprocessableEntity
+		case errors.As(err, &tooManyRequestsError):
+			statusCode = http.StatusTooManyRequests
+		case errors.As(err, &internalServerError):
+			statusCode = http.StatusInternalServerError
+		case errors.As(err, &badGatewayError):
+			statusCode = http.StatusBadGateway
+		case errors.As(err, &gatewayTimeoutError):
+			statusCode = http.StatusGatewayTimeout
+		case errors.As(err, &requestTimeoutError):
+			statusCode = http.StatusRequestTimeout
+		case errors.As(err, &notImplementedError):
+			statusCode = http.StatusNotImplemented
+		default:
+			responseError = "encountered an unexpected server error: " + err.Error()
 		}
 
-		if errors.As(err, &serviceUnavailable) {
-			render.Status(r, http.StatusServiceUnavailable)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusServiceUnavailable),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &forbiddenError) {
-			render.Status(r, http.StatusForbidden)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusForbidden),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &unauthorizedError) {
-			render.Status(r, http.StatusUnauthorized)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusUnauthorized),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &methodNotAllowedError) {
-			render.Status(r, http.StatusMethodNotAllowed)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusMethodNotAllowed),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &conflictError) {
-			render.Status(r, http.StatusConflict)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusConflict),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &goneError) {
-			render.Status(r, http.StatusGone)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusGone),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &unsupportedMediaTypeError) {
-			render.Status(r, http.StatusUnsupportedMediaType)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusUnsupportedMediaType),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &unprocessableEntityError) {
-			render.Status(r, http.StatusUnprocessableEntity)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusUnprocessableEntity),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &tooManyRequestsError) {
-			render.Status(r, http.StatusTooManyRequests)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusTooManyRequests),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &internalServerError) {
-			render.Status(r, http.StatusInternalServerError)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusInternalServerError),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &badGatewayError) {
-			render.Status(r, http.StatusBadGateway)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusBadGateway),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &gatewayTimeoutError) {
-			render.Status(r, http.StatusGatewayTimeout)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusGatewayTimeout),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &requestTimeoutError) {
-			render.Status(r, http.StatusRequestTimeout)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusRequestTimeout),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &notImplementedError) {
-			render.Status(r, http.StatusNotImplemented)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusNotImplemented),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if err != nil {
-			render.Status(r, http.StatusInternalServerError)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusInternalServerError),
-				Error:  "encountered an unexpected server error: " + err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
+		writeError(w, r, statusCode, responseError)
 	}
 }

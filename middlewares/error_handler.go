@@ -13,6 +13,14 @@ import (
 
 type ErrorHandler struct{}
 
+func writeError(w http.ResponseWriter, r *http.Request, statusCode int, message string) {
+	render.Status(r, statusCode)
+	render.JSON(w, r, types.ErrorResponse{
+		Status: http.StatusText(statusCode),
+		Error:  message,
+	})
+}
+
 func (e *ErrorHandler) Wrap(handler func(w http.ResponseWriter, r *http.Request) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var notFoundError *serviceErrors.NotFound
@@ -20,67 +28,63 @@ func (e *ErrorHandler) Wrap(handler func(w http.ResponseWriter, r *http.Request)
 		var serviceUnavailable *serviceErrors.ServiceUnavailable
 		var forbiddenError *serviceErrors.Forbidden
 		var unauthorizedError *serviceErrors.Unauthorized
+		var methodNotAllowedError *serviceErrors.MethodNotAllowed
+		var conflictError *serviceErrors.Conflict
+		var goneError *serviceErrors.Gone
+		var unsupportedMediaTypeError *serviceErrors.UnsupportedMediaType
+		var unprocessableEntityError *serviceErrors.UnprocessableEntity
+		var tooManyRequestsError *serviceErrors.TooManyRequests
+		var internalServerError *serviceErrors.InternalServerError
+		var badGatewayError *serviceErrors.BadGateway
+		var gatewayTimeoutError *serviceErrors.GatewayTimeout
+		var requestTimeoutError *serviceErrors.RequestTimeout
+		var notImplementedError *serviceErrors.NotImplemented
 
 		err := handler(w, r)
-
-		if (errors.As(err, &notFoundError)) || (errors.Is(err, storage.ErrNotFound)) {
-			render.Status(r, http.StatusNotFound)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusNotFound),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
+		if err == nil {
 			return
 		}
 
-		if errors.As(err, &badRequestError) {
-			render.Status(r, http.StatusBadRequest)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusBadRequest),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
+		statusCode := http.StatusInternalServerError
+		responseError := err.Error()
+
+		switch {
+		case errors.As(err, &notFoundError), errors.Is(err, storage.ErrNotFound):
+			statusCode = http.StatusNotFound
+		case errors.As(err, &badRequestError):
+			statusCode = http.StatusBadRequest
+		case errors.As(err, &serviceUnavailable):
+			statusCode = http.StatusServiceUnavailable
+		case errors.As(err, &forbiddenError):
+			statusCode = http.StatusForbidden
+		case errors.As(err, &unauthorizedError):
+			statusCode = http.StatusUnauthorized
+		case errors.As(err, &methodNotAllowedError):
+			statusCode = http.StatusMethodNotAllowed
+		case errors.As(err, &conflictError):
+			statusCode = http.StatusConflict
+		case errors.As(err, &goneError):
+			statusCode = http.StatusGone
+		case errors.As(err, &unsupportedMediaTypeError):
+			statusCode = http.StatusUnsupportedMediaType
+		case errors.As(err, &unprocessableEntityError):
+			statusCode = http.StatusUnprocessableEntity
+		case errors.As(err, &tooManyRequestsError):
+			statusCode = http.StatusTooManyRequests
+		case errors.As(err, &internalServerError):
+			statusCode = http.StatusInternalServerError
+		case errors.As(err, &badGatewayError):
+			statusCode = http.StatusBadGateway
+		case errors.As(err, &gatewayTimeoutError):
+			statusCode = http.StatusGatewayTimeout
+		case errors.As(err, &requestTimeoutError):
+			statusCode = http.StatusRequestTimeout
+		case errors.As(err, &notImplementedError):
+			statusCode = http.StatusNotImplemented
+		default:
+			responseError = "encountered an unexpected server error: " + err.Error()
 		}
 
-		if errors.As(err, &serviceUnavailable) {
-			render.Status(r, http.StatusServiceUnavailable)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusServiceUnavailable),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &forbiddenError) {
-			render.Status(r, http.StatusForbidden)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusForbidden),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if errors.As(err, &unauthorizedError) {
-			render.Status(r, http.StatusUnauthorized)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusUnauthorized),
-				Error:  err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
-
-		if err != nil {
-			render.Status(r, http.StatusInternalServerError)
-			response := types.ErrorResponse{
-				Status: http.StatusText(http.StatusInternalServerError),
-				Error:  "encountered an unexpected server error: " + err.Error(),
-			}
-			render.JSON(w, r, response)
-			return
-		}
+		writeError(w, r, statusCode, responseError)
 	}
 }

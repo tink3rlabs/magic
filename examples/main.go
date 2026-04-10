@@ -50,7 +50,7 @@ func main() {
 	// 	"database":          "magic",
 	// }
 
-	// config := map[string]string{
+	// config = map[string]string{
 	// 	"provider": "cassandra",
 	// 	"endpoint": "localhost",
 	// 	"keyspace": "todo",

@@ -62,28 +62,43 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 10
-    # services:
-    #   cassandra:
-    #     image: cassandra:5 # Use a specific version if needed
-    #     ports:
-    #       - 9042:9042
-    #     options: >-
-    #       --hostname cassandra
-    #       --health-cmd "cqlsh --debug -e 'DESCRIBE KEYSPACES' || exit 1"
-    #       --health-interval 10s
-    #       --health-timeout 5s
-    #       --health-retries 7
+    services:
+      cassandra:
+        image: cassandra:5@sha256:1614e9d798651aa0c57adb1be04a6e6e07fcc4661334dc77393d7844ce51ec27
+        ports:
+          - 9042:9042
+        options: >-
+          --hostname cassandra
+          --health-cmd "cqlsh --debug -e 'DESCRIBE KEYSPACES' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 7
+      cosmosdb:
+        image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-preview@sha256:10272f84fb9f39eadce9bfd6705d48f3080f6d353fdab753de01fbf9cbaaa156
+        ports:
+          - 8081:8081
+        env:
+          ENABLE_EXPLORER: "false"
+        options: >-
+          --hostname cosmosdb
+          --health-cmd "curl -f http://localhost:8080/ready"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 1
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.25.3'
           cache: true
       - name: Run tests
         run: go test -v -cover ./...
-        # env:
-        #   CASSANDRA_HOSTS: "localhost"
-        #   CASSANDRA_KEYSPACE: "testkeyspace"
+        env:
+          CASSANDRA_HOSTS: "localhost"
+          CASSANDRA_KEYSPACE: "testkeyspace"
+          COSMOSDB_ENDPOINT: "http://localhost:8081/"
+          COSMOSDB_KEY: "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGg=="
+          COSMOSDB_DATABASE: "magic"
 

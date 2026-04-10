@@ -12,8 +12,10 @@ const (
 	SNS PublisherType = "sns"
 )
 
-type PublisherType string
-type PublisherFactory struct{}
+type (
+	PublisherType    string
+	PublisherFactory struct{}
+)
 
 func (s PublisherFactory) GetInstance(publisherType PublisherType, config any) (Publisher, error) {
 	if config == nil {

@@ -25,8 +25,10 @@ type DynamoDBAdapter struct {
 	config map[string]string
 }
 
-var dynamoDBAdapterLock = &sync.Mutex{}
-var dynamoDBAdapterInstance *DynamoDBAdapter
+var (
+	dynamoDBAdapterLock     = &sync.Mutex{}
+	dynamoDBAdapterInstance *DynamoDBAdapter
+)
 
 func GetDynamoDBAdapterInstance(config map[string]string) *DynamoDBAdapter {
 	if dynamoDBAdapterInstance == nil {
@@ -99,12 +101,15 @@ func (s *DynamoDBAdapter) GetSchemaName() string {
 func (s *DynamoDBAdapter) CreateSchema() error {
 	return fmt.Errorf("DynamoDB CreateSchema is not supported")
 }
+
 func (s *DynamoDBAdapter) CreateMigrationTable() error {
 	return fmt.Errorf("DynamoDB CreateMigrationTable is not supported")
 }
+
 func (s *DynamoDBAdapter) UpdateMigrationTable(id int, name string, desc string) error {
 	return fmt.Errorf("DynamoDB UpgradeMigrationTable is not supported")
 }
+
 func (s *DynamoDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("DynamoDB GetLatestMigration is not supported")
 }
@@ -119,7 +124,6 @@ func (s *DynamoDBAdapter) Create(item any, params ...map[string]any) error {
 		TableName: aws.String(s.getTableName(item)),
 		Item:      i,
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to create or update item: %v", err)
 	}
@@ -137,7 +141,6 @@ func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, params ...map[str
 		TableName: aws.String(s.getTableName(dest)),
 		Key:       key,
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to get item, %v", err)
 	}
@@ -168,7 +171,6 @@ func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, params ...map[
 		TableName: aws.String(s.getTableName(item)),
 		Key:       key,
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to delete item, %v", err)
 	}

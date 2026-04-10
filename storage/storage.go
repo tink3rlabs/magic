@@ -9,8 +9,10 @@ import (
 	"strings"
 )
 
-var ConfigFs embed.FS
-var ErrNotFound = errors.New("the requested resource was not found")
+var (
+	ConfigFs    embed.FS
+	ErrNotFound = errors.New("the requested resource was not found")
+)
 
 type StorageAdapter interface {
 	Execute(statement string) error
@@ -40,9 +42,11 @@ type StorageAdapter interface {
 	Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error)
 }
 
-type StorageAdapterType string
-type StorageProviders string
-type StorageAdapterFactory struct{}
+type (
+	StorageAdapterType    string
+	StorageProviders      string
+	StorageAdapterFactory struct{}
+)
 
 const (
 	// CASSANDRA StorageAdapterType = "cassandra"

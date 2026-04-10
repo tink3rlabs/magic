@@ -18,11 +18,15 @@ import (
 	"github.com/tink3rlabs/magic/storage"
 )
 
-var leaderElectionLock = &sync.Mutex{}
-var leaderElectionInstance *LeaderElection
+var (
+	leaderElectionLock     = &sync.Mutex{}
+	leaderElectionInstance *LeaderElection
+)
 
-const RESULT_ELECTED = "elected"
-const DEFAULT_HEARTBEAT = 60 * time.Second
+const (
+	RESULT_ELECTED    = "elected"
+	DEFAULT_HEARTBEAT = 60 * time.Second
+)
 
 // LeaderElection provides methods for electing a leader out of eligible cluster members
 type LeaderElection struct {
@@ -61,7 +65,7 @@ func NewLeaderElection(props LeaderElectionProps) *LeaderElection {
 			if heartbeatInterval == 0 {
 				heartbeatInterval = DEFAULT_HEARTBEAT
 			}
-			var tableName = "members"
+			tableName := "members"
 			if (props.AdditionalProps["table_name"] != "") && (props.AdditionalProps["table_name"] != nil) {
 				tableName = props.AdditionalProps["table_name"].(string)
 			}
@@ -122,7 +126,8 @@ func (l *LeaderElection) createLeadershipTable() error {
 		} else {
 			waiter := dynamodb.NewTableExistsWaiter(a.DB)
 			err = waiter.Wait(context.TODO(), &dynamodb.DescribeTableInput{
-				TableName: aws.String(l.tableName)}, 1*time.Minute)
+				TableName: aws.String(l.tableName),
+			}, 1*time.Minute)
 			if err != nil {
 				return err
 			} else {
@@ -227,7 +232,6 @@ func (l *LeaderElection) monitorLeader() {
 			} else {
 				slog.Info("Starting re-election due to leader inactivity", slog.String("leader_id", l.Leader.Id), slog.Duration("inactivity_duration", diff))
 				err = l.electLeader(true)
-
 				if err != nil {
 					slog.Error("failed to elect new leader", slog.Any("error", err))
 				}

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -86,6 +87,22 @@ func (s *SQLAdapter) OpenConnection() {
 
 	if err != nil {
 		slogger.Fatal("failed to open a database connection", slog.Any("error", err.Error()))
+	}
+}
+
+// WithContext returns a shallow copy of the adapter whose underlying GORM session
+// carries ctx. Subsequent CRUD calls on the returned adapter will propagate ctx to
+// the database driver — enabling request cancellation, deadlines, distributed
+// tracing, and GORM callbacks that read ctx values (e.g. per-request tenant IDs
+// used by row-level security policies).
+//
+// The original adapter and its singleton pool are untouched; the returned wrapper
+// shares the same connection pool via GORM's session mechanism.
+func (s *SQLAdapter) WithContext(ctx context.Context) *SQLAdapter {
+	return &SQLAdapter{
+		DB:       s.DB.WithContext(ctx),
+		config:   s.config,
+		provider: s.provider,
 	}
 }
 

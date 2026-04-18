@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sync"
 )
 
@@ -27,6 +28,13 @@ func GetMemoryAdapterInstance() *MemoryAdapter {
 		}
 	}
 	return memoryAdapterInstance
+}
+
+// WithContext returns a shallow copy of the adapter whose underlying SQL adapter
+// carries ctx. Subsequent CRUD calls on the returned adapter will propagate ctx to
+// the SQLite driver. See SQLAdapter.WithContext for details.
+func (m *MemoryAdapter) WithContext(ctx context.Context) *MemoryAdapter {
+	return &MemoryAdapter{DB: m.DB.WithContext(ctx)}
 }
 
 func (m *MemoryAdapter) Execute(s string) error {

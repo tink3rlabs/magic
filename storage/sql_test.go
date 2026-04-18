@@ -1,9 +1,47 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"maps"
 	"testing"
 )
+
+func TestWithContextPropagatesCancellation(t *testing.T) {
+	// Reset singleton so we get a fresh SQLite adapter
+	prev := sqlAdapterInstance
+	sqlAdapterInstance = nil
+	t.Cleanup(func() { sqlAdapterInstance = prev })
+	adapter := GetSQLAdapterInstance(map[string]string{
+		"provider": "sqlite",
+	})
+	type Row struct {
+		ID string `gorm:"primaryKey"`
+	}
+	if err := adapter.DB.AutoMigrate(&Row{}); err != nil {
+		t.Fatalf("AutoMigrate failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	scoped := adapter.WithContext(ctx)
+	if scoped == adapter {
+		t.Fatal("WithContext should return a new adapter instance")
+	}
+	if scoped.DB == adapter.DB {
+		t.Fatal("WithContext should return an adapter with a ctx-scoped *gorm.DB session")
+	}
+
+	var rows []Row
+	_, err := scoped.List(&rows, "id", map[string]any{}, 10, "")
+	if err == nil {
+		t.Fatal("expected cancelled context to surface as an error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
 
 func TestListRejectsMaliciousSortKey(t *testing.T) {
 	// Reset singleton so we get a fresh SQLite adapter

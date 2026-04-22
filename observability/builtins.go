@@ -6,7 +6,7 @@ import "time"
 // These are stable public constants so callers can grep dashboards
 // and alerts against canonical identifiers.
 const (
-	// HTTP (emitted by ChiMiddleware).
+	// HTTP (emitted by middlewares.Observability).
 	HTTPRequestsTotal          = "http_requests_total"
 	HTTPRequestDurationSeconds = "http_request_duration_seconds"
 	HTTPRequestSizeBytes       = "http_request_size_bytes"

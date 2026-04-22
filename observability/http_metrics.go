@@ -9,8 +9,8 @@ import (
 // registerHTTPMetrics creates and stores the built-in HTTP
 // instruments on the Observer. It runs during Init, after the
 // metrics backend is wired up but before telemetry.SetGlobal, so
-// that the first request served by ChiMiddleware already has live
-// instruments.
+// that the first request served by middlewares.Observability
+// already has live instruments.
 func (o *Observer) registerHTTPMetrics() error {
 	methodRouteStatus := []string{LabelHTTPMethod, LabelHTTPRoute, LabelHTTPStatusCode}
 	methodRoute := []string{LabelHTTPMethod, LabelHTTPRoute}

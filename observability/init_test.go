@@ -5,10 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/go-chi/chi/v5"
 
 	"github.com/tink3rlabs/magic/telemetry"
 )
@@ -45,18 +44,17 @@ func TestInitRegistersBuiltinHTTPMetrics(t *testing.T) {
 	obs := initTestObserver(t)
 
 	// Prometheus omits HELP lines for series with zero samples,
-	// so fire one request through the middleware first. That
-	// exercises every built-in HTTP instrument.
-	r := chi.NewRouter()
-	r.Use(obs.ChiMiddleware())
-	r.Get("/", func(w http.ResponseWriter, req *http.Request) {})
-	srv := httptest.NewServer(r)
-	t.Cleanup(srv.Close)
-	resp, err := http.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	resp.Body.Close()
+	// so record one synthetic observation for each built-in
+	// instrument before scraping.
+	methodLabel := telemetry.Label{Key: LabelHTTPMethod, Value: http.MethodGet}
+	routeLabel := telemetry.Label{Key: LabelHTTPRoute, Value: "/"}
+	statusLabel := telemetry.Label{Key: LabelHTTPStatusCode, Value: strconv.Itoa(http.StatusOK)}
+	obs.httpRequestsTotal.Add(1, methodLabel, routeLabel, statusLabel)
+	obs.httpRequestDuration.Observe(0.001, methodLabel, routeLabel, statusLabel)
+	obs.httpRequestSize.Observe(12, methodLabel, routeLabel)
+	obs.httpResponseSize.Observe(2, methodLabel, routeLabel, statusLabel)
+	obs.httpRequestsInFlight.Add(1, methodLabel, routeLabel)
+	obs.httpRequestsInFlight.Add(-1, methodLabel, routeLabel)
 
 	scrape := httptest.NewServer(obs.MetricsHandler())
 	t.Cleanup(scrape.Close)
@@ -101,40 +99,6 @@ func TestInitPrometheusRegistersRuntimeMetrics(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "process_") {
 		t.Error("expected process_* metric in output")
-	}
-}
-
-func TestInitChiMiddlewareRecordsRequest(t *testing.T) {
-	obs := initTestObserver(t)
-
-	r := chi.NewRouter()
-	r.Use(obs.ChiMiddleware())
-	r.Get("/hello/{name}", func(w http.ResponseWriter, req *http.Request) {
-		_, _ = io.WriteString(w, "hi")
-	})
-
-	srv := httptest.NewServer(r)
-	t.Cleanup(srv.Close)
-
-	httpResp, err := http.Get(srv.URL + "/hello/alice")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	httpResp.Body.Close()
-
-	scrape := httptest.NewServer(obs.MetricsHandler())
-	t.Cleanup(scrape.Close)
-
-	mResp, err := http.Get(scrape.URL)
-	if err != nil {
-		t.Fatalf("scrape: %v", err)
-	}
-	defer mResp.Body.Close()
-	mb, _ := io.ReadAll(mResp.Body)
-	body := string(mb)
-
-	if !strings.Contains(body, `http_requests_total{method="GET",route="/hello/{name}",status_code="200"} 1`) {
-		t.Errorf("expected 1 GET /hello/{name} 200 request, got:\n%s", body)
 	}
 }
 

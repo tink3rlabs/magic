@@ -1,4 +1,4 @@
-package observability
+package middlewares
 
 import (
 	"bufio"
@@ -9,9 +9,6 @@ import (
 	"testing"
 )
 
-// fakeRW implements http.ResponseWriter plus Flusher, Hijacker and
-// Pusher so we can verify that responseWriterWrapper forwards
-// correctly. Each optional-interface call records that it fired.
 type fakeRW struct {
 	header     http.Header
 	body       bytes.Buffer
@@ -20,7 +17,7 @@ type fakeRW struct {
 	hijacked   bool
 	pushed     string
 	hijackErr  error
-	supportsFH bool // whether to advertise Flusher/Hijacker/Pusher
+	supportsFH bool
 }
 
 func newFakeRW() *fakeRW { return &fakeRW{header: http.Header{}, supportsFH: true} }
@@ -50,17 +47,6 @@ func (f *fakeRW) Push(target string, _ *http.PushOptions) error {
 	return nil
 }
 
-// plainRW deliberately implements only http.ResponseWriter so we
-// can test the failure-path branches (Hijack / Push return errors).
-type plainRW struct{ fakeRW }
-
-func (p *plainRW) Flush() { /* stubbed so plainRW does NOT implement Flusher */
-}
-
-// Ensure plainRW implements only ResponseWriter by redeclaring the
-// embedded Flush/Hijack/Push methods with names that are not in
-// the optional interfaces. To do so we shadow them as methods on
-// a different struct.
 type bareRW struct {
 	header http.Header
 	body   bytes.Buffer
@@ -76,7 +62,7 @@ func TestResponseWriterWrapperWriteHeaderOnce(t *testing.T) {
 	w := &responseWriterWrapper{ResponseWriter: inner, statusCode: http.StatusOK}
 
 	w.WriteHeader(http.StatusCreated)
-	w.WriteHeader(http.StatusTeapot) // must be ignored
+	w.WriteHeader(http.StatusTeapot)
 
 	if w.statusCode != http.StatusCreated {
 		t.Errorf("statusCode = %d, want %d", w.statusCode, http.StatusCreated)
@@ -114,7 +100,7 @@ func TestResponseWriterWrapperFlushForwards(t *testing.T) {
 func TestResponseWriterWrapperFlushNoopOnUnsupported(t *testing.T) {
 	inner := &bareRW{header: http.Header{}}
 	w := &responseWriterWrapper{ResponseWriter: inner}
-	w.Flush() // must not panic
+	w.Flush()
 }
 
 func TestResponseWriterWrapperHijackForwards(t *testing.T) {
@@ -197,7 +183,6 @@ func TestNormalizeMethodCustomVerb(t *testing.T) {
 
 func TestRequestSizeFromContentLength(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("abcdef")))
-	// httptest's NewRequest sets ContentLength automatically.
 	if got := requestSize(r); got != 6 {
 		t.Errorf("requestSize = %v, want 6", got)
 	}
@@ -205,8 +190,6 @@ func TestRequestSizeFromContentLength(t *testing.T) {
 
 func TestRequestSizeFromHeaderFallback(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodGet, "/", nil)
-	// Force ContentLength to 0 and set the header to simulate a
-	// proxy that forwarded CL without populating r.ContentLength.
 	r.ContentLength = 0
 	r.Header.Set("Content-Length", "128")
 	if got := requestSize(r); got != 128 {

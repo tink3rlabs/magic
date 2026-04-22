@@ -16,7 +16,7 @@
 //	defer obs.Shutdown(context.Background())
 //
 //	router := chi.NewRouter()
-//	router.Use(obs.ChiMiddleware())
+//	router.Use(middlewares.Observability(obs))
 //	router.Handle("/metrics", obs.MetricsHandler())
 package observability
 
@@ -57,7 +57,7 @@ type Observer struct {
 	telem *telemetry.Telemetry
 
 	// Built-in HTTP instruments, wired by registerHTTPMetrics
-	// and consumed by ChiMiddleware.
+	// and consumed by middlewares.Observability.
 	httpRequestsTotal    telemetry.Counter
 	httpRequestDuration  telemetry.Histogram
 	httpRequestSize      telemetry.Histogram

@@ -114,7 +114,7 @@ func (l *LeaderElection) createLeadershipTable() error {
 		}
 
 		// Create table
-		a := l.storage.(*storage.DynamoDBAdapter)
+		a := storage.UnwrapAdapter(l.storage).(*storage.DynamoDBAdapter)
 		_, err := a.DB.CreateTable(context.TODO(), input)
 		tableExistsError := new(types.ResourceInUseException)
 		if (err != nil) && (!errors.As(err, &tableExistsError)) {
@@ -283,7 +283,7 @@ func (l *LeaderElection) getLeader() (Member, error) {
 	var err error
 	switch l.storageType {
 	case string(storage.SQL):
-		a := l.storage.(*storage.SQLAdapter)
+		a := storage.UnwrapAdapter(l.storage).(*storage.SQLAdapter)
 		var statement string
 		switch l.storageProvider {
 		case string(storage.SQLITE):
@@ -301,7 +301,7 @@ func (l *LeaderElection) getLeader() (Member, error) {
 		if marshalErr != nil {
 			err = fmt.Errorf("failed to get leader: %v", marshalErr)
 		} else {
-			a := l.storage.(*storage.DynamoDBAdapter)
+			a := storage.UnwrapAdapter(l.storage).(*storage.DynamoDBAdapter)
 			response, getItemErr := a.DB.GetItem(context.TODO(), &dynamodb.GetItemInput{
 				TableName: aws.String(l.tableName),
 				Key:       key,
@@ -331,14 +331,14 @@ func (l *LeaderElection) Members() ([]Member, error) {
 		default:
 			statement = fmt.Sprintf("SELECT * FROM %s.%s", l.storage.GetSchemaName(), l.tableName)
 		}
-		a := l.storage.(*storage.SQLAdapter)
+		a := storage.UnwrapAdapter(l.storage).(*storage.SQLAdapter)
 		result := a.DB.Raw(statement).Scan(&members)
 		if result.Error != nil {
 			err = fmt.Errorf("failed to list cluster members: %v", result.Error)
 		}
 	case string(storage.DYNAMODB):
 		statement := fmt.Sprintf("SELECT * FROM %s", l.tableName)
-		a := l.storage.(*storage.DynamoDBAdapter)
+		a := storage.UnwrapAdapter(l.storage).(*storage.DynamoDBAdapter)
 		result, execErr := a.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{Statement: &statement})
 		if execErr != nil {
 			err = fmt.Errorf("failed to list cluster members: %v", execErr)

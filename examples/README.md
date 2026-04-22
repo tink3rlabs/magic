@@ -63,8 +63,8 @@ The repo includes `examples/prometheus.yml`:
 
 ```bash
 docker run --rm --name prom-magic-example \
-  --network=host \
-  -v "/workspaces/magic/examples/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+  -p "9090:9090" \
+  -v "./examples/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
   prom/prometheus
 ```
 

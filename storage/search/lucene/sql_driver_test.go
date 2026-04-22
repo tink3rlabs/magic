@@ -110,6 +110,7 @@ func TestNewSQLDriver(t *testing.T) {
 			}
 			if driver == nil {
 				t.Fatalf("NewSQLDriver() returned nil")
+				return
 			}
 			if driver.provider != tt.provider {
 				t.Errorf("NewSQLDriver() provider = %v, want %v", driver.provider, tt.provider)

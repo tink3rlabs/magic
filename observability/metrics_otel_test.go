@@ -66,6 +66,7 @@ func TestOTELBackendCounter(t *testing.T) {
 	m := findMetric(collect(), "orders_total")
 	if m == nil {
 		t.Fatal("orders_total not emitted")
+		return
 	}
 	sum, ok := m.Data.(metricdata.Sum[float64])
 	if !ok {
@@ -98,6 +99,7 @@ func TestOTELBackendCounterNegativeSuppressed(t *testing.T) {
 	m := findMetric(collect(), "c")
 	if m == nil {
 		t.Fatal("no metric")
+		return
 	}
 	sum := m.Data.(metricdata.Sum[float64])
 	if sum.DataPoints[0].Value != 5 {

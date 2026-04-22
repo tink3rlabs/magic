@@ -2,12 +2,7 @@ package observability
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
-
-	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // initOTLPObserver constructs an Observer in OTLP mode pointed at a
@@ -140,22 +135,15 @@ func TestObserverGettersOTLPMode(t *testing.T) {
 	if mp == nil {
 		t.Fatal("MeterProvider() must be non-nil in OTLP mode")
 	}
-	if _, ok := mp.(metric.MeterProvider); !ok {
-		t.Error("MeterProvider() must implement metric.MeterProvider")
-	}
 }
 
 func TestObserverTracerProviderIsUsableForCustomInstrumentation(t *testing.T) {
 	obs := initTestObserver(t)
 
 	tp := obs.TracerProvider()
-	if _, ok := tp.(trace.TracerProvider); !ok {
-		t.Fatal("TracerProvider() must implement trace.TracerProvider")
+	if tp == nil {
+		t.Fatal("TracerProvider() returned nil")
 	}
-	// Sanity-check: middleware request still works after the
-	// provider has been retrieved through the accessor. This
-	// mirrors the way third-party libraries consume the
-	// provider.
-	httptest.NewRecorder() // keep httptest import used
-	_, _ = http.NewRequest(http.MethodGet, "/", nil)
+	_, span := tp.Tracer("custom").Start(context.Background(), "span")
+	span.End()
 }

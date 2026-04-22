@@ -73,8 +73,6 @@ const (
 	opQuery   = "query"
 	opExecute = "execute"
 	opPing    = "ping"
-
-	tracerName = "github.com/tink3rlabs/magic/storage"
 )
 
 // storageDurationBuckets mirrors observability.storageDurationBuckets.
@@ -280,9 +278,9 @@ func modelName(v any) string {
 // Pass-through identity methods. These do no I/O and so do not
 // warrant instrumentation.
 
-func (w *instrumentedAdapter) GetType() StorageAdapterType    { return w.inner.GetType() }
-func (w *instrumentedAdapter) GetProvider() StorageProviders  { return w.inner.GetProvider() }
-func (w *instrumentedAdapter) GetSchemaName() string          { return w.inner.GetSchemaName() }
+func (w *instrumentedAdapter) GetType() StorageAdapterType   { return w.inner.GetType() }
+func (w *instrumentedAdapter) GetProvider() StorageProviders { return w.inner.GetProvider() }
+func (w *instrumentedAdapter) GetSchemaName() string         { return w.inner.GetSchemaName() }
 
 // -- Instrumented I/O: non-ctx variants delegate to ctx variants.
 

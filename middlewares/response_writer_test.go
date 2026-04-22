@@ -16,7 +16,6 @@ type fakeRW struct {
 	flushed    bool
 	hijacked   bool
 	pushed     string
-	hijackErr  error
 	supportsFH bool
 }
 

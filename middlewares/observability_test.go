@@ -63,7 +63,7 @@ func TestObservabilityMiddlewareRecordsHTTPMetrics(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	scrape := httptest.NewServer(obs.MetricsHandler())
@@ -72,7 +72,7 @@ func TestObservabilityMiddlewareRecordsHTTPMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scrape: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read scrape: %v", err)
@@ -95,7 +95,7 @@ func TestObservabilityMiddlewareUnmatchedRoute(t *testing.T) {
 
 	resp, _ := http.Get(srv.URL + "/does-not-exist")
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	count := countersFromScrape(t, obs, observability.HTTPRequestsTotal,
@@ -125,7 +125,7 @@ func TestObservabilityMiddlewarePanicRecordsAndReraises(t *testing.T) {
 
 	resp, _ := http.Get(srv.URL + "/boom")
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	total := countersFromScrapeRaw(t, obs, observability.HTTPRequestsTotal,
@@ -148,7 +148,7 @@ func TestObservabilityMiddlewareInFlightDecrements(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		resp, _ := http.Get(srv.URL + "/")
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}
 
@@ -197,7 +197,7 @@ func countersFromScrapeRaw(t *testing.T, obs *observability.Observer, metric str
 	if err != nil {
 		t.Fatalf("scrape: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return sumMatchingLines(t, resp, metric, labelMatchers)
 }
 
@@ -209,7 +209,7 @@ func gaugeFromScrape(t *testing.T, obs *observability.Observer, metric string, l
 	if err != nil {
 		t.Fatalf("scrape: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return sumMatchingLines(t, resp, metric, labelMatchers)
 }
 

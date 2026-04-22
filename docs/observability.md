@@ -887,8 +887,9 @@ Optional attributes when safe:
 
 SNS message attributes are limited to 10 per message. The propagator (default W3C) adds `traceparent` and, when present, `tracestate` and `baggage`. This consumes up to 3 attributes.
 
-* The wrapper checks the existing `params` map for the `"MessageAttributes"` key and merges trace-context attributes without overwriting user-supplied keys.
-* If the merged attribute count would exceed 10, the wrapper drops `baggage` first, then `tracestate`, logging a warn-once event. It never drops `traceparent`.
+* The wrapper reads and writes back the shared params-map key `pubsub.MessageAttributesParamKey` (string value `"MessageAttributes"`) whose value is a `map[string]string`. In-repo publishers (currently just SNS) translate that map into their native per-system representation.
+* User-supplied keys are authoritative and are never overwritten.
+* Propagator keys are inserted in priority order `traceparent` → `tracestate` → `baggage`. The wrapper stops as soon as the merged count hits 10 and emits a warn-once log event naming the dropped header. In the degenerate case where the caller already fills the cap with user attributes, every propagator key is dropped (traceparent included) rather than ever displacing a caller-supplied key.
 * Teams using B3 or Jaeger propagation must set `cfg.Propagator` explicitly; the wrapper defers to whatever propagator is configured.
 
 ### PubSub Metrics
@@ -1558,7 +1559,8 @@ Standard collectors for Go runtime and process metrics in scrape-based modes; `g
 * implement instrumented publisher wrapper with capability check and SNS attribute-limit handling
 * wire wrapper into `PublisherFactory.GetInstance`
 * add built-in pubsub publish spans and metrics
-* add unit tests
+* expose `pubsub.MessageAttributesParamKey` so callers and other in-repo publishers agree on the trace-context carrier key
+* add unit tests (span on success/error, propagator injection, user-key preservation, attribute-limit drop, legacy-publisher metrics-only)
 
 ### Phase 4: Custom Metrics + Logger Correlation
 

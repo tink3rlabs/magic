@@ -49,7 +49,20 @@ func GetSNSPublisher(config map[string]string) *SNSPublisher {
 	return &s
 }
 
+// Publish delegates to PublishContext with context.Background so
+// non-context-aware callers still get the full publish path.
 func (s *SNSPublisher) Publish(topic string, message string, params map[string]any) error {
+	return s.PublishContext(context.Background(), topic, message, params)
+}
+
+// PublishContext sends a single message to an SNS topic, honoring
+// the caller's context for deadline/cancellation propagation and
+// merging any wrapper-injected trace attributes from
+// params[MessageAttributesParamKey] into the SDK's
+// MessageAttributes. Existing filterKey/filterValue support is
+// preserved so calling conventions for older code paths continue
+// to work.
+func (s *SNSPublisher) PublishContext(ctx context.Context, topic string, message string, params map[string]any) error {
 	publishInput := sns.PublishInput{TopicArn: aws.String(topic), Message: aws.String(message)}
 
 	groupId := params["groupId"]
@@ -63,13 +76,36 @@ func (s *SNSPublisher) Publish(topic string, message string, params map[string]a
 	if dedupId != nil && dedupId != "" {
 		publishInput.MessageDeduplicationId = aws.String(dedupId.(string))
 	}
-	if (filterKey != nil && filterKey != "") && (filterValue != nil && filterValue != "") {
-		publishInput.MessageAttributes = map[string]types.MessageAttributeValue{
-			filterKey.(string): {DataType: aws.String("String"), StringValue: aws.String(filterValue.(string))},
+
+	// MessageAttributes are populated from two sources:
+	//   1. wrapper-injected propagator headers carried in
+	//      params[MessageAttributesParamKey] as map[string]string
+	//   2. legacy filterKey/filterValue params
+	// The filter entry wins on key collision so existing
+	// call sites keep the same observable behavior.
+	var attrs map[string]types.MessageAttributeValue
+	if injected, ok := params[MessageAttributesParamKey].(map[string]string); ok && len(injected) > 0 {
+		attrs = make(map[string]types.MessageAttributeValue, len(injected)+1)
+		for k, v := range injected {
+			attrs[k] = types.MessageAttributeValue{
+				DataType:    aws.String("String"),
+				StringValue: aws.String(v),
+			}
 		}
 	}
+	if (filterKey != nil && filterKey != "") && (filterValue != nil && filterValue != "") {
+		if attrs == nil {
+			attrs = map[string]types.MessageAttributeValue{}
+		}
+		attrs[filterKey.(string)] = types.MessageAttributeValue{
+			DataType:    aws.String("String"),
+			StringValue: aws.String(filterValue.(string)),
+		}
+	}
+	if len(attrs) > 0 {
+		publishInput.MessageAttributes = attrs
+	}
 
-	ctx := context.TODO()
 	_, err := s.Client.Publish(ctx, &publishInput)
 	return err
 }

@@ -71,6 +71,13 @@ type Observer struct {
 	storageOpDuration telemetry.Histogram
 	storageOpErrors   telemetry.Counter
 
+	// Built-in pubsub instruments, wired by registerPubSubMetrics
+	// and consumed by the pubsub instrumented publisher wrapper
+	// through telemetry.Global().Metrics.
+	pubsubMessagesTotal   telemetry.Counter
+	pubsubPublishDuration telemetry.Histogram
+	pubsubErrorsTotal     telemetry.Counter
+
 	// Shutdown fns, called in LIFO order.
 	mu          sync.Mutex
 	shutdownFns []func(context.Context) error
@@ -145,6 +152,10 @@ func Init(ctx context.Context, cfg Config) (*Observer, error) {
 		return nil, err
 	}
 	if err := obs.registerStorageMetrics(); err != nil {
+		_ = obs.runShutdown(ctx)
+		return nil, err
+	}
+	if err := obs.registerPubSubMetrics(); err != nil {
 		_ = obs.runShutdown(ctx)
 		return nil, err
 	}

@@ -69,6 +69,7 @@ func Observability(obs *observability.Observer) func(http.Handler) http.Handler 
 				state.RequestSize.Observe(requestSize(r), methodLabel, routeLabel)
 				state.ResponseSize.Observe(float64(ww.bytesWritten), methodLabel, routeLabel, statusLabel)
 
+				span.SetName("HTTP " + method + " " + route)
 				span.SetAttributes(
 					attribute.String("http.route", route),
 					semconv.HTTPResponseStatusCodeKey.Int(status),

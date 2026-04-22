@@ -22,6 +22,10 @@ type RequestLoggerOptions struct {
 
 // ChiRequestLogger returns a chi middleware that logs requests through slog,
 // so log format (JSON/text) matches logger.Init configuration.
+//
+// To include trace correlation fields (trace_id / span_id), place this
+// middleware after the tracing middleware that injects span context into
+// the request (for example, middlewares.Observability).
 func ChiRequestLogger(opts RequestLoggerOptions) func(http.Handler) http.Handler {
 	return middleware.RequestLogger(newChiSlogFormatter(opts))
 }

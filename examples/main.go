@@ -20,6 +20,8 @@ import (
 	"github.com/tink3rlabs/magic/observability"
 	"github.com/tink3rlabs/magic/storage"
 	"github.com/tink3rlabs/magic/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type Item struct {
@@ -122,13 +124,13 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(
 		render.SetContentType(render.ContentTypeJSON),
+		middleware.RedirectSlashes,
+		middleware.Recoverer,
+		middlewares.Observability(obs),
 		magiclogger.ChiRequestLogger(magiclogger.RequestLoggerOptions{
 			SkipPaths:        []string{"/metrics"},
 			SkipPathPrefixes: []string{"/health/"},
 		}),
-		middleware.RedirectSlashes,
-		middleware.Recoverer,
-		middlewares.Observability(obs),
 	)
 
 	openAPISpec, err := buildOpenAPISpec()
@@ -157,11 +159,21 @@ func main() {
 	}))
 
 	r.Handle("/metrics", obs.MetricsHandler())
+	ordersTracer := obs.TracerProvider().Tracer("github.com/tink3rlabs/magic/examples/orders")
 
 	r.Post("/orders", func(w http.ResponseWriter, req *http.Request) {
+		ctx, span := ordersTracer.Start(req.Context(), "orders.create")
+		defer span.End()
+		span.SetAttributes(
+			attribute.String("orders.operation", "create"),
+			attribute.String("orders.tenant", "example.io"),
+		)
+		req = req.WithContext(ctx)
 		slog.InfoContext(req.Context(), "creating order")
 		id, err := uuid.NewV7()
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "id_generation_failed")
 			slog.ErrorContext(req.Context(), "failed generating order id", slog.Any("error", err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -176,23 +188,37 @@ func main() {
 		}
 
 		if err := createItem(req.Context(), s, item); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "storage_create_failed")
 			slog.ErrorContext(req.Context(), "failed creating storage item", slog.Any("error", err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		span.SetAttributes(attribute.String("orders.id", item.Id))
+		span.AddEvent("orders.created")
 		ordersCreated.Add(1, telemetry.Labels("channel", "api", "result", "ok")...)
 		_ = json.NewEncoder(w).Encode(item)
 	})
 
 	r.Get("/orders/{id}", func(w http.ResponseWriter, req *http.Request) {
 		id := chi.URLParam(req, "id")
+		ctx, span := ordersTracer.Start(req.Context(), "orders.get")
+		defer span.End()
+		span.SetAttributes(
+			attribute.String("orders.operation", "get"),
+			attribute.String("orders.id", id),
+		)
+		req = req.WithContext(ctx)
 		slog.InfoContext(req.Context(), "getting order", slog.String("id", id))
 		var item Item
 		if err := getItem(req.Context(), s, &item, map[string]any{"tenant": "example.io", "id": id}); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "order_not_found")
 			slog.WarnContext(req.Context(), "order not found", slog.String("id", id), slog.Any("error", err))
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
+		span.AddEvent("orders.fetched")
 		_ = json.NewEncoder(w).Encode(item)
 	})
 

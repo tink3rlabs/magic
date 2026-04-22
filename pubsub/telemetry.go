@@ -55,8 +55,6 @@ const (
 
 	opPublish = "publish"
 
-	tracerName = "github.com/tink3rlabs/magic/pubsub"
-
 	// MessageAttributesParamKey is the agreed-upon params map
 	// key that carries message-level metadata between the
 	// instrumented wrapper and the in-repo publishers. The
@@ -94,8 +92,8 @@ type instrumentedPublisher struct {
 	provider string
 	telem    *telemetry.Telemetry
 
-	messagesTotal telemetry.Counter
-	errorsTotal   telemetry.Counter
+	messagesTotal  telemetry.Counter
+	errorsTotal    telemetry.Counter
 	publishLatency telemetry.Histogram
 }
 

@@ -88,6 +88,7 @@ func TestNewDynamoDBDriver(t *testing.T) {
 			}
 			if driver == nil {
 				t.Fatalf("NewDynamoDBDriver() returned nil")
+				return
 			}
 			if len(driver.fields) != len(tt.want) {
 				t.Errorf("NewDynamoDBDriver() fields count = %v, want %v", len(driver.fields), len(tt.want))

@@ -63,7 +63,7 @@ func TestInitRegistersBuiltinHTTPMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scrape: %v", err)
 	}
-	defer sResp.Body.Close()
+	defer func() { _ = sResp.Body.Close() }()
 	body, _ := io.ReadAll(sResp.Body)
 
 	for _, want := range []string{
@@ -89,7 +89,7 @@ func TestInitPrometheusRegistersRuntimeMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scrape: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	// At least one go_ runtime metric and one process_ metric

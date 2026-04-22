@@ -16,6 +16,6 @@ func countersFromScrapeRaw(t *testing.T, obs *Observer, metric string, labelMatc
 	if err != nil {
 		t.Fatalf("scrape: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return sumMatchingLines(t, resp, metric, labelMatchers)
 }

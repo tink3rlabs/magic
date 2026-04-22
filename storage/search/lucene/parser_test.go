@@ -1039,6 +1039,7 @@ func TestNewParser(t *testing.T) {
 			if !tt.wantErr {
 				if parser == nil {
 					t.Fatal("NewParser() returned nil parser")
+					return
 				}
 				if len(parser.Fields) != tt.wantCount {
 					t.Errorf("NewParser() field count = %d, want %d", len(parser.Fields), tt.wantCount)

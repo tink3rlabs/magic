@@ -6,7 +6,6 @@ import (
 
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func TestResolveOTLPEndpointExplicit(t *testing.T) {
@@ -117,8 +116,8 @@ func TestSetupTracerEnabledWithEndpointSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setupTracer: %v", err)
 	}
-	if _, ok := tp.(trace.TracerProvider); !ok {
-		t.Error("expected TracerProvider interface")
+	if tp == nil {
+		t.Error("expected non-nil TracerProvider")
 	}
 	// Shutdown with a quickly-cancelled context so we do not
 	// wait for the gRPC dial to actually time out.

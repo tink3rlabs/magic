@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -33,6 +32,15 @@ type Item struct {
 
 //go:embed config
 var configFS embed.FS
+
+func initLogger() {
+	level := magiclogger.MapLogLevel(strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("LOGGER_LEVEL"), "info"))))
+	json := strings.EqualFold(strings.TrimSpace(firstNonEmpty(os.Getenv("LOGGER_JSON"), "false")), "true")
+	magiclogger.Init(&magiclogger.Config{
+		Level: level,
+		JSON:  json,
+	})
+}
 
 func main() {
 	/*
@@ -69,7 +77,7 @@ func main() {
 		  # docker logs otelcol-magic-example
 	*/
 	storage.ConfigFs = configFS
-	magiclogger.Init(loggerConfig())
+	initLogger()
 
 	mode := metricsModeFromEnv(os.Getenv("METRICS_MODE"))
 	otlpEndpoint := firstNonEmpty(os.Getenv("OTLP_ENDPOINT"), "localhost:4317")
@@ -114,7 +122,10 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(
 		render.SetContentType(render.ContentTypeJSON),
-		middleware.RequestLogger(&slogRequestLogFormatter{}),
+		magiclogger.ChiRequestLogger(magiclogger.RequestLoggerOptions{
+			SkipPaths:        []string{"/metrics"},
+			SkipPathPrefixes: []string{"/health/"},
+		}),
 		middleware.RedirectSlashes,
 		middleware.Recoverer,
 		middlewares.Observability(obs),
@@ -282,52 +293,4 @@ func buildOpenAPISpec() ([]byte, error) {
 		},
 	}
 	return json.Marshal(spec)
-}
-
-// slogRequestLogFormatter adapts chi's request logger middleware to
-// structured slog output so request logs follow logger.Init's JSON/text
-// selection instead of always using the stdlib log package format.
-type slogRequestLogFormatter struct{}
-
-func (f *slogRequestLogFormatter) NewLogEntry(r *http.Request) middleware.LogEntry {
-	return &slogRequestLogEntry{
-		req:   r,
-		start: time.Now(),
-	}
-}
-
-type slogRequestLogEntry struct {
-	req   *http.Request
-	start time.Time
-}
-
-func (e *slogRequestLogEntry) Write(status, bytes int, _ http.Header, elapsed time.Duration, _ any) {
-	slog.Info("http_request",
-		slog.String("method", e.req.Method),
-		slog.String("path", e.req.URL.Path),
-		slog.String("query", e.req.URL.RawQuery),
-		slog.String("remote_addr", e.req.RemoteAddr),
-		slog.String("user_agent", e.req.UserAgent()),
-		slog.Int("status", status),
-		slog.Int("bytes", bytes),
-		slog.Duration("duration", elapsed),
-	)
-}
-
-func (e *slogRequestLogEntry) Panic(v any, stack []byte) {
-	slog.Error("http_panic",
-		slog.Any("panic", v),
-		slog.String("stack", string(stack)),
-		slog.String("method", e.req.Method),
-		slog.String("path", e.req.URL.Path),
-	)
-}
-
-func loggerConfig() *magiclogger.Config {
-	level := magiclogger.MapLogLevel(strings.ToLower(strings.TrimSpace(firstNonEmpty(os.Getenv("LOGGER_LEVEL"), "info"))))
-	json := strings.EqualFold(strings.TrimSpace(firstNonEmpty(os.Getenv("LOGGER_JSON"), "false")), "true")
-	return &magiclogger.Config{
-		Level: level,
-		JSON:  json,
-	}
 }

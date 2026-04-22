@@ -64,6 +64,13 @@ type Observer struct {
 	httpResponseSize     telemetry.Histogram
 	httpRequestsInFlight telemetry.UpDownCounter
 
+	// Built-in storage instruments, wired by registerStorageMetrics
+	// and consumed by the storage instrumented wrapper through
+	// telemetry.Global().Metrics (same backend, resolved by name).
+	storageOpsTotal   telemetry.Counter
+	storageOpDuration telemetry.Histogram
+	storageOpErrors   telemetry.Counter
+
 	// Shutdown fns, called in LIFO order.
 	mu          sync.Mutex
 	shutdownFns []func(context.Context) error
@@ -134,6 +141,10 @@ func Init(ctx context.Context, cfg Config) (*Observer, error) {
 	}
 
 	if err := obs.registerHTTPMetrics(); err != nil {
+		_ = obs.runShutdown(ctx)
+		return nil, err
+	}
+	if err := obs.registerStorageMetrics(); err != nil {
 		_ = obs.runShutdown(ctx)
 		return nil, err
 	}

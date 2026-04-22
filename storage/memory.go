@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"sync"
 )
 
@@ -30,11 +31,19 @@ func GetMemoryAdapterInstance() *MemoryAdapter {
 }
 
 func (m *MemoryAdapter) Execute(s string) error {
-	return m.DB.Execute(s)
+	return m.ExecuteContext(context.Background(), s)
+}
+
+func (m *MemoryAdapter) ExecuteContext(ctx context.Context, s string) error {
+	return m.DB.ExecuteContext(ctx, s)
 }
 
 func (m *MemoryAdapter) Ping() error {
-	return m.DB.Ping()
+	return m.PingContext(context.Background())
+}
+
+func (m *MemoryAdapter) PingContext(ctx context.Context) error {
+	return m.DB.PingContext(ctx)
 }
 
 func (m *MemoryAdapter) GetType() StorageAdapterType {
@@ -56,9 +65,11 @@ func (m *MemoryAdapter) CreateSchema() error {
 func (m *MemoryAdapter) CreateMigrationTable() error {
 	return m.DB.CreateMigrationTable()
 }
+
 func (m *MemoryAdapter) UpdateMigrationTable(id int, name string, desc string) error {
 	return m.DB.UpdateMigrationTable(id, name, desc)
 }
+
 func (m *MemoryAdapter) GetLatestMigration() (int, error) {
 	statement := "SELECT max(id) from migrations"
 	var latestMigration int
@@ -77,35 +88,65 @@ func (m *MemoryAdapter) GetLatestMigration() (int, error) {
 }
 
 func (m *MemoryAdapter) Create(item any, params ...map[string]any) error {
-	return m.DB.Create(item)
+	return m.CreateContext(context.Background(), item, params...)
+}
+
+func (m *MemoryAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
+	return m.DB.CreateContext(ctx, item)
 }
 
 func (m *MemoryAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
-	return m.DB.Get(dest, filter)
+	return m.GetContext(context.Background(), dest, filter, params...)
+}
+
+func (m *MemoryAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
+	return m.DB.GetContext(ctx, dest, filter)
 }
 
 func (m *MemoryAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
-	return m.DB.Update(item, filter)
+	return m.UpdateContext(context.Background(), item, filter, params...)
+}
+
+func (m *MemoryAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+	return m.DB.UpdateContext(ctx, item, filter)
 }
 
 func (m *MemoryAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
-	return m.DB.Delete(item, filter)
+	return m.DeleteContext(context.Background(), item, filter, params...)
+}
+
+func (m *MemoryAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+	return m.DB.DeleteContext(ctx, item, filter)
 }
 
 func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return m.DB.List(dest, sortKey, filter, limit, cursor)
+	return m.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+}
+
+func (m *MemoryAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+	return m.DB.ListContext(ctx, dest, sortKey, filter, limit, cursor)
 }
 
 func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return m.DB.Search(dest, sortKey, query, limit, cursor)
+	return m.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+}
+
+func (m *MemoryAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return m.DB.SearchContext(ctx, dest, sortKey, query, limit, cursor)
 }
 
 func (m *MemoryAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	var total int64
-	total, err := m.DB.Count(dest, filter)
-	return total, err
+	return m.CountContext(context.Background(), dest, filter, params...)
+}
+
+func (m *MemoryAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+	return m.DB.CountContext(ctx, dest, filter)
 }
 
 func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return m.DB.Query(dest, statement, limit, cursor)
+	return m.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+}
+
+func (m *MemoryAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return m.DB.QueryContext(ctx, dest, statement, limit, cursor)
 }

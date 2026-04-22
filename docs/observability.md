@@ -277,7 +277,7 @@ type ContextualStorageAdapter interface {
 }
 ```
 
-Schema/migration methods (`CreateSchema`, `CreateMigrationTable`, `UpdateMigrationTable`, `GetLatestMigration`) also gain `…Context` variants for completeness and are instrumented with spans only (no steady-state metrics — they are one-shot).
+Schema/migration methods (`CreateSchema`, `CreateMigrationTable`, `UpdateMigrationTable`, `GetLatestMigration`) deliberately do **not** gain `…Context` variants. They are one-shot startup operations that run before any request-scoped context exists, they are not part of any distributed trace, and their failures already surface as fatal startup errors. The instrumented wrapper passes them straight through with no span and no metric — adding context or instrumentation would be pure surface-area churn without operational value.
 
 ### Delegation Pattern
 
@@ -775,7 +775,8 @@ Span names:
 * `storage.query`
 * `storage.execute`
 * `storage.ping`
-* `storage.migrate` (grouped span for migration-table operations)
+
+Schema/migration methods (`CreateSchema`, `CreateMigrationTable`, `UpdateMigrationTable`, `GetLatestMigration`) are not instrumented — see "Storage Context Propagation".
 
 Attributes:
 

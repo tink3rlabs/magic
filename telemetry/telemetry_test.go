@@ -139,6 +139,38 @@ func TestMetricKindString(t *testing.T) {
 	}
 }
 
+func TestLabelsBuildsKeyValuePairs(t *testing.T) {
+	got := Labels("status", "ok", "channel", "web")
+	want := []Label{
+		{Key: "status", Value: "ok"},
+		{Key: "channel", Value: "web"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d; want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Labels[%d] = %+v; want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestLabelsEmptyInputReturnsNil(t *testing.T) {
+	if got := Labels(); got != nil {
+		t.Errorf("Labels() = %v; want nil", got)
+	}
+}
+
+func TestLabelsOddLengthDropsTrailingKeyWithEmptyValue(t *testing.T) {
+	got := Labels("status", "ok", "orphan")
+	if len(got) != 2 {
+		t.Fatalf("len = %d; want 2", len(got))
+	}
+	if got[1] != (Label{Key: "orphan"}) {
+		t.Errorf("trailing entry = %+v; want Label{Key:\"orphan\"}", got[1])
+	}
+}
+
 func TestWarnOnceDeduplicates(t *testing.T) {
 	resetWarnOnceForTest()
 	t.Cleanup(resetWarnOnceForTest)

@@ -1065,8 +1065,10 @@ Metric registration validates:
 #### Labels
 
 * label keys declared up front in `LabelKeys`
+* duplicate keys within `LabelKeys` are rejected at registration
 * runtime labels must match declared keys exactly when `AllowUndeclaredLabels` is false (the default)
-* label ordering is irrelevant; the backend sorts keys internally before lookup
+* label ordering at observation time is irrelevant; the backend matches keys by name before lookup
+* label ordering at registration time is preserved verbatim — duplicate registrations must supply the same ordered `LabelKeys`. This is required because the Prometheus backend stores labels positionally
 
 #### Buckets
 
@@ -1080,13 +1082,22 @@ Two registrations are compatible when their canonical shape is equal:
 
 * `Name` equal
 * `Kind` equal
-* sorted `LabelKeys` equal
+* `LabelKeys` equal in order
 * `Unit` equal
-* for histograms, sorted `Buckets` equal (within float epsilon)
+* for histograms, `Buckets` equal in order
 
-Compatible re-registrations return the existing instrument. `Description` differences are tolerated and logged at debug.
+Compatible re-registrations return the existing instrument. `Description` differences are tolerated and are not reflected in the already-registered instrument (the first-writer-wins).
 
 Incompatible re-registrations return an error.
+
+#### Reserved Names
+
+Custom registrations fail fast when the effective name (after `MetricsNamespace` application) would:
+
+* exactly match any built-in metric name (`http_*`, `magic_storage_*`, `magic_pubsub_*`)
+* start with the reserved `go_` or `process_` prefix owned by the runtime/process collectors
+
+Use a namespace or rename the metric to avoid the collision.
 
 ### Best Practices
 
@@ -1564,12 +1575,13 @@ Standard collectors for Go runtime and process metrics in scrape-based modes; `g
 
 ### Phase 4: Custom Metrics + Logger Correlation
 
-* add `MetricDefinition` validation and duplicate-registration normalization
-* add `Counter` / `Histogram` / `Gauge` / `UpDownCounter` implementations across all backends
-* add `telemetry.Labels` helper
+* add `MetricDefinition` validation: empty/invalid name, empty/invalid/duplicate label keys, buckets-on-non-histograms, built-in name collisions, `go_`/`process_` reserved prefixes
+* add duplicate-registration normalization in both Prometheus and OTEL backends (same shape returns the cached instrument; mismatched shape returns an error)
+* add `Counter` / `Histogram` / `Gauge` / `UpDownCounter` implementations across all backends, all safe for concurrent use
+* add `telemetry.Labels(kv ...string) []Label` helper for ergonomic observation call sites
 * add the `traceHandler` wrap inside `logger.Init` so every log line with a valid span context carries `trace_id` and `span_id`
-* add `observability.LoggerFromContext` escape hatch
-* document custom metrics usage patterns
+* add `observability.LoggerFromContext(ctx, l) *slog.Logger` escape hatch for call sites that cannot easily use `*Context` variants
+* document custom metrics usage patterns, reserved names, and registration-vs-observation label ordering semantics
 
 ### Phase 5: Testing Harness + Hardening
 

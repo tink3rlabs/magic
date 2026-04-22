@@ -75,10 +75,34 @@ func (o *Observer) applyNamespace(name string) string {
 	return ns + "_" + name
 }
 
+// builtinMetricNames enumerates names owned by the observability
+// core. Custom registrations must not collide with any of these
+// (even by accident); the built-in is already created during Init
+// with a fixed shape that the caller likely would not match, so
+// a collision is almost certainly a bug on the caller side.
+//
+// Runtime (go_*) and process (process_*) collectors from the
+// Prometheus client_golang library are covered by their own name
+// prefix check below.
+var builtinMetricNames = map[string]struct{}{
+	HTTPRequestsTotal:               {},
+	HTTPRequestDurationSeconds:      {},
+	HTTPRequestSizeBytes:            {},
+	HTTPResponseSizeBytes:           {},
+	HTTPRequestsInFlight:            {},
+	StorageOperationsTotal:          {},
+	StorageOperationDurationSeconds: {},
+	StorageOperationErrorsTotal:     {},
+	PubSubMessagesTotal:             {},
+	PubSubPublishDurationSeconds:    {},
+	PubSubErrorsTotal:               {},
+}
+
 // validateCustomDef sanity-checks a user-supplied MetricDefinition
-// before it reaches the backend. Catches the common mistakes
-// (empty name, reserved magic_* prefix collision, bad name
-// characters) with a clear error message.
+// before it reaches the backend. Catches the common mistakes:
+// empty name, bad name/label characters, duplicate label keys,
+// buckets declared on a non-histogram kind, and built-in
+// name collisions.
 func validateCustomDef(def telemetry.MetricDefinition) error {
 	if def.Name == "" {
 		return fmt.Errorf("observability: metric name is required")
@@ -86,6 +110,14 @@ func validateCustomDef(def telemetry.MetricDefinition) error {
 	if !metricNameRE.MatchString(def.Name) {
 		return fmt.Errorf("observability: metric name %q is not a valid identifier", def.Name)
 	}
+	if _, reserved := builtinMetricNames[def.Name]; reserved {
+		return fmt.Errorf("observability: metric name %q collides with a built-in metric", def.Name)
+	}
+	if strings.HasPrefix(def.Name, "go_") || strings.HasPrefix(def.Name, "process_") {
+		return fmt.Errorf("observability: metric name %q uses a reserved prefix (go_/process_) owned by runtime collectors", def.Name)
+	}
+
+	seen := make(map[string]struct{}, len(def.Labels))
 	for _, l := range def.Labels {
 		if l == "" {
 			return fmt.Errorf("observability: metric %q has an empty label key", def.Name)
@@ -93,6 +125,15 @@ func validateCustomDef(def telemetry.MetricDefinition) error {
 		if !labelNameRE.MatchString(l) {
 			return fmt.Errorf("observability: metric %q has invalid label key %q", def.Name, l)
 		}
+		if _, dup := seen[l]; dup {
+			return fmt.Errorf("observability: metric %q has duplicate label key %q", def.Name, l)
+		}
+		seen[l] = struct{}{}
 	}
+
+	if def.Kind != telemetry.KindHistogram && len(def.Buckets) > 0 {
+		return fmt.Errorf("observability: metric %q declares Buckets but is not a histogram (Kind=%s)", def.Name, def.Kind)
+	}
+
 	return nil
 }

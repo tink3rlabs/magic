@@ -54,6 +54,34 @@ type Label struct {
 	Value string
 }
 
+// Labels is a lightweight constructor for a []Label slice from an
+// alternating key/value string list. It mirrors the ergonomics of
+// the slog.Attr helpers so typical call sites read as:
+//
+//	ordersCreated.Add(1, telemetry.Labels(
+//	    "status",  "success",
+//	    "channel", "web",
+//	)...)
+//
+// Odd-length inputs drop the trailing unpaired key (its value is
+// treated as the empty string). Empty input returns a nil slice
+// so the caller can splat it with ... without introducing a
+// zero-label observation allocation.
+func Labels(kv ...string) []Label {
+	if len(kv) == 0 {
+		return nil
+	}
+	out := make([]Label, 0, (len(kv)+1)/2)
+	for i := 0; i < len(kv); i += 2 {
+		if i+1 >= len(kv) {
+			out = append(out, Label{Key: kv[i]})
+			break
+		}
+		out = append(out, Label{Key: kv[i], Value: kv[i+1]})
+	}
+	return out
+}
+
 // MetricDefinition declares the shape of a metric at registration
 // time. Backends use this to pre-create instruments and, when
 // strict-labels mode is on, to reject observations that carry

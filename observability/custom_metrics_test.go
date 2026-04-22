@@ -84,6 +84,26 @@ func TestCustomMetricValidation(t *testing.T) {
 			def:  telemetry.MetricDefinition{Name: "x", Labels: []string{""}},
 			want: "empty label key",
 		},
+		{
+			name: "duplicate label",
+			def:  telemetry.MetricDefinition{Name: "x", Labels: []string{"a", "a"}},
+			want: "duplicate label key",
+		},
+		{
+			name: "builtin collision",
+			def:  telemetry.MetricDefinition{Name: HTTPRequestsTotal},
+			want: "collides with a built-in metric",
+		},
+		{
+			name: "go_ reserved prefix",
+			def:  telemetry.MetricDefinition{Name: "go_my_metric"},
+			want: "reserved prefix",
+		},
+		{
+			name: "process_ reserved prefix",
+			def:  telemetry.MetricDefinition{Name: "process_my_metric"},
+			want: "reserved prefix",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +115,21 @@ func TestCustomMetricValidation(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestCustomMetricRejectsBucketsOnNonHistogram(t *testing.T) {
+	obs := initTestObserver(t)
+
+	_, err := obs.Counter(telemetry.MetricDefinition{
+		Name:    "widgets_total",
+		Buckets: []float64{0.1, 1},
+	})
+	if err == nil {
+		t.Fatalf("expected error for Buckets on non-histogram")
+	}
+	if !strings.Contains(err.Error(), "Buckets") {
+		t.Errorf("error %q should mention Buckets", err.Error())
 	}
 }
 

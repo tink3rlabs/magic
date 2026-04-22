@@ -16,6 +16,7 @@ const (
 	// Storage (emitted by instrumented storage adapters in Phase 2).
 	StorageOperationsTotal          = "magic_storage_operations_total"
 	StorageOperationDurationSeconds = "magic_storage_operation_duration_seconds"
+	StorageOperationErrorsTotal     = "magic_storage_operation_errors_total"
 
 	// PubSub (emitted by instrumented publishers in Phase 3).
 	PubSubPublishTotal           = "magic_pubsub_publish_total"
@@ -41,6 +42,41 @@ const (
 	LabelHTTPMethod     = "method"
 	LabelHTTPRoute      = "route"
 	LabelHTTPStatusCode = "status_code"
+)
+
+// Labels used by the built-in storage metrics. Declared here so
+// the instrumented storage wrapper and dashboards reference
+// canonical label keys.
+const (
+	LabelStorageProvider  = "provider"
+	LabelStorageOperation = "operation"
+	LabelStorageStatus    = "status"
+)
+
+// Values used for the "status" label on storage metrics. Kept
+// small and stable so operators can alert on a predictable
+// low-cardinality set.
+const (
+	StorageStatusOK    = "ok"
+	StorageStatusError = "error"
+)
+
+// Canonical storage operation names emitted as the "operation"
+// label on storage metrics and as the span-name suffix for
+// storage tracing ("storage.<op>"). Schema/migration methods run
+// once at startup outside any request context and are
+// deliberately not instrumented.
+const (
+	StorageOpCreate  = "create"
+	StorageOpGet     = "get"
+	StorageOpUpdate  = "update"
+	StorageOpDelete  = "delete"
+	StorageOpList    = "list"
+	StorageOpSearch  = "search"
+	StorageOpCount   = "count"
+	StorageOpQuery   = "query"
+	StorageOpExecute = "execute"
+	StorageOpPing    = "ping"
 )
 
 // defaultMetricsPushInterval matches the OTEL SDK default and is

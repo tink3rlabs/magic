@@ -71,7 +71,11 @@ func (s *DynamoDBAdapter) OpenConnection() {
 type dynamoQueryBuilder func(*dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput
 
 func (s *DynamoDBAdapter) Execute(statement string) error {
-	_, err := s.DB.ExecuteStatement(context.TODO(), &dynamodb.ExecuteStatementInput{Statement: &statement})
+	return s.ExecuteContext(context.Background(), statement)
+}
+
+func (s *DynamoDBAdapter) ExecuteContext(ctx context.Context, statement string) error {
+	_, err := s.DB.ExecuteStatement(ctx, &dynamodb.ExecuteStatementInput{Statement: &statement})
 	if err != nil {
 		return fmt.Errorf("failed to execute statement %s: %v", statement, err)
 	}
@@ -79,8 +83,12 @@ func (s *DynamoDBAdapter) Execute(statement string) error {
 }
 
 func (s *DynamoDBAdapter) Ping() error {
+	return s.PingContext(context.Background())
+}
+
+func (s *DynamoDBAdapter) PingContext(ctx context.Context) error {
 	// dynamodb is a managed service so as long as it responds to api calls we can consider it up
-	_, err := s.DB.ListTables(context.TODO(), &dynamodb.ListTablesInput{})
+	_, err := s.DB.ListTables(ctx, &dynamodb.ListTablesInput{})
 	return err
 }
 
@@ -99,23 +107,30 @@ func (s *DynamoDBAdapter) GetSchemaName() string {
 func (s *DynamoDBAdapter) CreateSchema() error {
 	return fmt.Errorf("DynamoDB CreateSchema is not supported")
 }
+
 func (s *DynamoDBAdapter) CreateMigrationTable() error {
 	return fmt.Errorf("DynamoDB CreateMigrationTable is not supported")
 }
+
 func (s *DynamoDBAdapter) UpdateMigrationTable(id int, name string, desc string) error {
 	return fmt.Errorf("DynamoDB UpgradeMigrationTable is not supported")
 }
+
 func (s *DynamoDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("DynamoDB GetLatestMigration is not supported")
 }
 
 func (s *DynamoDBAdapter) Create(item any, params ...map[string]any) error {
+	return s.CreateContext(context.Background(), item, params...)
+}
+
+func (s *DynamoDBAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
 	i, err := attributevalue.MarshalMapWithOptions(item, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal input item into dynamodb item, %v", err)
 	}
 
-	_, err = s.DB.PutItem(context.TODO(), &dynamodb.PutItemInput{
+	_, err = s.DB.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(s.getTableName(item)),
 		Item:      i,
 	})
@@ -128,12 +143,16 @@ func (s *DynamoDBAdapter) Create(item any, params ...map[string]any) error {
 }
 
 func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
+	return s.GetContext(context.Background(), dest, filter, params...)
+}
+
+func (s *DynamoDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
 	}
 
-	response, err := s.DB.GetItem(context.TODO(), &dynamodb.GetItemInput{
+	response, err := s.DB.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(s.getTableName(dest)),
 		Key:       key,
 	})
@@ -155,16 +174,24 @@ func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, params ...map[str
 }
 
 func (s *DynamoDBAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
-	return s.Create(item)
+	return s.UpdateContext(context.Background(), item, filter, params...)
+}
+
+func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+	return s.CreateContext(ctx, item)
 }
 
 func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
+	return s.DeleteContext(context.Background(), item, filter, params...)
+}
+
+func (s *DynamoDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
 	}
 
-	_, err = s.DB.DeleteItem(context.TODO(), &dynamodb.DeleteItemInput{
+	_, err = s.DB.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(s.getTableName(item)),
 		Key:       key,
 	})
@@ -177,6 +204,7 @@ func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, params ...map[
 }
 
 func (s *DynamoDBAdapter) executePaginatedQuery(
+	ctx context.Context,
 	dest any,
 	limit int,
 	cursor string,
@@ -192,7 +220,7 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 
 	input = builder(input)
 
-	response, err := s.DB.ExecuteStatement(context.TODO(), input)
+	response, err := s.DB.ExecuteStatement(ctx, input)
 	if err != nil {
 		slog.Error("Query execution failed", "error", err)
 		return "", err
@@ -216,10 +244,14 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 }
 
 func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+}
+
+func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
-	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
+	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
 
 		if len(filter) > 0 {
@@ -238,6 +270,10 @@ func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 }
 
 func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+}
+
+func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
@@ -253,7 +289,7 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 		return "", err
 	}
 
-	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
+	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Build query
 		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
 		if whereClause != "" {
@@ -270,13 +306,21 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 }
 
 func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+	return s.CountContext(context.Background(), dest, filter, params...)
+}
+
+func (s *DynamoDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil
 }
 
 func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.executePaginatedQuery(dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
+	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+}
+
+func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		input.Statement = aws.String(statement)
 		return input
 	})

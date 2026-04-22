@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -89,8 +90,24 @@ func (s *SQLAdapter) OpenConnection() {
 	}
 }
 
+// dbWithCtx returns s.DB bound to ctx when non-nil, letting gorm
+// propagate cancellation and deadlines into the underlying driver
+// as well as making the context available to gorm callbacks (used
+// by future DB-level tracing plugins). A nil context is treated as
+// context.Background.
+func (s *SQLAdapter) dbWithCtx(ctx context.Context) *gorm.DB {
+	if ctx == nil {
+		return s.DB.WithContext(context.Background())
+	}
+	return s.DB.WithContext(ctx)
+}
+
 func (s *SQLAdapter) Execute(statement string) error {
-	result := s.DB.Exec(statement)
+	return s.ExecuteContext(context.Background(), statement)
+}
+
+func (s *SQLAdapter) ExecuteContext(ctx context.Context, statement string) error {
+	result := s.dbWithCtx(ctx).Exec(statement)
 	if result.Error != nil {
 		return fmt.Errorf("failed to execute statement %s: %v", statement, result.Error)
 	}
@@ -98,11 +115,15 @@ func (s *SQLAdapter) Execute(statement string) error {
 }
 
 func (s *SQLAdapter) Ping() error {
+	return s.PingContext(context.Background())
+}
+
+func (s *SQLAdapter) PingContext(ctx context.Context) error {
 	db, err := s.DB.DB()
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %v", err)
 	}
-	return db.Ping()
+	return db.PingContext(ctx)
 }
 
 func (s *SQLAdapter) GetType() StorageAdapterType {
@@ -138,7 +159,6 @@ func (s *SQLAdapter) CreateMigrationTable() error {
 		statement = "CREATE TABLE IF NOT EXISTS migrations (id INTEGER PRIMARY KEY, name TEXT, description TEXT, timestamp INTEGER)"
 	}
 	return s.Execute(statement)
-
 }
 
 func (s *SQLAdapter) UpdateMigrationTable(id int, name string, desc string) error {
@@ -150,7 +170,6 @@ func (s *SQLAdapter) UpdateMigrationTable(id int, name string, desc string) erro
 		statement = fmt.Sprintf(`INSERT INTO %s.migrations VALUES(%v, '%v', '%v', %v)`, s.GetSchemaName(), id, name, desc, time.Now().UnixMilli())
 	}
 	return s.Execute(statement)
-
 }
 
 func (s *SQLAdapter) GetLatestMigration() (int, error) {
@@ -162,7 +181,6 @@ func (s *SQLAdapter) GetLatestMigration() (int, error) {
 		fromSource = "migrations"
 	default:
 		fromSource = fmt.Sprintf("%s.migrations", s.GetSchemaName())
-
 	}
 
 	statement = fmt.Sprintf("SELECT max(id) from %s", fromSource)
@@ -180,16 +198,24 @@ func (s *SQLAdapter) GetLatestMigration() (int, error) {
 }
 
 func (s *SQLAdapter) Create(item any, params ...map[string]any) error {
-	result := s.DB.Create(reflect.ValueOf(item).Interface())
+	return s.CreateContext(context.Background(), item, params...)
+}
+
+func (s *SQLAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
+	result := s.dbWithCtx(ctx).Create(reflect.ValueOf(item).Interface())
 	return result.Error
 }
 
 func (s *SQLAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
+	return s.GetContext(context.Background(), dest, filter, params...)
+}
+
+func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when getting a resource")
 	}
 	query, bindings := s.buildQuery(filter)
-	result := s.DB.Where(query, bindings).Find(dest)
+	result := s.dbWithCtx(ctx).Where(query, bindings).Find(dest)
 	if result.RowsAffected == 0 {
 		return ErrNotFound
 	}
@@ -197,26 +223,36 @@ func (s *SQLAdapter) Get(dest any, filter map[string]any, params ...map[string]a
 }
 
 func (s *SQLAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
+	return s.UpdateContext(context.Background(), item, filter, params...)
+}
+
+func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
 	query, bindings := s.buildQuery(filter)
-	result := s.DB.Where(query, bindings).Save(item)
+	result := s.dbWithCtx(ctx).Where(query, bindings).Save(item)
 	return result.Error
 }
 
 func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
+	return s.DeleteContext(context.Background(), item, filter, params...)
+}
+
+func (s *SQLAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when deleting a resource")
 	}
 	query, bindings := s.buildQuery(filter)
-	result := s.DB.Where(query, bindings).Delete(item)
+	result := s.dbWithCtx(ctx).Where(query, bindings).Delete(item)
 	return result.Error
 }
 
 // executePaginatedQuery runs a cursor-paginated SELECT using the provided query builder scope.
 // The cursor is base64-encoded from the sortKey field value of the last returned row.
+// ctx is propagated to gorm so cancellation reaches the driver.
 func (s *SQLAdapter) executePaginatedQuery(
+	ctx context.Context,
 	dest any,
 	sortKey string,
 	sortDirection SortingDirection,
@@ -235,7 +271,7 @@ func (s *SQLAdapter) executePaginatedQuery(
 		}
 		cursorValue = string(bytes)
 	}
-	q := s.DB.Model(dest).Scopes(builder)
+	q := s.dbWithCtx(ctx).Model(dest).Scopes(builder)
 
 	q = q.Limit(limit + 1).Order(fmt.Sprintf("%s %s", sortKey, sortDirection))
 
@@ -296,11 +332,15 @@ func findFieldByJSONTag(v reflect.Value, tag string) reflect.Value {
 }
 
 func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+}
+
+func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	sortDirection, err := extractSortDirection(extractParams(params...))
 	if err != nil {
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
-	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
+	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
 			query, bindings := s.buildQuery(filter)
 			return q.Where(query, bindings)
@@ -310,12 +350,16 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 }
 
 func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+}
+
+func (s *SQLAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	sortDirection, err := extractSortDirection(extractParams(params...))
 	if err != nil {
 		return "", fmt.Errorf("failed to search: %w", err)
 	}
 	if query == "" {
-		return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
+		return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 			return q
 		})
 	}
@@ -342,7 +386,7 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 
 	slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, queryParams))
 
-	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
+	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if whereClause != "" {
 			return q.Where(whereClause, queryParams...)
 		}
@@ -351,7 +395,11 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 }
 
 func (s *SQLAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	q := s.DB.Model(dest)
+	return s.CountContext(context.Background(), dest, filter, params...)
+}
+
+func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+	q := s.dbWithCtx(ctx).Model(dest)
 
 	if len(filter) > 0 {
 		query, bindings := s.buildQuery(filter)
@@ -367,6 +415,10 @@ func (s *SQLAdapter) Count(dest any, filter map[string]any, params ...map[string
 }
 
 func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+}
+
+func (s *SQLAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return "", fmt.Errorf("not implemented yet")
 }
 

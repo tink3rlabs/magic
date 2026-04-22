@@ -19,8 +19,9 @@ const (
 	StorageOperationErrorsTotal     = "magic_storage_operation_errors_total"
 
 	// PubSub (emitted by instrumented publishers in Phase 3).
-	PubSubPublishTotal           = "magic_pubsub_publish_total"
+	PubSubMessagesTotal          = "magic_pubsub_messages_total"
 	PubSubPublishDurationSeconds = "magic_pubsub_publish_duration_seconds"
+	PubSubErrorsTotal            = "magic_pubsub_errors_total"
 )
 
 // Bucket boundaries for built-in histograms. The HTTP and storage
@@ -32,6 +33,13 @@ var (
 	}
 	storageDurationBuckets = []float64{
 		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5,
+	}
+	// pubsubDurationBuckets matches the Prometheus default
+	// bucket set. Publish is network-bound and rarely faster
+	// than a few milliseconds, so sub-millisecond resolution is
+	// not needed.
+	pubsubDurationBuckets = []float64{
+		0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 	}
 )
 
@@ -77,6 +85,30 @@ const (
 	StorageOpQuery   = "query"
 	StorageOpExecute = "execute"
 	StorageOpPing    = "ping"
+)
+
+// Labels used by the built-in pubsub metrics. Kept small and
+// stable so operators can alert on a predictable low-cardinality
+// set. See docs/observability.md for the cardinality note on
+// `destination` (SNS topic ARNs embed the AWS account ID).
+const (
+	LabelPubSubProvider    = "provider"
+	LabelPubSubDestination = "destination"
+	LabelPubSubOperation   = "operation"
+	LabelPubSubStatus      = "status"
+)
+
+// Values used for the "status" label on pubsub metrics.
+const (
+	PubSubStatusOK    = "ok"
+	PubSubStatusError = "error"
+)
+
+// Canonical pubsub operation names. Only "publish" is supported
+// in v1; consume/ack/nack are deferred until a Consumer interface
+// lands in the pubsub package.
+const (
+	PubSubOpPublish = "publish"
 )
 
 // defaultMetricsPushInterval matches the OTEL SDK default and is

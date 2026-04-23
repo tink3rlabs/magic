@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -20,6 +21,16 @@ import (
 	"github.com/tink3rlabs/magic/telemetry"
 )
 
+// ObservabilityOptions configures Observability middleware. Skip lists use the
+// same rules as logger.RequestLoggerOptions: exact matches on URL.Path and
+// prefix matches on URL.Path.
+type ObservabilityOptions struct {
+	// SkipPaths skips tracing and built-in HTTP metrics for exact URL.Path matches.
+	SkipPaths []string
+	// SkipPathPrefixes skips tracing and HTTP metrics when URL.Path has one of these prefixes.
+	SkipPathPrefixes []string
+}
+
 // Observability returns the HTTP middleware that emits the
 // built-in tracing and metrics signals from an initialized
 // observability.Observer.
@@ -27,13 +38,25 @@ import (
 // Passing nil is allowed and returns an identity middleware, so
 // callers can wire the stack conditionally without extra guards.
 func Observability(obs *observability.Observer) func(http.Handler) http.Handler {
+	return ObservabilityWithOptions(obs, ObservabilityOptions{})
+}
+
+// ObservabilityWithOptions is like Observability but allows skipping instrumentation
+// for noisy or high-volume routes (for example /metrics or health checks).
+func ObservabilityWithOptions(obs *observability.Observer, opts ObservabilityOptions) func(http.Handler) http.Handler {
 	state := obs.HTTPMiddlewareState()
 	if state == nil {
 		return func(next http.Handler) http.Handler { return next }
 	}
+	skipPaths, skipPrefixes := compileObservabilitySkip(opts)
 	propagator := otel.GetTextMapPropagator()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if observabilityShouldSkip(r.URL.Path, skipPaths, skipPrefixes) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			start := time.Now()
 			method := normalizeMethod(r.Method)
 
@@ -90,6 +113,38 @@ func Observability(obs *observability.Observer) func(http.Handler) http.Handler 
 			next.ServeHTTP(ww, rCtx)
 		})
 	}
+}
+
+func compileObservabilitySkip(opts ObservabilityOptions) (map[string]struct{}, []string) {
+	skip := make(map[string]struct{}, len(opts.SkipPaths))
+	for _, p := range opts.SkipPaths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		skip[p] = struct{}{}
+	}
+	prefixes := make([]string, 0, len(opts.SkipPathPrefixes))
+	for _, p := range opts.SkipPathPrefixes {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		prefixes = append(prefixes, p)
+	}
+	return skip, prefixes
+}
+
+func observabilityShouldSkip(path string, skipPaths map[string]struct{}, prefixes []string) bool {
+	if _, ok := skipPaths[path]; ok {
+		return true
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeMethod(m string) string {

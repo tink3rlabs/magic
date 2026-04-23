@@ -126,7 +126,10 @@ func main() {
 		render.SetContentType(render.ContentTypeJSON),
 		middleware.RedirectSlashes,
 		middleware.Recoverer,
-		middlewares.Observability(obs),
+		middlewares.ObservabilityWithOptions(obs, middlewares.ObservabilityOptions{
+			SkipPaths:        []string{"/metrics"},
+			SkipPathPrefixes: []string{"/health/"},
+		}),
 		magiclogger.ChiRequestLogger(magiclogger.RequestLoggerOptions{
 			SkipPaths:        []string{"/metrics"},
 			SkipPathPrefixes: []string{"/health/"},

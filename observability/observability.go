@@ -16,7 +16,10 @@
 //	defer obs.Shutdown(context.Background())
 //
 //	router := chi.NewRouter()
-//	router.Use(middlewares.Observability(obs))
+//	router.Use(middlewares.ObservabilityWithOptions(obs, middlewares.ObservabilityOptions{
+//	  SkipPaths:        []string{"/metrics"},
+//	  SkipPathPrefixes: []string{"/health/"},
+//	}))
 //	router.Handle("/metrics", obs.MetricsHandler())
 package observability
 

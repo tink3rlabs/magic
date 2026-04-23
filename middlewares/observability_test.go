@@ -46,6 +46,54 @@ func TestObservabilityNilIsIdentity(t *testing.T) {
 	}
 }
 
+func TestObservabilityWithOptionsSkipsPathsAndPrefixes(t *testing.T) {
+	obs := testObserver(t)
+
+	r := chi.NewRouter()
+	r.Use(ObservabilityWithOptions(obs, ObservabilityOptions{
+		SkipPaths:        []string{"/metrics"},
+		SkipPathPrefixes: []string{"/health/"},
+	}))
+	r.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	r.Get("/health/liveness", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	r.Get("/api/hit", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{"/metrics", "/health/liveness"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+	resp, err := http.Get(srv.URL + "/api/hit")
+	if err != nil {
+		t.Fatalf("GET /api/hit: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if n := countersFromScrape(t, obs, observability.HTTPRequestsTotal,
+		`method="GET"`, `route="/metrics"`); n != 0 {
+		t.Errorf("skipped /metrics should not record http_requests_total; got %v", n)
+	}
+	if n := countersFromScrape(t, obs, observability.HTTPRequestsTotal,
+		`method="GET"`, `route="/health/liveness"`); n != 0 {
+		t.Errorf("skipped /health/* should not record http_requests_total; got %v", n)
+	}
+	if n := countersFromScrape(t, obs, observability.HTTPRequestsTotal,
+		`method="GET"`, `route="/api/hit"`); n != 1 {
+		t.Errorf("instrumented route want 1 request, got %v", n)
+	}
+}
+
 func TestObservabilityMiddlewareRecordsHTTPMetrics(t *testing.T) {
 	obs := testObserver(t)
 

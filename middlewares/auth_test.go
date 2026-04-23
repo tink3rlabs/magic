@@ -145,8 +145,8 @@ func newTestIssuer(t *testing.T) (string, *rsa.PrivateKey) {
 		t.Fatalf("failed to generate RSA key: %v", err)
 	}
 
-	n := base64.RawURLEncoding.EncodeToString(privateKey.PublicKey.N.Bytes())
-	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.PublicKey.E)).Bytes())
+	n := base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes())
 
 	jwks := map[string]any{
 		"keys": []map[string]any{

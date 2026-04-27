@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.2
-	github.com/aws/aws-sdk-go-v2/service/sns v1.39.15
+	github.com/aws/aws-sdk-go-v2/service/sns v1.39.16
 	github.com/grindlemire/go-lucene v0.0.33
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.1

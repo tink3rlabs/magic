@@ -119,14 +119,22 @@ func (s *CosmosDBAdapter) OpenConnection() {
 }
 
 func (s *CosmosDBAdapter) Execute(statement string) error {
+	return s.ExecuteContext(context.Background(), statement)
+}
+
+func (s *CosmosDBAdapter) ExecuteContext(ctx context.Context, statement string) error {
 	// Azure SDK doesn't support arbitrary SQL execution like gocosmos
 	// This method is kept for compatibility but will return an error
 	return fmt.Errorf("Execute method not supported with Azure SDK - use specific CRUD methods instead")
 }
 
 func (s *CosmosDBAdapter) Ping() error {
+	return s.PingContext(context.Background())
+}
+
+func (s *CosmosDBAdapter) PingContext(ctx context.Context) error {
 	// Test connection by trying to read database properties
-	_, err := s.databaseClient.Read(context.Background(), nil)
+	_, err := s.databaseClient.Read(ctx, nil)
 	return err
 }
 
@@ -163,6 +171,10 @@ func (s *CosmosDBAdapter) GetLatestMigration() (int, error) {
 }
 
 func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
+	return s.CreateContext(context.Background(), item, params...)
+}
+
+func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
 	// Extract provider-specific parameters
 	paramMap := extractParams(params...)
 
@@ -216,7 +228,7 @@ func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
 	partitionKey := azcosmos.NewPartitionKeyString(pkValue)
 
 	// Create item
-	_, err = containerClient.CreateItem(context.Background(), partitionKey, itemBytes, nil)
+	_, err = containerClient.CreateItem(ctx, partitionKey, itemBytes, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create item: %v", err)
 	}
@@ -225,6 +237,10 @@ func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
 }
 
 func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
+	return s.GetContext(context.Background(), dest, filter, params...)
+}
+
+func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return fmt.Errorf("filtering is required when getting a resource")
 	}
@@ -278,7 +294,7 @@ func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, params ...map[str
 	}
 
 	// Execute query
-	page, err := s.executeQuery(containerClient, query, paramMap, queryOptions)
+	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %v", err)
 	}
@@ -297,6 +313,10 @@ func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, params ...map[str
 }
 
 func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
+	return s.UpdateContext(context.Background(), item, filter, params...)
+}
+
+func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return fmt.Errorf("filtering is required when updating a resource")
 	}
@@ -312,12 +332,12 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[
 
 	// First get the item to update
 	itemType := reflect.TypeOf(item)
-	if itemType.Kind() == reflect.Ptr {
+	if itemType.Kind() == reflect.Pointer {
 		itemType = itemType.Elem()
 	}
 	existingItem := reflect.New(itemType).Interface()
 
-	err = s.Get(existingItem, filter, params...)
+	err = s.GetContext(ctx, existingItem, filter, params...)
 	if err != nil {
 		return err
 	}
@@ -374,7 +394,7 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[
 	partitionKey := azcosmos.NewPartitionKeyString(pk.(string))
 
 	// Update item
-	_, err = containerClient.ReplaceItem(context.Background(), partitionKey, id.(string), itemBytes, nil)
+	_, err = containerClient.ReplaceItem(ctx, partitionKey, id.(string), itemBytes, nil)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %v", err)
 	}
@@ -383,6 +403,10 @@ func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[
 }
 
 func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
+	return s.DeleteContext(context.Background(), item, filter, params...)
+}
+
+func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
 	if len(filter) == 0 {
 		return fmt.Errorf("an id filter is required when deleting a resource")
 	}
@@ -418,7 +442,7 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 	partitionKey := azcosmos.NewPartitionKeyString(pk)
 
 	// Delete item
-	_, err = containerClient.DeleteItem(context.Background(), partitionKey, id.(string), nil)
+	_, err = containerClient.DeleteItem(ctx, partitionKey, id.(string), nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %v", err)
 	}
@@ -427,6 +451,10 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 }
 
 func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+}
+
+func (s *CosmosDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
 	// Extract sort direction from params
 	paramMap := extractParams(params...)
 	sortDirection, err := extractSortDirection(paramMap)
@@ -434,10 +462,14 @@ func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
 
-	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, filter, params...)
+	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, filter, params...)
 }
 
 func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+}
+
+func (s *CosmosDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	// Note: The Search method in CosmosDB is designed for full-text search scenarios
 	// For CosmosDB, full-text search requires Azure Cognitive Search integration
 	// This implementation treats Search as List with no filter
@@ -451,16 +483,24 @@ func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit i
 	}
 
 	// Use executePaginatedQuery with empty filter (the query parameter is ignored for CosmosDB)
-	return s.executePaginatedQuery(dest, sortKey, sortDirection, limit, cursor, map[string]any{}, params...)
+	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, map[string]any{}, params...)
 }
 
 func (s *CosmosDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+	return s.CountContext(context.Background(), dest, filter, params...)
+}
+
+func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil
 }
 
 func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+}
+
+func (s *CosmosDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	// Note: For custom SQL queries, partition key parameters should be handled within the statement itself
 	// The params are available but not automatically applied to the query
 	// Users should include partition key conditions in their custom SQL statements when needed
@@ -488,7 +528,7 @@ func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor st
 	pager := containerClient.NewQueryItemsPager(statement, azcosmos.NewPartitionKeyString(""), queryOptions)
 
 	// Get first page
-	page, err := pager.NextPage(context.Background())
+	page, err := pager.NextPage(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to execute query: %v", err)
 	}
@@ -521,8 +561,10 @@ func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor st
 }
 
 // executePaginatedQuery runs a cursor-paginated Cosmos DB query against the container for dest.
-// The cursor is a Cosmos DB continuation token.
+// The cursor is a Cosmos DB continuation token. ctx is propagated to the Cosmos SDK so callers
+// can cancel or deadline the operation and so tracing instrumentation has a parent span to use.
 func (s *CosmosDBAdapter) executePaginatedQuery(
+	ctx context.Context,
 	dest any,
 	sortKey string,
 	sortDirection SortingDirection,
@@ -600,7 +642,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	}
 
 	// Execute query
-	page, err := s.executeQuery(containerClient, query, paramMap, queryOptions)
+	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)
 	if err != nil {
 		return "", fmt.Errorf("failed to execute query: %v", err)
 	}
@@ -690,6 +732,7 @@ func (s *CosmosDBAdapter) getPartitionKeyFieldName(paramMap map[string]any) stri
 
 // executeQuery executes a query and handles single-partition vs cross-partition logic
 func (s *CosmosDBAdapter) executeQuery(
+	ctx context.Context,
 	containerClient *azcosmos.ContainerClient,
 	query string,
 	paramMap map[string]any,
@@ -706,13 +749,13 @@ func (s *CosmosDBAdapter) executeQuery(
 	if pk != "" {
 		// Single partition query - use the partition key
 		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions)
-		page, err = pager.NextPage(context.Background())
+		page, err = pager.NextPage(ctx)
 	} else {
 		// Cross-partition query
 		enableCrossPartition := true
 		queryOptions.EnableCrossPartitionQuery = &enableCrossPartition
 		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(""), queryOptions)
-		page, err = pager.NextPage(context.Background())
+		page, err = pager.NextPage(ctx)
 	}
 
 	return page, err

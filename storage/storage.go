@@ -109,22 +109,40 @@ func validateSortKey(key string) error {
 	return nil
 }
 
+// GetInstance constructs the requested storage adapter and wraps it with the
+// telemetry instrumented adapter from wrapForTelemetry. Callers that need the
+// concrete implementation (for example *SQLAdapter to register a GORM plugin) must
+// use UnwrapAdapter first (see also TelemetryUnwrapper); otherwise type
+// assertions to *SQLAdapter fail when the wrapper sits in front.
 func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, config any) (StorageAdapter, error) {
 	if config == nil {
 		config = make(map[string]string)
 	}
+	var (
+		inner StorageAdapter
+		err   error
+	)
 	switch adapterType {
 	// case CASSANDRA:
 	// 	return GetCassandraAdapter(config.(map[string]string))
 	case MEMORY:
-		return GetMemoryAdapterInstance(), nil
+		inner = GetMemoryAdapterInstance()
 	case SQL:
-		return GetSQLAdapterInstance(config.(map[string]string)), nil
+		inner = GetSQLAdapterInstance(config.(map[string]string))
 	case DYNAMODB:
-		return GetDynamoDBAdapterInstance(config.(map[string]string)), nil
+		inner = GetDynamoDBAdapterInstance(config.(map[string]string))
 	case COSMOSDB:
-		return GetCosmosDBAdapterInstance(config.(map[string]string)), nil
+		inner = GetCosmosDBAdapterInstance(config.(map[string]string))
 	default:
-		return nil, errors.New("this storage adapter type isn't supported")
+		err = errors.New("this storage adapter type isn't supported")
 	}
+	if err != nil {
+		return nil, err
+	}
+	// Wrap with the telemetry-aware adapter unconditionally. When
+	// observability has not been initialized the global telemetry
+	// is the no-op backend, so the wrapper adds negligible overhead
+	// and still produces ContextualStorageAdapter-compatible
+	// methods for callers that want to propagate a context.
+	return wrapForTelemetry(inner), nil
 }

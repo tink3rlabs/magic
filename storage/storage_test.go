@@ -54,6 +54,19 @@ func TestGetInstanceReturnsExpectedAdapterForEachType(t *testing.T) {
 	}
 }
 
+func TestGetInstanceReturnsErrorForUnsupportedAdapterType(t *testing.T) {
+	// Passing an unknown StorageAdapterType must surface a
+	// user-facing error instead of silently returning nil or
+	// panicking deeper in the factory.
+	_, err := storage.StorageAdapterFactory{}.GetInstance(
+		storage.StorageAdapterType("unknown"),
+		map[string]string{},
+	)
+	if err == nil {
+		t.Fatalf("expected error for unsupported adapter type")
+	}
+}
+
 // func getCassandraHostAndKeyspace() (string, string) {
 // 	host := os.Getenv("CASSANDRA_HOSTS")
 // 	if host == "" {

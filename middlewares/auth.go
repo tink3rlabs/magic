@@ -298,7 +298,11 @@ func EnsureValidTokenMultiProvider(cfg EnsureValidTokenMultiProviderConfig) func
 	}
 
 	errorHandler := func(w http.ResponseWriter, r *http.Request, err error) {
-		slog.Error("JWT validation failed against all providers", slog.Any("error", err.Error()))
+		if err != nil {
+			slog.Error("JWT validation failed against all providers", slog.Any("error", err.Error()))
+		} else {
+			slog.Error("JWT validation failed against all providers", slog.String("error", "authentication required"))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"status":"Unauthorized","error":"authentication required"}`))

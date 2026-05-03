@@ -112,7 +112,7 @@ func NewParser(model any, config ...*ParserConfig) (*Parser, error) {
 // extractFields uses reflection to extract field metadata from a struct.
 func extractFields(model any) ([]FieldInfo, error) {
 	t := reflect.TypeOf(model)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 
@@ -169,7 +169,7 @@ func canUseNestedAccess(t reflect.Type) bool {
 	}
 
 	// Unwrap pointers
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 

@@ -141,6 +141,12 @@ func wrapForTelemetry(inner StorageAdapter) StorageAdapter {
 	return w
 }
 
+// UnwrapStorageAdapter implements TelemetryUnwrapper by returning the delegate
+// adapter without telemetry wrapping.
+func (w *instrumentedAdapter) UnwrapStorageAdapter() StorageAdapter {
+	return w.inner
+}
+
 // registerInstruments looks up (or creates, idempotently) the
 // built-in storage instruments. Registration failures are logged
 // and the instruments fall back to no-ops so instrumentation never

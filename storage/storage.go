@@ -109,6 +109,11 @@ func validateSortKey(key string) error {
 	return nil
 }
 
+// GetInstance constructs the requested storage adapter and wraps it with the
+// telemetry instrumented adapter from wrapForTelemetry. Callers that need the
+// concrete implementation (for example *SQLAdapter to register a GORM plugin) must
+// use UnwrapAdapter first (see also TelemetryUnwrapper); otherwise type
+// assertions to *SQLAdapter fail when the wrapper sits in front.
 func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, config any) (StorageAdapter, error) {
 	if config == nil {
 		config = make(map[string]string)

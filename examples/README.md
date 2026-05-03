@@ -3,7 +3,7 @@
 The sample app in `examples/main.go` demonstrates:
 
 - storage CRUD using the `storage` package
-- observability bootstrap via `observability.Init(...)`
+- observability bootstrap via `observability.Init(...)` (or `observability.New`, same behavior)
 - HTTP middleware instrumentation via `middlewares.Observability(obs)`
 - custom metric registration (`orders_created_total`)
 - logger bootstrap via `logger.Init(...)` and `slog` request logging
@@ -26,7 +26,20 @@ It exposes:
 
 - Go installed
 - `grep` for quick metric filtering
+- `jq` (optional, for parsing JSON in the curl examples below)
 - Docker (optional, for local OTLP collector)
+
+### Optional: trace outbound HTTP from your own code
+
+Server-side spans come from `middlewares.Observability`. For **client** calls, wrap the transport (add module `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` to your app):
+
+```go
+import "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
+```
+
+This is separate from the example’s chi server instrumentation.
 
 ---
 
@@ -44,9 +57,11 @@ In another terminal, generate traffic:
 curl -i http://localhost:8080/health/liveness
 curl -i http://localhost:8080/health/readiness
 curl -s http://localhost:8080/api-docs
-curl -i -X POST http://localhost:8080/orders
-curl -i http://localhost:8080/orders/<id-from-post-response>
+ORDER_ID=$(curl -sf -X POST http://localhost:8080/orders | jq -r '.id')
+curl -i "http://localhost:8080/orders/${ORDER_ID}"
 ```
+
+Without `jq`, create an order with `curl -i -X POST http://localhost:8080/orders` and copy the `id` field from the JSON body for the GET URL.
 
 Verify metrics from the app directly:
 
@@ -122,9 +137,11 @@ Generate traffic:
 curl -i http://localhost:8080/health/liveness
 curl -i http://localhost:8080/health/readiness
 curl -s http://localhost:8080/api-docs
-curl -i -X POST http://localhost:8080/orders
-curl -i http://localhost:8080/orders/<id-from-post-response>
+ORDER_ID=$(curl -sf -X POST http://localhost:8080/orders | jq -r '.id')
+curl -i "http://localhost:8080/orders/${ORDER_ID}"
 ```
+
+Without `jq`, create an order with `curl -i -X POST http://localhost:8080/orders` and copy the `id` field from the JSON body for the GET URL.
 
 ### Verify metrics in OTLP mode
 
@@ -178,9 +195,11 @@ METRICS_MODE=otlp ENABLE_TRACING=true OTLP_ENDPOINT=localhost:4317 LOGGER_LEVEL=
 Then hit:
 
 ```bash
-curl -i -X POST http://localhost:8080/orders
-curl -i http://localhost:8080/orders/<id-from-post-response>
+ORDER_ID=$(curl -sf -X POST http://localhost:8080/orders | jq -r '.id')
+curl -i "http://localhost:8080/orders/${ORDER_ID}"
 ```
+
+Without `jq`, create an order with `curl -i -X POST http://localhost:8080/orders` and copy the `id` field from the JSON body for the GET URL.
 
 You should see log lines containing `trace_id` and `span_id`.
 

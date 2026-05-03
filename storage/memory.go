@@ -7,9 +7,14 @@ import (
 
 var memoryAdapterLock = &sync.Mutex{}
 
+// MemoryAdapter provides an in-memory SQLite-backed store. It implements
+// ContextualStorageAdapter; all *Context methods delegate to the embedded
+// [SQLAdapter] so request-scoped context matches production SQL behavior.
 type MemoryAdapter struct {
 	DB *SQLAdapter
 }
+
+var _ ContextualStorageAdapter = (*MemoryAdapter)(nil)
 
 var memoryAdapterInstance *MemoryAdapter
 

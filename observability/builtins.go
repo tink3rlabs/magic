@@ -5,6 +5,12 @@ import "time"
 // Names of the built-in metrics emitted by the magic core packages.
 // These are stable public constants so callers can grep dashboards
 // and alerts against canonical identifiers.
+//
+// They remain plain string constants so values pass through to Prometheus
+// and OTLP registration without conversion. A named string type (e.g.
+// type BuiltInMetricName string) would need to propagate through
+// telemetry APIs and all call sites; that is left for a deliberate
+// future refactor if stronger typing is required.
 const (
 	// HTTP (emitted by middlewares.Observability).
 	HTTPRequestsTotal          = "http_requests_total"

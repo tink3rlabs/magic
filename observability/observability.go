@@ -1,6 +1,6 @@
 // Package observability wires up tracing, metrics, and logger
 // correlation for services built on the magic library. A single
-// call to Init during process bootstrap selects a metrics backend
+// call to Init or New during process bootstrap selects a metrics backend
 // (Prometheus scrape or OTLP push), installs an OTEL TracerProvider
 // (or a no-op when tracing is disabled), registers built-in HTTP
 // and runtime metrics, and publishes the resulting backends to the
@@ -21,6 +21,8 @@
 //	  SkipPathPrefixes: []string{"/health/"},
 //	}))
 //	router.Handle("/metrics", obs.MetricsHandler())
+//
+// Init and New are identical; neither is Go's special func init() hook.
 package observability
 
 import (
@@ -36,7 +38,7 @@ import (
 	"github.com/tink3rlabs/magic/telemetry"
 )
 
-// Observer is the live observability handle returned by Init. It
+// Observer is the live observability handle returned by Init or New. It
 // owns the tracer provider, meter provider (OTLP mode) or
 // Prometheus registry, the built-in HTTP instruments, and any
 // custom instruments registered through the Counter/Histogram/...
@@ -91,6 +93,9 @@ type Observer struct {
 // validates cfg, builds the metrics backend and tracer, registers
 // built-in instruments, and publishes the result to
 // telemetry.SetGlobal so downstream packages pick it up.
+//
+// The name Init is unrelated to Go's automatic func init(); this
+// function runs only when you call it.
 //
 // The returned Observer owns process-wide resources and must be
 // shut down before exit.
@@ -170,6 +175,12 @@ func Init(ctx context.Context, cfg Config) (*Observer, error) {
 	})
 
 	return obs, nil
+}
+
+// New is an alias for [Init] for callers who prefer constructor-style naming.
+// It behaves the same as Init in every way.
+func New(ctx context.Context, cfg Config) (*Observer, error) {
+	return Init(ctx, cfg)
 }
 
 // Shutdown flushes pending telemetry and releases resources. Safe

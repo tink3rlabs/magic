@@ -332,7 +332,7 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 
 	// First get the item to update
 	itemType := reflect.TypeOf(item)
-	if itemType.Kind() == reflect.Ptr {
+	if itemType.Kind() == reflect.Pointer {
 		itemType = itemType.Elem()
 	}
 	existingItem := reflect.New(itemType).Interface()

@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 5
     steps:
      - name: Conventional Commits
-       uses: webiny/action-conventional-commits@v1.3.0
+       uses: webiny/action-conventional-commits@v1.4.2
        with:
          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
          allowed-commit-types: "feat,fix,cicd,chore,patch,release,test,docs,refactor,ci,dev,test"
@@ -40,10 +40,10 @@ jobs:
     needs: conventional-commits
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25.3'
           cache: true
@@ -74,10 +74,10 @@ jobs:
     #       --health-timeout 5s
     #       --health-retries 7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25.3'
           cache: true

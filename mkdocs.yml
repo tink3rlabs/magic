@@ -1,28 +1,54 @@
 site_name: magic
 site_description: Common building blocks for Go microservices, so your service code can focus on business logic.
 site_url: https://tink3rlabs.github.io/magic/
+site_author: tink3rlabs
 repo_url: https://github.com/tink3rlabs/magic
 repo_name: tink3rlabs/magic
 edit_uri: edit/main/docs/
+copyright: Copyright &copy; tink3rlabs &mdash; MIT licensed
 
 exclude_docs: |
   superpowers/
 
 theme:
   name: material
+  custom_dir: docs/overrides
   icon:
     logo: material/auto-fix
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
   favicon: assets/favicon.png
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
-    - navigation.instant
-    - navigation.tracking
-    - navigation.sections
-    - navigation.top
-    - content.code.copy
+    - announce.dismiss
     - content.action.edit
-    - search.suggest
+    - content.action.view
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
     - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
   palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: black
@@ -36,29 +62,82 @@ theme:
       accent: white
       toggle:
         icon: material/brightness-4
-        name: Switch to light mode
+        name: Switch to system preference
 
-nav:
-  - Home: index.md
-  - Getting Started: getting-started.md
-  - Search (Lucene): lucene.md
-  - Storage Adapters: storage.md
-  - Observability: observability.md
-  - Contributing: contributing.md
-
-markdown_extensions:
-  - admonition
-  - pymdownx.details
-  - pymdownx.superfences
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.tabbed:
-      alternate_style: true
-  - toc:
-      permalink: true
+extra_css:
+  - stylesheets/extra.css
 
 extra:
   version:
     provider: mike
     default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/tink3rlabs/magic
+      name: magic on GitHub
+    - icon: fontawesome/brands/golang
+      link: https://pkg.go.dev/github.com/tink3rlabs/magic
+      name: magic on pkg.go.dev
+  status:
+    new: Recently added
+    deprecated: Deprecated
+  generator: false
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Guides:
+    - Search (Lucene): lucene.md
+    - Storage Adapters: storage.md
+    - Observability: observability.md
+  - Contributing: contributing.md
+
+plugins:
+  - search
+  - tags
+  - social:
+      cards_layout_options:
+        background_color: "#000000"
+        color: "#ffffff"
+        font_family: Inter
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.critic
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde

@@ -1,0 +1,66 @@
+{% extends "main.html" %}
+
+{#-
+  Custom landing template. Used only by docs/index.md via
+    ---
+    template: home.html
+    ---
+  Renders a hero immediately under the nav tabs, then a feature grid,
+  then defers the rest of the index markdown body.
+-#}
+
+{% block tabs %}
+  {{ super() }}
+
+  <section class="mdx-container">
+    <div class="md-grid md-typeset">
+      <div class="mdx-hero">
+        <div class="mdx-hero__content">
+          <h1>{{ config.site_name }}</h1>
+          <p>{{ config.site_description }}</p>
+          <a
+            href="{{ 'getting-started/' | url }}"
+            class="md-button md-button--primary"
+          >
+            Get started
+          </a>
+          <a
+            href="{{ config.repo_url }}"
+            class="md-button"
+            target="_blank"
+            rel="noopener"
+          >
+            View on GitHub
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block content %}
+  <section class="mdx-features">
+    <div class="md-grid md-typeset">
+      <ul class="mdx-features__list">
+        <li class="mdx-features__item">
+          <h3>Storage</h3>
+          <p>SQL, DynamoDB, CosmosDB, in-memory — one API. Swap providers with a single constant.</p>
+        </li>
+        <li class="mdx-features__item">
+          <h3>Lucene search</h3>
+          <p>Type-safe filter strings compiled to parameterized SQL or DynamoDB PartiQL.</p>
+        </li>
+        <li class="mdx-features__item">
+          <h3>Observability</h3>
+          <p>OpenTelemetry-first logs, traces, and metrics with sensible defaults.</p>
+        </li>
+        <li class="mdx-features__item">
+          <h3>Batteries included</h3>
+          <p>Typed errors, leadership election, auth middleware, health probes, SNS pub/sub.</p>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  {{ super() }}
+{% endblock %}

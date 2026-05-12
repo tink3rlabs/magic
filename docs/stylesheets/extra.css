@@ -1,0 +1,124 @@
+/* Hero container sits flush under the sticky nav tabs */
+.mdx-container {
+  padding-top: 1rem;
+  background:
+    linear-gradient(
+      to bottom,
+      var(--md-primary-fg-color),
+      hsla(0, 0%, 0%, 0) 99%,
+      var(--md-default-bg-color) 99%
+    );
+}
+
+[data-md-color-scheme="slate"] .mdx-container {
+  background:
+    linear-gradient(
+      to bottom,
+      var(--md-default-bg-color--lightest, #1f1f1f),
+      hsla(0, 0%, 0%, 0) 99%,
+      var(--md-default-bg-color) 99%
+    );
+}
+
+/* Two-column hero: copy + (optional) image */
+.mdx-hero {
+  margin: 0 .8rem;
+  color: var(--md-primary-bg-color);
+}
+
+.mdx-hero h1 {
+  margin-bottom: 1rem;
+  color: currentColor;
+  font-weight: 700;
+}
+
+.mdx-hero__content {
+  padding-bottom: 6rem;
+}
+
+.mdx-hero .md-button {
+  margin-top: .5rem;
+  margin-right: .5rem;
+  color: var(--md-primary-bg-color);
+}
+
+.mdx-hero .md-button:focus,
+.mdx-hero .md-button:hover {
+  background-color: var(--md-accent-fg-color);
+  color: var(--md-accent-bg-color);
+  border-color: var(--md-accent-fg-color);
+}
+
+.mdx-hero .md-button--primary {
+  background-color: var(--md-primary-bg-color);
+  color: var(--md-primary-fg-color);
+  border-color: var(--md-primary-bg-color);
+}
+
+@media screen and (min-width: 60em) {
+  .mdx-hero {
+    display: flex;
+    align-items: stretch;
+  }
+  .mdx-hero__content {
+    max-width: 28rem;
+    margin-top: 3.5rem;
+    padding-bottom: 14vw;
+  }
+  .mdx-hero__image {
+    order: 1;
+    width: 38rem;
+    transform: translateX(4rem);
+  }
+}
+
+/* Feature grid below the hero, on the index page only */
+.mdx-features {
+  margin: 2.5rem 0;
+}
+
+.mdx-features__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mdx-features__item {
+  padding: 1.2rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: .2rem;
+  background-color: var(--md-default-bg-color);
+  transition: border-color 125ms;
+}
+
+.mdx-features__item:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+.mdx-features__item h3 {
+  margin: 0 0 .4rem 0;
+  font-size: 1rem;
+}
+
+.mdx-features__item p {
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+  font-size: .85rem;
+  line-height: 1.4;
+}
+
+/* Status chips for inline annotations (used in PR 2; styles live here so the
+   stylesheet ships once) */
+.mdx-badge {
+  display: inline-block;
+  padding: 0 .4rem;
+  border-radius: .2rem;
+  background-color: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+  font-size: .7rem;
+  font-weight: 700;
+  vertical-align: middle;
+}

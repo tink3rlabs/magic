@@ -14,7 +14,7 @@
   background:
     linear-gradient(
       to bottom,
-      var(--md-default-bg-color--lightest, #1f1f1f),
+      #1f1f1f,
       hsla(0, 0%, 0%, 0) 99%,
       var(--md-default-bg-color) 99%
     );
@@ -65,49 +65,67 @@
     margin-top: 3.5rem;
     padding-bottom: 14vw;
   }
-  .mdx-hero__image {
-    order: 1;
-    width: 38rem;
-    transform: translateX(4rem);
-  }
 }
 
-/* Feature grid below the hero, on the index page only */
+/* Feature grid below the hero, on the index page only.
+   We bypass the narrow md-grid wrapper and let the cards span the
+   md-content__inner width so 2-4 columns render at desktop sizes. */
 .mdx-features {
-  margin: 2.5rem 0;
+  max-width: 76rem;
+  margin: 2.5rem auto 3rem auto;
+  padding: 0 1.2rem;
 }
 
-.mdx-features__list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+/* !important needed because Material's .md-typeset ul resets ul to
+   display:flow-root, and our section sits inside .md-typeset. */
+.mdx-features .mdx-features__list {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
   gap: 1rem;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.mdx-features__item {
+.mdx-features .mdx-features__item {
+  margin: 0;
   padding: 1.2rem;
   border: 1px solid var(--md-default-fg-color--lightest);
   border-radius: .2rem;
   background-color: var(--md-default-bg-color);
+  list-style: none;
   transition: border-color 125ms;
 }
 
-.mdx-features__item:hover {
+.mdx-features .mdx-features__item:hover {
   border-color: var(--md-accent-fg-color);
 }
 
-.mdx-features__item h3 {
+.mdx-features .mdx-features__item h3 {
   margin: 0 0 .4rem 0;
   font-size: 1rem;
 }
 
-.mdx-features__item p {
+.mdx-features .mdx-features__item p {
   margin: 0;
   color: var(--md-default-fg-color--light);
   font-size: .85rem;
   line-height: 1.4;
+}
+
+/* Home page rendered article: hide the auto-generated page-title h1
+   (mkdocs inserts one when the markdown body has no leading heading;
+   the hero already shows the site name). */
+.mdx-home-content > h1:first-child {
+  display: none;
+}
+
+/* Constrain the home content body to a readable column width and center it,
+   matching the feature grid above. */
+.mdx-home-content {
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 0 1.2rem;
 }
 
 /* Status chips for inline annotations (used in PR 2; styles live here so the

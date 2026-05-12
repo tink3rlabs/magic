@@ -40,27 +40,27 @@
 
 {% block content %}
   <section class="mdx-features">
-    <div class="md-grid md-typeset">
-      <ul class="mdx-features__list">
-        <li class="mdx-features__item">
-          <h3>Storage</h3>
-          <p>SQL, DynamoDB, CosmosDB, in-memory — one API. Swap providers with a single constant.</p>
-        </li>
-        <li class="mdx-features__item">
-          <h3>Lucene search</h3>
-          <p>Type-safe filter strings compiled to parameterized SQL or DynamoDB PartiQL.</p>
-        </li>
-        <li class="mdx-features__item">
-          <h3>Observability</h3>
-          <p>OpenTelemetry-first logs, traces, and metrics with sensible defaults.</p>
-        </li>
-        <li class="mdx-features__item">
-          <h3>Batteries included</h3>
-          <p>Typed errors, leadership election, auth middleware, health probes, SNS pub/sub.</p>
-        </li>
-      </ul>
-    </div>
+    <ul class="mdx-features__list">
+      <li class="mdx-features__item">
+        <h3>Storage</h3>
+        <p>SQL, DynamoDB, CosmosDB, in-memory — one API. Swap providers with a single constant.</p>
+      </li>
+      <li class="mdx-features__item">
+        <h3>Lucene search</h3>
+        <p>Type-safe filter strings compiled to parameterized SQL or DynamoDB PartiQL.</p>
+      </li>
+      <li class="mdx-features__item">
+        <h3>Observability</h3>
+        <p>OpenTelemetry-first logs, traces, and metrics with sensible defaults.</p>
+      </li>
+      <li class="mdx-features__item">
+        <h3>Batteries included</h3>
+        <p>Typed errors, leadership election, auth middleware, health probes, SNS pub/sub.</p>
+      </li>
+    </ul>
   </section>
 
-  {{ super() }}
+  <article class="md-content__inner md-typeset mdx-home-content">
+    {{ page.content }}
+  </article>
 {% endblock %}

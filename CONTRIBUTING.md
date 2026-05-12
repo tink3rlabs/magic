@@ -65,7 +65,7 @@ The docs site uses [mkdocs-material](https://squidfunk.github.io/mkdocs-material
 On Debian/Ubuntu:
 
 ```bash
-sudo apt-get install -y libcairo2-dev libfreetype6-dev libffi-dev libjpeg-dev libpng-dev libz-dev pkg-config
+sudo apt-get install -y libcairo2-dev libfreetype6-dev libffi-dev libjpeg-dev libpng-dev zlib1g-dev pkg-config
 ```
 
 On macOS:

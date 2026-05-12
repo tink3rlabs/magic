@@ -38,7 +38,7 @@ jobs:
             libffi-dev \
             libjpeg-dev \
             libpng-dev \
-            libz-dev \
+            zlib1g-dev \
             pkg-config
 
       - name: Install docs deps

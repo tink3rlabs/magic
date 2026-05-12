@@ -1,5 +1,5 @@
 site_name: magic
-site_description: Backend microservice scaffolding for Go — storage adapters, Lucene search, observability.
+site_description: Common building blocks for Go microservices, so your service code can focus on business logic.
 site_url: https://tink3rlabs.github.io/magic/
 repo_url: https://github.com/tink3rlabs/magic
 repo_name: tink3rlabs/magic
@@ -10,6 +10,8 @@ exclude_docs: |
 
 theme:
   name: material
+  logo: assets/logo.png
+  favicon: assets/favicon.png
   features:
     - navigation.instant
     - navigation.tracking

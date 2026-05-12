@@ -10,7 +10,7 @@ permissions:
   contents: write    # mike commits to gh-pages branch
 
 concurrency:
-  group: docs-${{ github.ref }}
+  group: docs-deploy
   cancel-in-progress: false
 
 jobs:

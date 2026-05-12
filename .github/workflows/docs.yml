@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: write    # mike commits to gh-pages branch
-  pages: write
-  id-token: write
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -41,7 +39,9 @@ jobs:
 
       - name: Deploy latest (push to main)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: mike deploy --push --update-aliases main latest
+        run: |
+          mike deploy --push --update-aliases main latest
+          mike set-default --push latest
 
       - name: Deploy versioned (tag push)
         if: startsWith(github.ref, 'refs/tags/v')

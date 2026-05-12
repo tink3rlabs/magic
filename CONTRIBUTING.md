@@ -57,3 +57,28 @@ go get github.com/tink3rlabs/magic@v1.0.0-beta.1
 ```
 
 If `next` does not exist in the repo, there is no active prerelease line — install `@latest`.
+
+## Local docs build
+
+The docs site uses [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) with the social-cards plugin, which requires Cairo and Pango natives.
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt-get install -y libcairo2-dev libfreetype6-dev libffi-dev libjpeg-dev libpng-dev libz-dev pkg-config
+```
+
+On macOS:
+
+```bash
+brew install cairo freetype libffi libjpeg libpng zlib pkg-config
+```
+
+Then:
+
+```bash
+pip install -r requirements-docs.txt
+mkdocs serve
+```
+
+The site is published from `gh-pages` by the `Docs` workflow. Versioned with [mike](https://github.com/jimporter/mike); see `.github/workflows/docs.yml`.

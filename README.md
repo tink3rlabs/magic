@@ -593,6 +593,17 @@ if err != nil {
 - Hex encoding utilities
 - Mathematical operations for ID generation
 
+## Versioning & Releases
+
+magic follows [Semantic Versioning](https://semver.org/) and is currently on the `v0.x` line — the public API may change in any minor release until v1.0.
+
+- Stable tags: `vX.Y.Z`, published automatically from `main`.
+- API reference: [pkg.go.dev/github.com/tink3rlabs/magic](https://pkg.go.dev/github.com/tink3rlabs/magic).
+- Docs site: [tink3rlabs.github.io/magic](https://tink3rlabs.github.io/magic).
+- Prereleases (when a `next` branch exists): `vX.Y.Z-beta.N`, install with `go get github.com/tink3rlabs/magic@<tag>`.
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md#releases) for full details on the release flow.
+
 ## Contributing
 
 Please see [CONTRIBUTING](https://github.com/tink3rlabs/magic/blob/main/CONTRIBUTING.md). Thank you, contributors!

@@ -1,0 +1,1123 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Common building blocks for Go microservices, so your service code can focus on business logic.">
+      
+      
+      
+        <link rel="canonical" href="https://tink3rlabs.github.io/magic/main/lucene/">
+      
+      
+        <link rel="prev" href="../getting-started/">
+      
+      
+        <link rel="next" href="../storage/">
+      
+      
+      <link rel="icon" href="../assets/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.44">
+    
+    
+      
+        <title>Search (Lucene) - magic</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="black">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#search-lucene" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="magic" class="md-header__button md-logo" aria-label="magic" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7.5 5.6 5 7l1.4-2.5L5 2l2.5 1.4L10 2 8.6 4.5 10 7zm12 9.8L22 14l-1.4 2.5L22 19l-2.5-1.4L17 19l1.4-2.5L17 14zM22 2l-1.4 2.5L22 7l-2.5-1.4L17 7l1.4-2.5L17 2l2.5 1.4zm-8.66 10.78 2.44-2.44-2.12-2.12-2.44 2.44zm1.03-5.49 2.34 2.34c.39.37.39 1.02 0 1.41L5.04 22.71c-.39.39-1.04.39-1.41 0l-2.34-2.34c-.39-.37-.39-1.02 0-1.41L12.96 7.29c.39-.39 1.04-.39 1.41 0"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            magic
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Search (Lucene)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="black"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="white"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/tink3rlabs/magic" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tink3rlabs/magic
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="magic" class="md-nav__button md-logo" aria-label="magic" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7.5 5.6 5 7l1.4-2.5L5 2l2.5 1.4L10 2 8.6 4.5 10 7zm12 9.8L22 14l-1.4 2.5L22 19l-2.5-1.4L17 19l1.4-2.5L17 14zM22 2l-1.4 2.5L22 7l-2.5-1.4L17 7l1.4-2.5L17 2l2.5 1.4zm-8.66 10.78 2.44-2.44-2.12-2.12-2.44 2.44zm1.03-5.49 2.34 2.34c.39.37.39 1.02 0 1.41L5.04 22.71c-.39.39-1.04.39-1.41 0l-2.34-2.34c-.39-.37-.39-1.02 0-1.41L12.96 7.29c.39-.39 1.04-.39 1.41 0"/></svg>
+
+    </a>
+    magic
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/tink3rlabs/magic" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tink3rlabs/magic
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Getting Started
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Search (Lucene)
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  <span class="md-ellipsis">
+    Search (Lucene)
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-two-line-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      The two-line setup
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      Operators
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Operators">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#equality" class="md-nav__link">
+    <span class="md-ellipsis">
+      Equality
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boolean-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      Boolean composition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#range" class="md-nav__link">
+    <span class="md-ellipsis">
+      Range
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wildcards" class="md-nav__link">
+    <span class="md-ellipsis">
+      Wildcards
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fuzzy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fuzzy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#null-and-not-null" class="md-nav__link">
+    <span class="md-ellipsis">
+      Null and not-null
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparison
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#json-sub-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      JSON sub-fields
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implicit-unfielded-terms" class="md-nav__link">
+    <span class="md-ellipsis">
+      Implicit (unfielded) terms
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#safety-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      Safety limits
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      Errors
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dynamodb" class="md-nav__link">
+    <span class="md-ellipsis">
+      DynamoDB
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#full-operator-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      Full operator reference
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Storage Adapters
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Observability
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-two-line-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      The two-line setup
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      Operators
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Operators">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#equality" class="md-nav__link">
+    <span class="md-ellipsis">
+      Equality
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boolean-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      Boolean composition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#range" class="md-nav__link">
+    <span class="md-ellipsis">
+      Range
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wildcards" class="md-nav__link">
+    <span class="md-ellipsis">
+      Wildcards
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fuzzy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fuzzy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#null-and-not-null" class="md-nav__link">
+    <span class="md-ellipsis">
+      Null and not-null
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      Comparison
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#json-sub-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      JSON sub-fields
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implicit-unfielded-terms" class="md-nav__link">
+    <span class="md-ellipsis">
+      Implicit (unfielded) terms
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#safety-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      Safety limits
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      Errors
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dynamodb" class="md-nav__link">
+    <span class="md-ellipsis">
+      DynamoDB
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#full-operator-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      Full operator reference
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+    <a href="https://github.com/tink3rlabs/magic/edit/main/docs/lucene.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="search-lucene">Search (Lucene)<a class="headerlink" href="#search-lucene" title="Permanent link">&para;</a></h1>
+<p>magic exposes a single <code>filter=</code> query parameter on every list endpoint. The value is a <a href="https://lucene.apache.org/core/2_9_4/queryparsersyntax.html">Lucene query string</a> which magic compiles to safe, parameterized SQL or DynamoDB PartiQL. There are no string-concatenated values anywhere — even wildcards and JSON path keys are validated and parameterized.</p>
+<h2 id="the-two-line-setup">The two-line setup<a class="headerlink" href="#the-two-line-setup" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nx">parser</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">lucene</span><span class="p">.</span><span class="nx">NewParser</span><span class="p">(</span><span class="nx">Task</span><span class="p">{})</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nx">sql</span><span class="p">,</span><span class="w"> </span><span class="nx">params</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToSQL</span><span class="p">(</span><span class="s">&quot;status:received AND amount:[100 TO 500]&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;postgresql&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1">// sql:    &quot;(\&quot;status\&quot; = $1) AND (\&quot;amount\&quot; BETWEEN $2 AND $3)&quot;</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1">// params: []any{&quot;received&quot;, 100, 500}</span>
+</code></pre></div>
+<p>The same parser also drives the storage adapter's <code>Search</code> method, so most code never calls <code>ParseToSQL</code> directly — it just passes the user's filter string through.</p>
+<p><code>NewParser</code> introspects the model struct once. Only fields with a <code>json</code> tag are searchable; <code>json:"-"</code> and untagged fields are excluded. The field's Go type controls how it can be queried:</p>
+<table>
+<thead>
+<tr>
+<th>Go type</th>
+<th><code>ImplicitSearch</code>?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>string</code></td>
+<td>yes</td>
+<td>Matched by bare terms like <code>foo</code> (across all string fields).</td>
+</tr>
+<tr>
+<td><code>int</code>, <code>float64</code>, <code>time.Time</code>, <code>uuid.UUID</code></td>
+<td>no</td>
+<td>Must be referenced explicitly: <code>created_at:[X TO Y]</code>.</td>
+</tr>
+<tr>
+<td>Map / slice / struct (JSONB)</td>
+<td>no</td>
+<td>Reachable via <code>field.subfield</code> syntax (see <a href="#json-sub-fields">JSON paths</a>).</td>
+</tr>
+</tbody>
+</table>
+<p>Field names in the query are the JSON tag, not the Go field name.</p>
+<h2 id="operators">Operators<a class="headerlink" href="#operators" title="Permanent link">&para;</a></h2>
+<p>All operators below have been verified against <code>storage/search/lucene/sql_driver.go</code>. Behavior that differs between providers is called out explicitly.</p>
+<h3 id="equality">Equality<a class="headerlink" href="#equality" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>status:received
+</code></pre></div>
+<p>Compiles to <code>"status" = $1</code>. Values may be unquoted (<code>foo</code>), quoted (<code>"foo bar"</code>), numeric (<code>42</code>), or boolean (<code>true</code>).</p>
+<h3 id="boolean-composition">Boolean composition<a class="headerlink" href="#boolean-composition" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>status:received AND counterparty_id:abc123
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>status:received OR status:pending
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>status:received AND NOT status:cancelled
+</code></pre></div>
+<p>Operators are case-sensitive (<code>AND</code> / <code>OR</code> / <code>NOT</code>). Parentheses group: <code>(a OR b) AND c</code>. Within a single field, group with <code>field:(a OR b)</code> — magic re-renders the inner leaves with the outer field name correctly, so <code>tenant_id:(abc OR null)</code> becomes <code>("tenant_id" = $1) OR ("tenant_id" IS NULL)</code>, not the broken form some Lucene libraries produce.</p>
+<h3 id="range">Range<a class="headerlink" href="#range" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>amount:[100 TO 500]      # inclusive
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>amount:{100 TO 500}      # exclusive
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>created_at:[2025-01-01 TO 2025-12-31]
+</code></pre></div>
+<p>Inclusive ranges compile to <code>BETWEEN $1 AND $2</code>; exclusive ranges compile to <code>&gt; $1 AND &lt; $2</code>.</p>
+<h3 id="wildcards">Wildcards<a class="headerlink" href="#wildcards" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>name:foo*       # starts with foo
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>name:foo?bar    # exactly one char between foo and bar
+</code></pre></div>
+<p><code>*</code> becomes SQL <code>%</code>; <code>?</code> becomes <code>_</code>.</p>
+<p>Per-provider behavior:</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Wildcard rendering</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Postgres</td>
+<td><code>"col"::text ILIKE $1</code> (case-insensitive)</td>
+</tr>
+<tr>
+<td>MySQL</td>
+<td><code>LOWER("col") LIKE LOWER($1)</code> (case-insensitive)</td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td><code>"col" LIKE $1</code> (case-insensitive for ASCII)</td>
+</tr>
+</tbody>
+</table>
+<p>JSON sub-field columns skip the <code>::text</code> cast because the JSON operator already returns text.</p>
+<h3 id="fuzzy">Fuzzy<a class="headerlink" href="#fuzzy" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>name:foo~2
+</code></pre></div>
+<p>Per-provider behavior — read this table before promising fuzzy search to users:</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Postgres</td>
+<td><code>similarity("col"::text, $1) &gt; 0.3</code> — <strong>requires the <code>pg_trgm</code> extension</strong>.</td>
+</tr>
+<tr>
+<td>MySQL</td>
+<td><code>SOUNDEX("col") = SOUNDEX($1)</code> — phonetic match only, the <code>~N</code> distance is ignored.</td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td><strong>Returns an error.</strong> Use wildcards instead: <code>name:foo*</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="null-and-not-null">Null and not-null<a class="headerlink" href="#null-and-not-null" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>deleted_at:null      # IS NULL
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>deleted_at:*         # IS NOT NULL
+</code></pre></div>
+<p><code>field:null</code> compiles to <code>"field" IS NULL</code>. The empty-wildcard <code>field:*</code> compiles to <code>"field" IS NOT NULL</code>.</p>
+<p>Comparison operators (<code>&gt;</code>, <code>&lt;</code>, <code>&gt;=</code>, <code>&lt;=</code>) with <code>null</code> return a parse error — they are meaningless.</p>
+<h3 id="comparison">Comparison<a class="headerlink" href="#comparison" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>amount:&gt;100
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>amount:&gt;=100
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>amount:&lt;=500
+</code></pre></div>
+<p>Compile to <code>"amount" &gt; $1</code> etc. Combining with <code>null</code> is an error (see above).</p>
+<h3 id="json-sub-fields">JSON sub-fields<a class="headerlink" href="#json-sub-fields" title="Permanent link">&para;</a></h3>
+<p>If a field's Go type is a struct, map, or slice (a JSONB column in Postgres), use dot notation to reach inside it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>metadata.tier:gold
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>labels.region:eu-west-1
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Rendered</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Postgres</td>
+<td><code>metadata-&gt;&gt;'tier' = $1</code></td>
+</tr>
+<tr>
+<td>MySQL</td>
+<td><code>JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = $1</code></td>
+</tr>
+<tr>
+<td>SQLite</td>
+<td><code>JSON_EXTRACT(metadata, '$.tier') = $1</code></td>
+</tr>
+</tbody>
+</table>
+<p>Subfield names must match <code>^[a-zA-Z0-9_.]+$</code>. Single quotes inside Postgres path keys are escaped. Whitespace and other special characters are rejected up-front to block injection.</p>
+<h3 id="implicit-unfielded-terms">Implicit (unfielded) terms<a class="headerlink" href="#implicit-unfielded-terms" title="Permanent link">&para;</a></h3>
+<p>If your model has any string field with <code>ImplicitSearch=true</code>, you can search across all such fields with a bare term:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>foundation
+</code></pre></div>
+<p>This is rewritten to <code>(string_field_1:foundation OR string_field_2:foundation OR ...)</code> before being parsed. Non-string fields are never included in implicit search — the user must reference them explicitly.</p>
+<h2 id="safety-limits">Safety limits<a class="headerlink" href="#safety-limits" title="Permanent link">&para;</a></h2>
+<p><code>NewParser</code> applies three limits to incoming queries. All are configurable via <code>lucene.ParserConfig</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Limit</th>
+<th>Default</th>
+<th>What it catches</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MaxQueryLength</code></td>
+<td>10000 bytes</td>
+<td>Memory exhaustion via huge strings.</td>
+</tr>
+<tr>
+<td><code>MaxDepth</code></td>
+<td>20</td>
+<td>Stack overflow from deeply nested parens.</td>
+</tr>
+<tr>
+<td><code>MaxTerms</code></td>
+<td>100</td>
+<td>CPU exhaustion from many-term queries.</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nx">parser</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">lucene</span><span class="p">.</span><span class="nx">NewParser</span><span class="p">(</span><span class="nx">Task</span><span class="p">{},</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">lucene</span><span class="p">.</span><span class="nx">ParserConfig</span><span class="p">{</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="nx">MaxQueryLength</span><span class="p">:</span><span class="w"> </span><span class="mi">2000</span><span class="p">,</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nx">MaxDepth</span><span class="p">:</span><span class="w">       </span><span class="mi">8</span><span class="p">,</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nx">MaxTerms</span><span class="p">:</span><span class="w">       </span><span class="mi">30</span><span class="p">,</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="p">})</span>
+</code></pre></div>
+<p>Exceeding any limit produces a wrapped error from <code>parser.ParseToSQL</code> / <code>parser.ParseToDynamoDBPartiQL</code>. Callers should map these to HTTP 400.</p>
+<h2 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h2>
+<p>The parser produces structured errors for the common cases:</p>
+<ul>
+<li><strong><code>*lucene.InvalidFieldError</code></strong> — the query references a field that doesn't exist on the model. Has <code>Field</code> (the bad name) and <code>ValidFields</code> (a slice of all searchable field names). Map this to HTTP 400 and surface the valid list to the user.</li>
+<li><strong>Length / depth / term errors</strong> — wrapped <code>errors.Join</code> of one or more <code>errors.New(...)</code>. Map to HTTP 400.</li>
+<li><strong>Provider errors</strong> — <code>unsupported SQL provider: xxx</code> from <code>ParseToSQL</code> if you pass anything other than <code>"postgresql"</code>, <code>"mysql"</code>, <code>"sqlite"</code>. Programmer error, not user input.</li>
+<li><strong>SQLite fuzzy</strong> — <code>fuzzy search (field:term~N) is not supported with SQLite; use wildcards instead</code> — return as 400 with the suggestion.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nx">sql</span><span class="p">,</span><span class="w"> </span><span class="nx">params</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToSQL</span><span class="p">(</span><span class="nx">userInput</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;postgresql&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">invalid</span><span class="w"> </span><span class="o">*</span><span class="nx">lucene</span><span class="p">.</span><span class="nx">InvalidFieldError</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">As</span><span class="p">(</span><span class="nx">err</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">invalid</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">badRequest</span><span class="p">(</span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">&quot;unknown field %q; valid fields: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">invalid</span><span class="p">.</span><span class="nx">Field</span><span class="p">,</span><span class="w"> </span><span class="nx">invalid</span><span class="p">.</span><span class="nx">ValidFields</span><span class="p">))</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">badRequest</span><span class="p">(</span><span class="nx">err</span><span class="p">.</span><span class="nx">Error</span><span class="p">())</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="p">}</span>
+</code></pre></div>
+<h2 id="dynamodb">DynamoDB<a class="headerlink" href="#dynamodb" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nx">partiql</span><span class="p">,</span><span class="w"> </span><span class="nx">attrs</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToDynamoDBPartiQL</span><span class="p">(</span><span class="s">&quot;status:received AND amount:&gt;100&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL does not support fuzzy search, case-insensitive matching, or JSON path access the same way. Wildcards (<code>LIKE</code>) and equality are supported. See <code>storage/search/lucene/dynamodb_driver.go</code> for the exact mapping.</p>
+<h2 id="full-operator-reference">Full operator reference<a class="headerlink" href="#full-operator-reference" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>Example</th>
+<th>Postgres</th>
+<th>MySQL</th>
+<th>SQLite</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Equality</td>
+<td><code>status:received</code></td>
+<td><code>"status" = $1</code></td>
+<td><code>"status" = $1</code></td>
+<td><code>"status" = $1</code></td>
+</tr>
+<tr>
+<td>Boolean</td>
+<td><code>a:1 AND b:2</code>, <code>a:1 OR b:2</code></td>
+<td><code>(...) AND (...)</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Negation</td>
+<td><code>NOT status:cancelled</code></td>
+<td><code>NOT (...)</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Inclusive range</td>
+<td><code>amount:[100 TO 500]</code></td>
+<td><code>BETWEEN $1 AND $2</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Exclusive range</td>
+<td><code>amount:{100 TO 500}</code></td>
+<td><code>&gt; $1 AND &lt; $2</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Comparison</td>
+<td><code>amount:&gt;100</code></td>
+<td><code>"amount" &gt; $1</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Wildcard</td>
+<td><code>name:foo*</code></td>
+<td><code>"name"::text ILIKE $1</code></td>
+<td><code>LOWER("name") LIKE LOWER($1)</code></td>
+<td><code>"name" LIKE $1</code></td>
+</tr>
+<tr>
+<td>Fuzzy</td>
+<td><code>name:foo~2</code></td>
+<td><code>similarity("name"::text, $1) &gt; 0.3</code></td>
+<td><code>SOUNDEX("name") = SOUNDEX($1)</code></td>
+<td><strong>error</strong> — use wildcards</td>
+</tr>
+<tr>
+<td>Null</td>
+<td><code>field:null</code></td>
+<td><code>"field" IS NULL</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Not null</td>
+<td><code>field:*</code></td>
+<td><code>"field" IS NOT NULL</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>JSON sub-field</td>
+<td><code>metadata.tier:gold</code></td>
+<td><code>metadata-&gt;&gt;'tier' = $1</code></td>
+<td><code>JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = $1</code></td>
+<td><code>JSON_EXTRACT(metadata, '$.tier') = $1</code></td>
+</tr>
+<tr>
+<td>Grouped field</td>
+<td><code>tenant_id:(a OR null)</code></td>
+<td><code>("tenant_id" = $1) OR ("tenant_id" IS NULL)</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Implicit (unfielded)</td>
+<td><code>foo</code></td>
+<td>OR across all <code>ImplicitSearch=true</code> fields</td>
+<td>same</td>
+<td>same</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>

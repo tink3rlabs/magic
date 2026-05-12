@@ -1,8 +1,9 @@
-# magic
-
-Common building blocks for Go microservices, so your service code can focus on business logic.
-
-`magic` bundles the parts every Go service rebuilds from scratch: a unified storage layer with adapters for SQL, DynamoDB, CosmosDB and in-memory; a Lucene query frontend that compiles to safe parameterized SQL or DynamoDB PartiQL; observability conventions; auth and validation middleware; a leadership election helper; a typed error model; and a few utilities. One library, one set of idioms.
+---
+template: home.html
+hide:
+  - navigation
+  - toc
+---
 
 ## Install
 

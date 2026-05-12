@@ -1,2 +1,6 @@
 # Superpowers working dir (plans, scratch) — never committed
 docs/superpowers/
+
+# MkDocs
+.venv-docs/
+site/

@@ -1,6 +1,6 @@
 # Storage Adapters
 
-Every adapter implements the same `storage.StorageAdapter` interface, so swapping one for another is a one-line change to the factory call. The interface covers CRUD, pagination, Lucene-backed search, count, and raw query escape hatches — plus schema and migration helpers.
+Every adapter implements the same `storage.StorageAdapter` interface, so swapping one for another is a one-line change to the factory call. You get CRUD, pagination, Lucene-backed search, count, and raw query escape hatches — plus schema and migration helpers.
 
 ## Picking an adapter
 
@@ -15,7 +15,7 @@ Cassandra was supported historically but is currently disabled in the factory (s
 
 ## Building an adapter
 
-```go
+```go title="main.go"
 import "github.com/tink3rlabs/magic/storage"
 
 adapter, err := storage.StorageAdapterFactory{}.GetInstance(
@@ -36,6 +36,9 @@ if err != nil {
 ```
 
 The returned adapter is always wrapped with a telemetry-instrumented adapter. If you need the concrete `*SQLAdapter` — for example, to register a custom GORM plugin — call `storage.UnwrapAdapter(adapter)`. See [`UnwrapAdapter`](https://pkg.go.dev/github.com/tink3rlabs/magic/storage#UnwrapAdapter) on pkg.go.dev.
+
+!!! tip "Same code, different backend"
+    The whole point: swap `storage.MEMORY` for `storage.SQL` (and pass a config map) and your handler code keeps working. Lucene filters, cursor pagination, typed errors — all unchanged.
 
 ## Configuration by adapter
 
@@ -127,7 +130,10 @@ config := map[string]string{
 adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, config)
 ```
 
-CosmosDB additionally takes per-call params for the partition key. Pass these in the variadic `params ...map[string]any` argument on `Create` / `Get` / `Update` / `Delete` / `List` / `Search`:
+!!! warning "CosmosDB partition key is per-call, not global"
+    Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter exposes this via the variadic `params ...map[string]any` argument. If you forget, queries either fail or cross-partition-fan-out (slow and expensive). See the table and example below.
+
+CosmosDB takes per-call params for the partition key. Pass them in the variadic `params ...map[string]any` argument on `Create` / `Get` / `Update` / `Delete` / `List` / `Search`:
 
 | Param key      | Meaning                                                                |
 |----------------|------------------------------------------------------------------------|
@@ -135,7 +141,7 @@ CosmosDB additionally takes per-call params for the partition key. Pass these in
 | `pk_value`     | Value for that partition key.                                          |
 | `sort_direction` | `"ASC"` (default) or `"DESC"` for `List` / `Search`. Same key as `storage.SortDirectionKey`. |
 
-```go
+```go title="storage.go"
 params := map[string]any{
     "pk_field": "tenant",
     "pk_value": "acme-corp",
@@ -150,7 +156,7 @@ err  = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
 
 `List` and `Search` return a cursor string. Pass `""` on the first call; pass whatever the previous call returned for each subsequent page. An empty cursor on the response means there are no more pages.
 
-```go
+```go title="paginate.go"
 var page []Task
 cursor := ""
 for {
@@ -168,7 +174,7 @@ for {
 
 ### Sort direction
 
-```go
+```go title="sort.go"
 import "github.com/tink3rlabs/magic/storage"
 
 _, err = adapter.List(

@@ -1,19 +1,19 @@
 # Search (Lucene)
 
-magic exposes a single `filter=` query parameter on every list endpoint. The value is a [Lucene query string](https://lucene.apache.org/core/2_9_4/queryparsersyntax.html) which magic compiles to safe, parameterized SQL or DynamoDB PartiQL. There are no string-concatenated values anywhere — even wildcards and JSON path keys are validated and parameterized.
+You expose a single `filter=` query parameter on every list endpoint. The value is a [Lucene query string](https://lucene.apache.org/core/2_9_4/queryparsersyntax.html) that magic compiles to safe, parameterized SQL or DynamoDB PartiQL. No string-concatenated values anywhere — wildcards and JSON path keys are validated and parameterized.
 
 ## The two-line setup
 
-```go
+```go title="parser.go"
 parser, _ := lucene.NewParser(Task{})
 sql, params, err := parser.ParseToSQL("status:received AND amount:[100 TO 500]", "postgresql")
 // sql:    "(\"status\" = $1) AND (\"amount\" BETWEEN $2 AND $3)"
 // params: []any{"received", 100, 500}
 ```
 
-The same parser also drives the storage adapter's `Search` method, so most code never calls `ParseToSQL` directly — it just passes the user's filter string through.
+The same parser drives the storage adapter's `Search` method, so most code never calls `ParseToSQL` directly — you just pass the user's filter string through.
 
-`NewParser` introspects the model struct once. Only fields with a `json` tag are searchable; `json:"-"` and untagged fields are excluded. The field's Go type controls how it can be queried:
+`NewParser` introspects the model struct once. Only fields with a `json` tag are searchable; `json:"-"` and untagged fields are excluded. The field's Go type controls how you query it:
 
 | Go type                            | `ImplicitSearch`? | Notes                                                          |
 |------------------------------------|-------------------|----------------------------------------------------------------|
@@ -80,7 +80,8 @@ JSON sub-field columns skip the `::text` cast because the JSON operator already 
 name:foo~2
 ```
 
-Per-provider behavior — read this table before promising fuzzy search to users:
+!!! warning "Fuzzy is not consistent across providers"
+    Postgres requires the `pg_trgm` extension. MySQL falls back to SOUNDEX and ignores the distance hint. SQLite returns an error — use wildcards instead. Read the table below before promising fuzzy search to users.
 
 | Provider   | Implementation                                                                 |
 |------------|--------------------------------------------------------------------------------|
@@ -136,6 +137,27 @@ foundation
 
 This is rewritten to `(string_field_1:foundation OR string_field_2:foundation OR ...)` before being parsed. Non-string fields are never included in implicit search — the user must reference them explicitly.
 
+## A full HTTP handler
+
+In practice you almost never call `ParseToSQL` yourself — the storage adapter's `Search` method does it for you. A complete list-with-filter endpoint:
+
+```go title="routes/tasks.go"
+func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) error {
+    filter := r.URL.Query().Get("filter")
+    cursor := r.URL.Query().Get("cursor")
+
+    var tasks []Task
+    next, err := h.store.Search(&tasks, "id", filter, 50, cursor)
+    if err != nil {
+        return &magicerrors.BadRequest{Message: err.Error()}
+    }
+    render.JSON(w, r, map[string]any{"items": tasks, "cursor": next})
+    return nil
+}
+```
+
+`magicerrors.BadRequest` maps to HTTP 400 via the [`ErrorHandler` middleware](tutorial.md#step-3-add-a-handler). A user sending `?filter=does_not_exist:foo` gets back the structured `InvalidFieldError` message with a list of valid fields.
+
 ## Safety limits
 
 `NewParser` applies three limits to incoming queries. All are configurable via `lucene.ParserConfig`:
@@ -146,7 +168,7 @@ This is rewritten to `(string_field_1:foundation OR string_field_2:foundation OR
 | `MaxDepth`        | 20          | Stack overflow from deeply nested parens.      |
 | `MaxTerms`        | 100         | CPU exhaustion from many-term queries.         |
 
-```go
+```go title="parser.go"
 parser, _ := lucene.NewParser(Task{}, &lucene.ParserConfig{
     MaxQueryLength: 2000,
     MaxDepth:       8,
@@ -165,7 +187,7 @@ The parser produces structured errors for the common cases:
 - **Provider errors** — `unsupported SQL provider: xxx` from `ParseToSQL` if you pass anything other than `"postgresql"`, `"mysql"`, `"sqlite"`. Programmer error, not user input.
 - **SQLite fuzzy** — `fuzzy search (field:term~N) is not supported with SQLite; use wildcards instead` — return as 400 with the suggestion.
 
-```go
+```go title="handler.go"
 sql, params, err := parser.ParseToSQL(userInput, "postgresql")
 if err != nil {
     var invalid *lucene.InvalidFieldError
@@ -178,7 +200,7 @@ if err != nil {
 
 ## DynamoDB
 
-```go
+```go title="handler.go"
 partiql, attrs, err := parser.ParseToDynamoDBPartiQL("status:received AND amount:>100")
 ```
 

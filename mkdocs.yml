@@ -20,6 +20,7 @@ theme:
     - navigation.top
     - content.code.copy
     - content.action.edit
+    - content.action.view
     - search.suggest
     - search.highlight
   palette:
@@ -49,6 +50,22 @@ nav:
 
 not_in_nav: |
   observability-internals.md
+
+plugins:
+  - search
+  - llmstxt:
+      full_output: llms-full.txt
+      sections:
+        Overview:
+          - index.md
+        Guides:
+          - getting-started.md
+          - tutorial.md
+          - lucene.md
+          - storage.md
+          - observability.md
+        Contributing:
+          - contributing.md
 
 markdown_extensions:
   - admonition

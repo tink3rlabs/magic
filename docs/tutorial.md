@@ -48,6 +48,76 @@ todo-service/
 !!! tip "It runs with no external services"
     todo-service defaults to the in-memory storage adapter, with auth and pub/sub disabled. `go run . server --config config/development.yaml` starts it with no database, no tokens, and no AWS credentials.
 
+## Migrations
+
+The first layer is the schema — the shape of the data the rest of the service sits on. magic's migrations describe that schema as ordered SQL, applied automatically at startup.
+
+todo-service has exactly one table, created by one migration:
+
+```yaml title="config/migrations/postgresql/01__base.yaml"
+---
+description: Create the todos table
+migrations:
+  - migrate: >
+      CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY,
+        summary TEXT NOT NULL,
+        done BOOLEAN NOT NULL DEFAULT FALSE
+      )
+    rollback: DROP TABLE IF EXISTS todos
+```
+
+### The file format
+
+Each migration file is YAML with two top-level keys:
+
+- **`description`** — a human-readable summary of what the file does.
+- **`migrations`** — an ordered list of migration steps. Each step has:
+    - **`migrate`** — the SQL that applies the change (here, creating the `todos` table).
+    - **`rollback`** — the SQL that undoes it (dropping the table).
+
+Both statements use `IF NOT EXISTS` / `IF EXISTS` so they're idempotent: re-running a migration that's already applied — or rolling back one that's already gone — is a no-op rather than an error.
+
+The filename prefix (`01__`) orders the files. Add a schema change later as `02__add_due_date.yaml` and it runs after `01__base.yaml`.
+
+### One directory per provider
+
+```text
+config/migrations/
+  postgresql/01__base.yaml
+  mysql/01__base.yaml
+  sqlite/01__base.yaml
+```
+
+SQL dialects differ — Postgres spells the id column `TEXT`, MySQL wants `VARCHAR(255)`, SQLite stores `done` as `INTEGER` — so each provider gets its own directory. magic picks the directory matching the configured storage provider. The three columns (`id`, `summary`, `done`) map directly onto the `Todo` type the next section covers.
+
+### How the schema gets applied
+
+The migration files ship inside the binary. `main.go` embeds the whole `config` tree and hands it to magic's storage package:
+
+```go title="main.go"
+//go:embed config
+var configFS embed.FS
+
+func main() {
+	storage.ConfigFs = configFS
+	// ...
+}
+```
+
+At startup, `runServer` builds the storage adapter and then runs any pending migrations against it:
+
+```go title="cmd/server.go"
+storage.NewDatabaseMigration(storageAdapter).Migrate()
+```
+
+The Server section later covers the full bootstrap; for now the point is just that migrations run automatically, before the first request is served. This holds even for the default in-memory adapter used in local dev — it runs the same migrations, so the service behaves identically whether it's backed by Postgres or an in-process store. For the adapter details, see [Storage Adapters](storage.md).
+
+!!! note "Migrations run on every start"
+    `Migrate()` applies only the migrations that haven't run yet and is safe to call on every boot. A fresh database gets the full schema; an up-to-date one is left untouched.
+
+With the schema defined, the next layer is the **types** — the Go structs that model a todo and carry the OpenAPI annotations magic generates the spec from.
+
 ## Step 2: Wire `main.go`
 
 This is the whole bootstrap — storage, observability, health probes, auth, routes.

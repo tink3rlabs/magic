@@ -1292,3 +1292,108 @@ The health probes are registered **outside** the route group that carries the au
 This is where the loose ends from the earlier layers get tied off. The `AuthConfig` and `PubSubConfig` structs the Routes section declared but left empty are filled in here from configuration. The `WithCreatedCounter` and `WithPublisher` seams the Features section exposed get their real collaborators — the `todos_created` counter and, when enabled, the SNS publisher — passed down through `initRoutes` and `NewTodoRouter`. The layers are independent; the server is what composes them.
 
 With every layer assembled, the only thing left is to start the service and watch it answer.
+
+## Run it
+
+One build step first: the server fails fast if `config/openapi.json` is missing, so generate it from the type and route annotations:
+
+```bash
+go generate ./...
+```
+
+Then start the service. It defaults to the in-memory storage adapter with auth and pub/sub disabled — no database, no tokens, no AWS credentials:
+
+```bash
+go run . server --config config/development.yaml
+```
+
+In a second shell, exercise it with `curl`.
+
+**Health probes** — both return `204 No Content`:
+
+```bash
+curl -i http://localhost:8080/health/liveness
+curl -i http://localhost:8080/health/readiness
+```
+
+```text
+HTTP/1.1 204 No Content
+```
+
+**Create two todos** — `POST /todos` returns `201` with the created record (note the server-minted UUIDv7 `id`):
+
+```bash
+curl -s -X POST http://localhost:8080/todos \
+  -H 'Content-Type: application/json' \
+  -d '{"summary":"buy milk"}'
+curl -s -X POST http://localhost:8080/todos \
+  -H 'Content-Type: application/json' \
+  -d '{"summary":"walk dog","done":true}'
+```
+
+```json
+{"id":"01909c42-cc90-75dc-a943-2d87a16e787d","summary":"buy milk","done":false}
+```
+
+!!! note "POST `/todos`, no trailing slash"
+    `POST /todos/` 301-redirects to `/todos` (the `RedirectSlashes` middleware), and `curl` drops the request body across that redirect. Target `/todos` directly.
+
+**List all todos** — `GET /todos` returns both, plus an empty `next` cursor (only one page):
+
+```bash
+curl -s http://localhost:8080/todos
+```
+
+```json
+{"todos":[{"id":"01909c42-cc90-75dc-a943-2d87a16e787d","summary":"buy milk","done":false},{"id":"01909c42-d1f0-7a3b-bc77-9e2150f4c8a1","summary":"walk dog","done":true}],"next":""}
+```
+
+**Filter with Lucene** — `?filter=done:1` returns only the completed todo:
+
+```bash
+curl -s 'http://localhost:8080/todos?filter=done:1'
+```
+
+```json
+{"todos":[{"id":"01909c42-d1f0-7a3b-bc77-9e2150f4c8a1","summary":"walk dog","done":true}],"next":""}
+```
+
+It's `done:1`, not `done:true` — the in-memory adapter is SQLite-backed, and its `done` column stores integers, so the boolean term has to be written as `1`. The Features section's note covers why; [Search (Lucene)](lucene.md) has the full filter syntax.
+
+**Metrics** — `GET /metrics` serves the Prometheus exposition. The custom counter wired up in the Server section shows the two creates:
+
+```bash
+curl -s http://localhost:8080/metrics | grep todo_service_todos_created_total
+```
+
+```text
+todo_service_todos_created_total 2
+```
+
+**OpenAPI spec** — `GET /api-docs` returns `200` with the generated OpenAPI JSON — the same `config/openapi.json` that `go generate` produced from the `@openapi` annotations:
+
+```bash
+curl -s http://localhost:8080/api-docs
+```
+
+That's the whole service: the schema migrated itself at startup, the types shaped every payload, the feature layer ran the CRUD and search, the routes mapped them onto HTTP, and the server wired it all together.
+
+## Where to next
+
+Finishing this tutorial means you've walked todo-service's full stack — migrations, types, features, routes, server — and the running process you just `curl`ed *is* that walk: the real reference service, end to end. You haven't read a toy; you've built and understood the canonical magic service.
+
+The walk kept auth, pub/sub, and the background machinery in the default-off state to stay focused on the request path. todo-service ships all of it, config-gated and ready to turn on:
+
+- **JWT auth** — `middlewares.EnsureValidToken` with multi-provider issuer support, gating the protected-writes group and the `RequireRole` check.
+- **SNS pub/sub** — the `WithPublisher` seam, emitting `todo.created` / `todo.updated` events when `pubsub.enabled` is set.
+- **Leadership election + scheduler** — leader election over the storage adapter, with the background `gocron` scheduler running only on the elected replica.
+- **OpenAPI generation** — `build/generate.go` and `openapi-godoc` turning the `@openapi` annotations into the served spec.
+
+Flip the relevant `config/development.yaml` switches and read the corresponding code in [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service) to see each one in action.
+
+For the cross-cutting concerns this tutorial pointed at along the way:
+
+- [Search (Lucene)](lucene.md) — the full `?filter=` query syntax and the searchable-field rules.
+- [Storage Adapters](storage.md) — the adapter factory and per-adapter configuration.
+- [Observability](observability.md) — metrics, tracing, and the observability config surface.
+- [Contributing](contributing.md) — how to work on magic itself.

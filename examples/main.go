@@ -289,7 +289,7 @@ func buildOpenAPISpec() ([]byte, error) {
 				"post": map[string]any{
 					"summary": "Create an order item in storage",
 					"responses": map[string]any{
-						"201": map[string]any{"description": "Created"},
+						"200": map[string]any{"description": "OK"},
 					},
 				},
 			},

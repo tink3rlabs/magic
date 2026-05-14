@@ -118,6 +118,106 @@ The Server section later covers the full bootstrap; for now the point is just th
 
 With the schema defined, the next layer is the **types** — the Go structs that model a todo and carry the OpenAPI annotations magic generates the spec from.
 
+## Types
+
+The second layer is the data shapes the rest of the service is built around. Every layer above this one — features, routes, the generated OpenAPI spec — refers back to these structs. todo-service defines all three in a single file:
+
+```go title="pkg/types/todo.go"
+package types
+
+// @openapi
+// components:
+//
+//	schemas:
+//	  Todo:
+//	    type: object
+//	    properties:
+//	      id:
+//	        type: string
+//	        description: The Todo's identifier
+//	        example: 01909c42-cc90-75dc-a943-2d87a16e787d
+//	      summary:
+//	        type: string
+//	        description: The Todo's summary
+//	        example: Pick up the groceries
+//	      done:
+//	        type: boolean
+//	        description: An indicator that tells if the Todo item is complete
+//	        example: false
+type Todo struct {
+	Id      string `json:"id"`
+	Summary string `json:"summary"`
+	Done    bool   `json:"done"`
+}
+
+// @openapi
+// components:
+//
+//	schemas:
+//	  TodoUpdate:
+//	    type: object
+//	    properties:
+//	      summary:
+//	        type: string
+//	        description: The Todo's summary
+//	        example: Pick up the groceries
+//	      done:
+//	        type: boolean
+//	        description: An indicator that tells if the Todo item is complete
+//	        example: false
+type TodoUpdate struct {
+	Summary string `json:"summary"`
+	Done    bool   `json:"done"`
+}
+
+// @openapi
+// components:
+//
+//	schemas:
+//	  TodoList:
+//	    type: object
+//	    properties:
+//	      todos:
+//	        type: array
+//	        items:
+//	          $ref: '#/components/schemas/Todo'
+//	      next:
+//	        type: string
+//	        description: An identifier to use when requesting the next set of todos
+//	        example: MDE5MDlhOGUtNjcwNi03NWY1LWJjMjUtNWM0MjY0ZjUwZTQ1
+type TodoList struct {
+	Todos []Todo `json:"todos"`
+	Next  string `json:"next"`
+}
+```
+
+### The `json` tags do double duty
+
+The `json` struct tags are not just for serialization. magic's storage layer reads them too — they are the field and column names it uses, not the Go field names. The `Todo.Id` field is `json:"id"`, so storage knows it as `id`. That's the same `id` you saw as the primary key in the Migrations section, and it's the literal string passed as the sort key in the feature layer:
+
+```go
+next, err := t.storage.List(&todos, "id", map[string]any{}, limit, cursor)
+```
+
+The same tags decide what's searchable. When a Lucene `?filter=` query names a field, it names the `json` tag — `summary:groceries`, not `Summary:groceries`. magic introspects the struct once and builds the set of searchable fields from the tagged fields and their Go types. The Features section puts this to work; for the exact rules — which types are implicitly searchable, how `json:"-"` excludes a field — see [Search (Lucene)](lucene.md).
+
+### The `@openapi` annotation blocks
+
+Each struct is preceded by an `@openapi` comment block holding a fragment of OpenAPI YAML. These are not documentation for humans — they're the source of the generated spec. `build/generate.go` runs [`openapi-godoc`](https://github.com/tink3rlabs/openapi-godoc), which scans the package for `@openapi` comments, then calls `types.MergeOpenAPIDefinitions` to fold in magic's shared definitions. The result is written to `config/openapi.json`.
+
+The schema names declared in these blocks — `Todo`, `TodoList`, `TodoUpdate` — are the contract. The route handlers reference them by name in their own `@openapi` annotations (request bodies, responses), and those references only resolve because the names are defined here. The Routes section covers that side.
+
+!!! note "Keep the struct and the annotation in sync"
+    The `@openapi` block and the Go struct are maintained by hand, side by side. If you add a field to a struct, add it to the annotation too — nothing cross-checks them, and the generated spec is only as accurate as the comment.
+
+### Three types, three roles
+
+- **`Todo`** — the full record: `id`, `summary`, `done`. This is what storage persists and what list/get endpoints return.
+- **`TodoUpdate`** — the create/replace request body. It's `Todo` without `id` — the server owns identity, so the client never sends it.
+- **`TodoList`** — the list response shape: a `todos` array plus a `next` cursor for pagination.
+
+With the shapes defined, the next layer is **features** — the business logic that creates, reads, updates, and searches todos.
+
 ## Step 2: Wire `main.go`
 
 This is the whole bootstrap — storage, observability, health probes, auth, routes.

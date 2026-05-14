@@ -414,6 +414,486 @@ Both are nil by default, so the service is fully functional with neither. They'r
 
 With the business logic in place, the next layer is **routes** — the HTTP handlers that parse requests, call these methods, and shape the responses.
 
+## Routes
+
+The routes layer is the HTTP boundary. It turns the feature methods — which know nothing about HTTP — into a chi router: URLs and verbs map onto `TodoService` calls, request bodies are validated, and returned errors become status codes. todo-service keeps the router, its validation schemas, and all six handlers in one file.
+
+The first half declares the JSON-schema validation maps, the two wiring structs, and `NewTodoRouter` — the constructor that assembles the router:
+
+```go title="pkg/routes/todo.go"
+package routes
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
+
+	jsonpatch "github.com/evanphx/json-patch/v5"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/render"
+
+	"todo-service/pkg/features/todo"
+	"todo-service/pkg/types"
+
+	"github.com/tink3rlabs/magic/errors"
+	"github.com/tink3rlabs/magic/middlewares"
+	"github.com/tink3rlabs/magic/pubsub"
+	"github.com/tink3rlabs/magic/telemetry"
+)
+
+type TodoRouter struct {
+	Router  *chi.Mux
+	service *todo.TodoService
+}
+
+var createSchema = map[string]string{
+	"body": `{
+		"type": "object",
+		"properties": {
+			"summary": { "type": "string" },
+			"done": { "type": "boolean" }
+		},
+		"required": ["summary"],
+		"additionalProperties": false
+	}`,
+}
+
+var replaceSchema = map[string]string{
+	"body": `{
+		"type": "object",
+		"properties": {
+			"summary": { "type": "string" },
+			"done": { "type": "boolean" }
+		},
+		"required": ["summary", "done"],
+		"additionalProperties": false
+	}`,
+	"params": `{
+		"type": "object",
+		"properties": {
+			"id": { "type": "string" }
+		},
+		"required": ["id"]
+	}`,
+}
+
+var idSchema = map[string]string{
+	"params": `{
+		"type": "object",
+		"properties": {
+			"id": { "type": "string" }
+		},
+		"required": ["id"]
+	}`,
+}
+
+// AuthConfig carries the auth wiring for the todo routes.
+type AuthConfig struct {
+	Middleware func(http.Handler) http.Handler
+	Enabled    bool
+	WriteRole  string
+}
+
+// PubSubConfig carries the pub/sub wiring for the todo routes.
+type PubSubConfig struct {
+	Publisher pubsub.Publisher
+	TopicARN  string
+}
+
+func NewTodoRouter(created telemetry.Counter, auth AuthConfig, pubSub PubSubConfig) *TodoRouter {
+	t := TodoRouter{}
+	h := middlewares.ErrorHandler{}
+	v := middlewares.Validator{}
+
+	router := chi.NewRouter()
+
+	// Public reads.
+	router.Get("/{id}", v.ValidateRequest(idSchema, h.Wrap(t.GetTodo)))
+	router.Get("/", h.Wrap(t.ListTodos))
+
+	// Protected writes — require a valid token (and the write role when auth is enabled).
+	router.Group(func(r chi.Router) {
+		r.Use(auth.Middleware)
+		r.Use(middlewares.UserRequestContext)
+		if auth.Enabled {
+			r.Use(middlewares.RequireRole(auth.WriteRole))
+		}
+		r.Post("/", v.ValidateRequest(createSchema, h.Wrap(t.CreateTodo)))
+		r.Put("/{id}", v.ValidateRequest(replaceSchema, h.Wrap(t.ReplaceTodo)))
+		r.Patch("/{id}", v.ValidateRequest(idSchema, h.Wrap(t.UpdateTodo)))
+		r.Delete("/{id}", v.ValidateRequest(idSchema, h.Wrap(t.DeleteTodo)))
+	})
+
+	t.Router = router
+	service := todo.NewTodoService().WithCreatedCounter(created)
+	if pubSub.Publisher != nil {
+		service = service.WithPublisher(pubSub.Publisher, pubSub.TopicARN)
+	}
+	t.service = service
+
+	return &t
+}
+```
+
+### Public reads, protected writes
+
+`NewTodoRouter` builds a single `chi.Mux` and splits it into two access tiers:
+
+- **Public reads** — `GET /{id}` and `GET /` are registered straight on the router. Anyone can read a todo or list the collection; no token required.
+- **Protected writes** — `POST`, `PUT`, `PATCH`, and `DELETE` live inside a `router.Group`, which applies middleware to just that subtree. Every write goes through `auth.Middleware` (magic's `EnsureValidToken` middleware, populated by the Server section) and `middlewares.UserRequestContext`, which lifts the caller's identity off the validated token into the request context. `middlewares.RequireRole(auth.WriteRole)` is added **only when `auth.Enabled` is true** — so local dev with auth disabled still accepts writes, while a deployed service enforces the write role.
+
+`AuthConfig` and `PubSubConfig` are the wiring structs the constructor takes as input. The routes layer declares *what* it needs — an auth middleware, an optional publisher — and the Server section populates them from configuration.
+
+### Schema validation before the handler
+
+Each route is wrapped in `v.ValidateRequest`, where `v` is a `middlewares.Validator{}`. It takes a JSON-schema map and the handler, and validates the request *before* the handler runs:
+
+- **`createSchema`** validates the `POST` body — `summary` required, `done` optional, no extra properties.
+- **`replaceSchema`** validates both the `PUT` body (`summary` *and* `done` required) and the `id` path param.
+- **`idSchema`** validates just the `id` path param, used by `GET /{id}`, `PATCH /{id}`, and `DELETE /{id}`.
+
+A request that fails its schema never reaches the handler — the validator rejects it with a 400.
+
+### Errors become status codes
+
+Every handler has the signature `func(w http.ResponseWriter, r *http.Request) error` — it returns an `error` instead of writing a status code itself. `h.Wrap`, from `middlewares.ErrorHandler{}`, bridges that to a standard `http.HandlerFunc`: when a handler returns a typed error from magic's `errors` package, `Wrap` maps it to the matching HTTP status. `&errors.BadRequest{}` becomes a 400, `&errors.NotFound{}` becomes a 404. The handler just returns the error; the middleware owns the translation.
+
+The handlers themselves make up the second half of the file:
+
+```go title="pkg/routes/todo.go (continued)"
+// @openapi
+// paths:
+//
+//	/todos:
+//	  get:
+//	    tags:
+//	      - todos
+//	    summary: Get all Todos
+//	    description: Returns all Todos
+//	    operationId: listTodos
+//	    parameters:
+//	      - name: limit
+//	        in: query
+//	        description: The number of todo items to return (defaults to 10)
+//	        required: false
+//	        schema:
+//	          type: number
+//	      - name: next
+//	        in: query
+//	        description: The next page identifier
+//	        required: false
+//	        schema:
+//	          type: string
+//	      - name: filter
+//	        in: query
+//	        description: A Lucene query string to filter todos (e.g. done:1)
+//	        required: false
+//	        schema:
+//	          type: string
+//	    responses:
+//	      '200':
+//	        description: successful operation
+//	        content:
+//	          application/json:
+//	            schema:
+//	              $ref: '#/components/schemas/TodoList'
+//	      '500':
+//	         $ref: '#/components/responses/ServerError'
+func (t *TodoRouter) ListTodos(w http.ResponseWriter, r *http.Request) error {
+	cursor := r.URL.Query().Get("next")
+	filter := r.URL.Query().Get("filter")
+
+	limit, err := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 64)
+	if err != nil || limit <= 0 {
+		limit = 10
+	}
+
+	var todos []types.Todo
+	var next string
+	if filter != "" {
+		todos, next, err = t.service.SearchTodos(filter, int(limit), cursor)
+	} else {
+		todos, next, err = t.service.ListTodos(int(limit), cursor)
+	}
+	if err != nil {
+		return &errors.BadRequest{Message: err.Error()}
+	}
+	render.JSON(w, r, types.TodoList{Todos: todos, Next: next})
+	return nil
+}
+
+// @openapi
+// paths:
+//
+//	/todos/{id}:
+//	  get:
+//	    tags:
+//	      - todos
+//	    summary: Get a single Todo
+//	    description: Returns a Todos with the identifier {id} if exists
+//	    operationId: getTodo
+//	    parameters:
+//	      - name: id
+//	        in: path
+//	        description: The identifier of the Todo
+//	        required: true
+//	        schema:
+//	          type: string
+//	    responses:
+//	      '200':
+//	        description: successful operation
+//	        content:
+//	          application/json:
+//	            schema:
+//	              $ref: '#/components/schemas/Todo'
+//	      '404':
+//	         $ref: '#/components/responses/NotFound'
+//	      '500':
+//	         $ref: '#/components/responses/ServerError'
+func (t *TodoRouter) GetTodo(w http.ResponseWriter, r *http.Request) error {
+	id := chi.URLParam(r, "id")
+	todo, err := t.service.GetTodo(id)
+	if err != nil {
+		return err
+	}
+	render.JSON(w, r, todo)
+	return nil
+}
+
+// @openapi
+// paths:
+//
+//	/todos/{id}:
+//	  delete:
+//	    tags:
+//	      - todos
+//	    summary: Delete a single Todo
+//	    description: Deletes a Todos with the identifier {id} if exists
+//	    operationId: deleteTodo
+//	    parameters:
+//	      - name: id
+//	        in: path
+//	        description: The identifier of the Todo
+//	        required: true
+//	        schema:
+//	          type: string
+//	    responses:
+//	      '204':
+//	        description: successful operation
+//	      '500':
+//	         $ref: '#/components/responses/ServerError'
+func (t *TodoRouter) DeleteTodo(w http.ResponseWriter, r *http.Request) error {
+	id := chi.URLParam(r, "id")
+	err := t.service.DeleteTodo(id)
+	if err != nil {
+		return err
+	}
+	render.NoContent(w, r)
+	return nil
+}
+
+// @openapi
+// paths:
+//
+//	/todos:
+//	  post:
+//	    tags:
+//	      - todos
+//	    summary: Create a Todo
+//	    description: Create a new Todo
+//	    operationId: createTodo
+//	    requestBody:
+//	      description: Create a new Todo
+//	      content:
+//	        application/json:
+//	          schema:
+//	            $ref: '#/components/schemas/TodoUpdate'
+//	    responses:
+//	      '201':
+//	        description: successful operation
+//	      '400':
+//	         $ref: '#/components/responses/BadRequest'
+//	      '500':
+//	         $ref: '#/components/responses/ServerError'
+func (t *TodoRouter) CreateTodo(w http.ResponseWriter, r *http.Request) error {
+	var todoToCreate types.TodoUpdate
+
+	decodeErr := json.NewDecoder(r.Body).Decode(&todoToCreate)
+	if decodeErr != nil {
+		return decodeErr
+	}
+
+	todo, err := t.service.CreateTodo(todoToCreate)
+	if err != nil {
+		return err
+	}
+
+	render.Status(r, http.StatusCreated)
+	render.JSON(w, r, todo)
+	return nil
+}
+
+// @openapi
+// paths:
+//
+//	/todos/{id}:
+//	  put:
+//	    tags:
+//	      - todos
+//	    summary: Replace a Todo
+//	    description: Replace a Todo
+//	    operationId: replaceTodo
+//	    parameters:
+//	      - name: id
+//	        in: path
+//	        description: The identifier of the Todo
+//	        required: true
+//	        schema:
+//	          type: string
+//	    requestBody:
+//	      description: Updated Todo
+//	      content:
+//	        application/json:
+//	          schema:
+//	            $ref: '#/components/schemas/TodoUpdate'
+//	    responses:
+//	      '204':
+//	        description: successful operation
+//	      '400':
+//	         $ref: '#/components/responses/NotFound'
+//	      '404':
+//	         $ref: '#/components/responses/BadRequest'
+//	      '500':
+//	         $ref: '#/components/responses/ServerError'
+func (t *TodoRouter) ReplaceTodo(w http.ResponseWriter, r *http.Request) error {
+	id := chi.URLParam(r, "id")
+	var todoToUpdate types.TodoUpdate
+
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&todoToUpdate)
+	if err != nil {
+		return err
+	}
+
+	currentRecord, err := t.service.GetTodo(id)
+	if err != nil {
+		return &errors.NotFound{Message: "Todo not found"}
+	}
+
+	todo := types.Todo{Id: currentRecord.Id, Summary: todoToUpdate.Summary, Done: todoToUpdate.Done}
+	err = t.service.UpdateTodo(todo)
+	if err != nil {
+		return err
+	}
+
+	render.NoContent(w, r)
+	return nil
+}
+
+// @openapi
+// paths:
+//
+//	/todos/{id}:
+//	  patch:
+//	    tags:
+//	      - todos
+//	    summary: Update a Todo
+//	    description: Update a Todo using [JSON Patch](https://jsonpatch.com/)
+//	    operationId: updateTodo
+//	    parameters:
+//	      - name: id
+//	        in: path
+//	        description: The identifier of the Todo
+//	        required: true
+//	        schema:
+//	          type: string
+//	    requestBody:
+//	      description: JSON Patch operations to perform in order to update the Todo item
+//	      content:
+//	        application/json-patch+json:
+//	          schema:
+//	            type: array
+//	            items:
+//	              $ref: "#/components/schemas/PatchBody"
+//	            example:
+//	              - {"op": "replace", "path": "/summary", "value": "An updated TODO item summary"}
+//	              - {"op": "replace", "path": "/done", "value": true}
+//	    responses:
+//	      '204':
+//	        description: successful operation
+//	      '400':
+//	         $ref: '#/components/responses/NotFound'
+//	      '404':
+//	         $ref: '#/components/responses/BadRequest'
+//	      '500':
+//	         $ref: '#/components/responses/ServerError'
+func (t *TodoRouter) UpdateTodo(w http.ResponseWriter, r *http.Request) error {
+	id := chi.URLParam(r, "id")
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+
+	patch, err := jsonpatch.DecodePatch(body)
+	if err != nil {
+		return &errors.BadRequest{Message: err.Error()}
+	}
+
+	currentRecord, err := t.service.GetTodo(id)
+	if err != nil {
+		return &errors.NotFound{Message: "Todo not found"}
+	}
+
+	currentBytes, err := json.Marshal(currentRecord)
+	if err != nil {
+		return err
+	}
+
+	modifiedBytes, err := patch.Apply(currentBytes)
+	if err != nil {
+		return &errors.BadRequest{Message: err.Error()}
+	}
+
+	var modified types.Todo
+	err = json.Unmarshal(modifiedBytes, &modified)
+	if err != nil {
+		return err
+	}
+
+	if modified.Id != currentRecord.Id {
+		return &errors.BadRequest{Message: "Id field can't be changed"}
+	}
+
+	err = t.service.UpdateTodo(modified)
+	if err != nil {
+		return err
+	}
+
+	render.NoContent(w, r)
+	return nil
+}
+```
+
+### The `GET /todos` query surface
+
+`ListTodos` is where the two list paths from the Features section surface as one endpoint. It reads three query params:
+
+- **`?filter=<lucene>`** — if present, the handler calls `t.service.SearchTodos`, the Lucene search path. If absent, it falls through to `t.service.ListTodos`, the structured list. One endpoint, one decision: `if filter != ""`.
+- **`?limit=`** — the page size, defaulting to 10 when missing or invalid.
+- **`?next=`** — the opaque cursor for the next page.
+
+Together `limit` and `next` drive cursor pagination, and `?filter=` selects which underlying path produces the page. There are no typed query params — a caller filtering on `done` writes `?filter=done:1`, not `?done=true`. See [Search (Lucene)](lucene.md) for the full filter syntax.
+
+### JSON Patch and the OpenAPI annotations
+
+`UpdateTodo` is the one handler that doesn't take a plain JSON body. It expects a `application/json-patch+json` document — a list of JSON Patch operations — reads the current record, applies the patch, and persists the result. It rejects any patch that tries to change `id`.
+
+Every handler is preceded by an `@openapi` annotation block describing its path, parameters, request body, and responses. Just like the type annotations from the Types section, these feed `build/generate.go` — the route blocks reference the `Todo`, `TodoUpdate`, and `TodoList` schemas by name, and those references resolve because the Types section defined them. The handlers and the type structs together produce the complete `config/openapi.json`.
+
+With the router assembled, the last layer is the **server** — the bootstrap that builds storage, observability, health probes, and auth, populates the `AuthConfig`/`PubSubConfig` structs, and mounts this router.
+
 ## Step 2: Wire `main.go`
 
 This is the whole bootstrap — storage, observability, health probes, auth, routes.

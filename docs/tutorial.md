@@ -894,222 +894,401 @@ Every handler is preceded by an `@openapi` annotation block describing its path,
 
 With the router assembled, the last layer is the **server** — the bootstrap that builds storage, observability, health probes, and auth, populates the `AuthConfig`/`PubSubConfig` structs, and mounts this router.
 
-## Step 2: Wire `main.go`
+## Server
 
-This is the whole bootstrap — storage, observability, health probes, auth, routes.
+The server is the final layer — the wiring that assembles everything below it into a running process. Migrations, types, features, and routes each do one job; the server is what builds the storage adapter, runs the migrations against it, initialises observability, populates the `AuthConfig`/`PubSubConfig` structs the Routes section declared, mounts the router, and serves HTTP. todo-service splits this across three small files plus one larger one: `main.go`, `cmd/root.go`, and `cmd/server.go`.
+
+### `main.go` — embed the config, hand off to the CLI
 
 ```go title="main.go"
 package main
 
 import (
+	"embed"
+
+	"todo-service/cmd"
+
+	"github.com/tink3rlabs/magic/storage"
+)
+
+//go:generate go run build/generate.go
+//go:embed config
+var configFS embed.FS
+
+func main() {
+	storage.ConfigFs = configFS
+	cmd.ConfigFS = configFS
+	cmd.Execute()
+}
+```
+
+`main.go` does almost nothing itself. The `//go:embed config` directive bakes the entire `config/` tree — `development.yaml`, `openapi.json`, and crucially the `migrations/` directory — into the binary as an `embed.FS`. That filesystem is then handed to two places: `storage.ConfigFs`, which is where magic's storage package looks for the migration files at startup (this is what makes the Migrations section's SQL available at runtime, with no files to ship alongside the binary), and `cmd.ConfigFS`, which the `server` command reads `openapi.json` from to serve `/api-docs`. Then `cmd.Execute()` hands control to cobra.
+
+### `cmd/root.go` — the cobra root and viper config
+
+```go title="cmd/root.go"
+package cmd
+
+import (
+	"embed"
+	"fmt"
+	"os"
+	"strings"
+
+	homedir "github.com/mitchellh/go-homedir"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
+	"github.com/tink3rlabs/magic/logger"
+)
+
+var ConfigFS embed.FS
+var cfgFile string
+var rootCmd = &cobra.Command{
+	Use:   "",
+	Short: "ToDo is a reference implementaion of a common service architecture",
+	Long: `ToDo is a reference implementaion of a common service architecture brought to you with love by tink3rlabs.
+Complete documentation is available at https://github.com/tink3rlabs/todo-service`,
+}
+
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
+func init() {
+	cobra.OnInitialize(initConfig)
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.todo.yaml)")
+	if viperBindFlagsErr := viper.BindPFlags(rootCmd.Flags()); viperBindFlagsErr != nil {
+		fmt.Println(viperBindFlagsErr)
+		os.Exit(1)
+	}
+	rootCmd.AddCommand(serverCommand)
+}
+
+func initConfig() {
+	// Don't forget to read config either from cfgFile or from home directory!
+	if cfgFile != "" {
+		// Use config file from the flag.
+		viper.SetConfigFile(cfgFile)
+	} else {
+		// Find home directory.
+		home, err := homedir.Dir()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		// Search config in home directory with name ".cobra" (without extension).
+		viper.AddConfigPath(home)
+		viper.SetConfigName(".todo")
+	}
+
+	viper.SetEnvPrefix("TODO")
+	viper.SetEnvKeyReplacer(strings.NewReplacer("_", "."))
+	viper.AutomaticEnv()
+	if err := viper.ReadInConfig(); err != nil {
+		fmt.Println("Can't read config:", err)
+		os.Exit(1)
+	}
+
+	config := loggerConfig()
+	logger.Init(config)
+}
+
+func loggerConfig() *logger.Config {
+	// Fetch the log level and format from the config file
+	levelStr := viper.GetString("logger.level")
+	json := viper.GetBool("logger.json")
+
+	return &logger.Config{
+		Level: logger.MapLogLevel(levelStr),
+		JSON:  json,
+	}
+}
+```
+
+`root.go` defines the cobra root command and registers the `server` subcommand. The work happens in `initConfig`, run by `cobra.OnInitialize` before any command executes: it points viper at the config file (the `--config` flag, or `~/.todo.yaml` by default), enables `TODO_`-prefixed environment overrides, and reads the file. Every `viper.GetString(...)` call you'll see in `server.go` resolves against the config loaded here. Finally it calls `logger.Init` with the level and format from the config, so magic's structured logger is ready before the server starts.
+
+### `cmd/server.go` — the `server` command
+
+`server.go` is the centrepiece. Its `runServer` function does the full bootstrap in wiring order. Here it is whole:
+
+```go title="cmd/server.go"
+package cmd
+
+import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/go-chi/render"
-
-	magicerrors "github.com/tink3rlabs/magic/errors"
+	"github.com/go-co-op/gocron/v2"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"github.com/tink3rlabs/magic/errors"
 	"github.com/tink3rlabs/magic/health"
-	magiclogger "github.com/tink3rlabs/magic/logger"
+	"github.com/tink3rlabs/magic/leadership"
+	"github.com/tink3rlabs/magic/logger"
 	"github.com/tink3rlabs/magic/middlewares"
 	"github.com/tink3rlabs/magic/observability"
+	"github.com/tink3rlabs/magic/pubsub"
 	"github.com/tink3rlabs/magic/storage"
+	"github.com/tink3rlabs/magic/telemetry"
 
-	"example.com/tasks-svc/routes"
+	"todo-service/pkg/routes"
 )
 
-func main() {
-	magiclogger.Init(&magiclogger.Config{Level: slog.LevelInfo})
+var serverCommand = &cobra.Command{
+	Use:   "server",
+	Short: "Run the ToDo server",
+	RunE:  runServer,
+}
 
-	cfg := observability.DefaultConfig()
-	cfg.ServiceName = "tasks-svc"
-	cfg.MetricsMode = observability.MetricsModePrometheus
-	obs, err := observability.Init(context.Background(), cfg)
-	if err != nil {
-		magiclogger.Fatal("observability init failed", slog.Any("error", err))
-	}
-	defer obs.Shutdown(context.Background())
+func init() {
+	serverCommand.Flags().StringP("port", "p", "8080", "The port on which the Todo server will listen on")
+}
 
-	store, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, nil)
-	if err != nil {
-		magiclogger.Fatal("storage init failed", slog.Any("error", err))
-	}
-
-	tasks, err := routes.NewTasksHandler(store)
-	if err != nil {
-		magiclogger.Fatal("tasks handler init failed", slog.Any("error", err))
-	}
-
-	r := chi.NewRouter()
-	r.Use(
-		render.SetContentType(render.ContentTypeJSON),
-		middleware.Recoverer,
+func initRoutes(obs *observability.Observer, todosCreated telemetry.Counter, auth routes.AuthConfig, pubSub routes.PubSubConfig) *chi.Mux {
+	router := chi.NewRouter()
+	router.Use(
+		render.SetContentType(render.ContentTypeJSON), // Set content-Type headers as application/json
+		middleware.Logger,          // Log API request calls
+		middleware.RedirectSlashes, // Redirect slashes to no slash URL versions
+		middleware.Recoverer,       // Recover from panics without crashing server
 		middlewares.ObservabilityWithOptions(obs, middlewares.ObservabilityOptions{
+			SkipPaths:        []string{"/metrics"},
 			SkipPathPrefixes: []string{"/health/"},
+		}),
+		cors.Handler(cors.Options{
+			AllowedOrigins:   []string{"https://*", "http://*"},
+			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+			ExposedHeaders:   []string{"Link"},
+			AllowCredentials: false,
+			MaxAge:           300, // Maximum value not ignored by any of major browsers
 		}),
 	)
 
-	// Health probes — unauthenticated.
-	r.Get("/health/liveness", func(w http.ResponseWriter, r *http.Request) {
+	t := routes.NewTodoRouter(todosCreated, auth, pubSub)
+	router.Route("/", func(r chi.Router) {
+		r.Mount("/todos", t.Router)
+	})
+
+	return router
+}
+
+func createScheduler() {
+	slog.Info("strating scheduler")
+	// create a scheduler
+	s, err := gocron.NewScheduler()
+	if err != nil {
+		logger.Fatal("failed to create scheduler", slog.Any("error", err))
+	}
+	// add a job to the scheduler
+	_, err = s.NewJob(
+		gocron.DurationJob(30*time.Second),
+		gocron.NewTask(
+			func(param string) {
+				slog.Info("scheduled job says", slog.String("param", param))
+			},
+			"hello",
+		),
+	)
+	if err != nil {
+		logger.Fatal("failed to create scheduled job", slog.Any("error", err))
+	}
+
+	// start the scheduler
+	s.Start()
+}
+
+func runServer(cmd *cobra.Command, args []string) error {
+	openApiSpec, err := ConfigFS.ReadFile("config/openapi.json")
+
+	if err != nil {
+		return fmt.Errorf("failed to load OpenAPI definition, did you forget to run go generate?: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	obsCfg := observability.DefaultConfig()
+	obsCfg.ServiceName = viper.GetString("observability.service_name")
+	if obsCfg.ServiceName == "" {
+		obsCfg.ServiceName = "todo-service"
+	}
+	switch viper.GetString("observability.metrics_mode") {
+	case "otlp":
+		obsCfg.MetricsMode = observability.MetricsModeOTLP
+		obsCfg.MetricsOTLPEndpoint = viper.GetString("observability.metrics_otlp_endpoint")
+	default:
+		obsCfg.MetricsMode = observability.MetricsModePrometheus
+	}
+	obsCfg.EnableTracing = viper.GetBool("observability.enable_tracing")
+	obsCfg.TracesOTLPEndpoint = viper.GetString("observability.traces_otlp_endpoint")
+
+	obs, err := observability.Init(ctx, obsCfg)
+	if err != nil {
+		logger.Fatal("failed to initialise observability", slog.String("error", err.Error()))
+	}
+	defer func() { _ = obs.Shutdown(context.Background()) }()
+
+	todosCreated, err := obs.Counter(telemetry.MetricDefinition{
+		Name: "todo_service_todos_created_total",
+		Help: "Total number of todo items created.",
+		Kind: telemetry.KindCounter,
+	})
+	if err != nil {
+		logger.Fatal("failed to register todos_created counter", slog.String("error", err.Error()))
+	}
+
+	storageAdapter, err := storage.StorageAdapterFactory{}.GetInstance(
+		storage.StorageAdapterType(viper.GetString("storage.type")),
+		viper.GetStringMapString("storage.config"),
+	)
+
+	if err != nil {
+		panic("failed to get storage adapter instance")
+	}
+
+	storage.NewDatabaseMigration(storageAdapter).Migrate()
+
+	var publisher pubsub.Publisher
+	if viper.GetBool("pubsub.enabled") {
+		publisher, err = pubsub.PublisherFactory{}.GetInstance(pubsub.SNS, map[string]string{
+			"region": viper.GetString("pubsub.region"),
+		})
+		if err != nil {
+			logger.Fatal("failed to create pub/sub publisher", slog.String("error", err.Error()))
+		}
+	}
+
+	electionProps := leadership.LeaderElectionProps{
+		HeartbeatInterval: viper.GetDuration("leadership.heartbeat"),
+		StorageAdapter:    storageAdapter,
+		AdditionalProps: map[string]any{
+			"global": viper.GetBool("storage.config.global"),
+			"region": viper.GetString("storage.config.region"),
+			"regios": viper.GetStringSlice("storage.config.regions"),
+		},
+	}
+	election := leadership.NewLeaderElection(electionProps)
+	election.Start()
+
+	go func() {
+		for result := range election.Results {
+			if result == leadership.RESULT_ELECTED {
+				createScheduler()
+			}
+		}
+	}()
+
+	authEnabled := viper.GetBool("auth.enabled")
+	authMiddleware := middlewares.EnsureValidToken(middlewares.EnsureValidTokenConfig{
+		Enabled:   authEnabled,
+		IssuerURL: viper.GetString("auth.issuer_url"),
+		Audience:  viper.GetStringSlice("auth.audience"),
+	})
+	authCfg := routes.AuthConfig{
+		Middleware: authMiddleware,
+		Enabled:    authEnabled,
+		WriteRole:  viper.GetString("auth.write_role"),
+	}
+
+	pubSubCfg := routes.PubSubConfig{
+		Publisher: publisher,
+		TopicARN:  viper.GetString("pubsub.topic_arn"),
+	}
+
+	router := initRoutes(obs, todosCreated, authCfg, pubSubCfg)
+
+	router.Handle("/metrics", obs.MetricsHandler())
+
+	router.Get("/api-docs", func(w http.ResponseWriter, r *http.Request) {
+		if _, responseFailed := w.Write(openApiSpec); responseFailed != nil {
+			slog.Error("failed responding to /api-docs:", slog.Any("error", responseFailed))
+		}
+	})
+
+	//health check - liveness
+	router.Get("/health/liveness", func(w http.ResponseWriter, r *http.Request) {
 		render.Status(r, http.StatusNoContent)
 		render.NoContent(w, r)
 	})
-	checker := health.NewHealthChecker(store)
-	errHandler := middlewares.ErrorHandler{}
-	r.Get("/health/readiness", errHandler.Wrap(func(w http.ResponseWriter, r *http.Request) error {
-		if err := checker.Check(true, nil); err != nil {
-			return &magicerrors.ServiceUnavailable{Message: err.Error()}
+
+	//health check - readiness
+	healthChecker := health.NewHealthChecker(storageAdapter)
+	h := middlewares.ErrorHandler{}
+	router.Get("/health/readiness", h.Wrap(func(w http.ResponseWriter, r *http.Request) error {
+		err := healthChecker.Check(viper.GetBool("health.storage"), viper.GetStringSlice("health.dependencies"))
+		if err != nil {
+			slog.Error("health check readiness failed", slog.Any("error", err.Error()))
+			return &errors.ServiceUnavailable{Message: err.Error()}
+		} else {
+			render.Status(r, http.StatusNoContent)
+			render.NoContent(w, r)
+			return nil
 		}
-		render.Status(r, http.StatusNoContent)
-		render.NoContent(w, r)
-		return nil
 	}))
 
-	r.Handle("/metrics", obs.MetricsHandler())
+	port := viper.GetString("service.port")
+	listenAddress := fmt.Sprintf(":%s", port)
 
-	// Protected routes.
-	r.Group(func(r chi.Router) {
-		r.Use(middlewares.EnsureValidToken(middlewares.EnsureValidTokenConfig{
-			Enabled:   os.Getenv("AUTH_ENABLED") == "true",
-			IssuerURL: os.Getenv("OIDC_ISSUER"),
-			Audience:  []string{os.Getenv("OIDC_AUDIENCE")},
-		}))
-		r.Get("/tasks", errHandler.Wrap(tasks.List))
-		r.Post("/tasks", errHandler.Wrap(tasks.Create))
-	})
+	srv := &http.Server{Addr: listenAddress, Handler: router}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("server failed", slog.Any("error", err))
+		}
+	}()
+	slog.Info("todo-service listening", slog.String("address", listenAddress))
 
-	slog.Info("listening on :8080")
-	if err := http.ListenAndServe(":8080", r); err != nil {
-		magiclogger.Fatal("server stopped", slog.Any("error", err))
+	<-ctx.Done()
+	slog.Info("shutdown signal received, stopping server")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("graceful shutdown failed", slog.Any("error", err))
 	}
-}
-```
-
-!!! note "Do I need leadership election?"
-    Only if your service runs background workers that must execute on **exactly one** replica — schedulers, reconcilers, cron-like jobs. For request-handling services like this one, skip it. When you do need it: `leadership.NewLeaderElection(leadership.LeaderElectionProps{StorageAdapter: store}).Start()` and read from `Results` to know when you've been elected.
-
-## Step 3: Add a handler
-
-The handler reads `?filter=<lucene>` straight off the query string and hands it to `storage.Search`. magic compiles the Lucene to safe parameterized SQL — no string concatenation, no injection.
-
-```go title="routes/tasks.go"
-package routes
-
-import (
-	"encoding/json"
-	"net/http"
-
-	"github.com/go-chi/render"
-	"github.com/google/uuid"
-
-	magicerrors "github.com/tink3rlabs/magic/errors"
-	"github.com/tink3rlabs/magic/storage"
-)
-
-type Task struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Priority int    `json:"priority"`
-}
-
-type TasksHandler struct {
-	store storage.StorageAdapter
-}
-
-func NewTasksHandler(store storage.StorageAdapter) (*TasksHandler, error) {
-	return &TasksHandler{store: store}, nil
-}
-
-func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) error {
-	filter := r.URL.Query().Get("filter")
-	cursor := r.URL.Query().Get("cursor")
-
-	var tasks []Task
-	next, err := h.store.Search(&tasks, "id", filter, 50, cursor)
-	if err != nil {
-		return &magicerrors.BadRequest{Message: err.Error()}
-	}
-	render.JSON(w, r, map[string]any{"items": tasks, "cursor": next})
-	return nil
-}
-
-func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) error {
-	var t Task
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		return &magicerrors.BadRequest{Message: "invalid json body"}
-	}
-	if t.Title == "" {
-		return &magicerrors.BadRequest{Message: "title is required"}
-	}
-	t.ID = uuid.NewString()
-	if t.Status == "" {
-		t.Status = "open"
-	}
-	if err := h.store.Create(t); err != nil {
-		return err
-	}
-	render.Status(r, http.StatusCreated)
-	render.JSON(w, r, t)
 	return nil
 }
 ```
 
-The typed errors map to HTTP status codes automatically. `&errors.BadRequest{...}` becomes a 400; `&errors.NotFound{...}` becomes a 404. The `ErrorHandler.Wrap` middleware does that translation — your handler just returns the error.
+### The `runServer` wiring walk
 
-!!! tip "Empty filter is fine"
-    `Search` with an empty filter string returns everything (subject to limit/cursor). You don't need to branch in the handler.
+`runServer` builds the service from the bottom up. In order:
 
-## Step 4: Run it
+1. **Load the OpenAPI spec.** `ConfigFS.ReadFile("config/openapi.json")` reads the generated spec out of the embedded filesystem — later served at `/api-docs`. If it's missing, the command fails fast with a reminder to run `go generate`.
+2. **Signal-aware context.** `signal.NotifyContext(..., os.Interrupt, syscall.SIGTERM)` produces a `ctx` that's cancelled on `Ctrl-C` or a `SIGTERM` from the orchestrator. Everything downstream hangs off this context, and the function blocks on it at the end for graceful shutdown.
+3. **Observability.** `observability.Init(ctx, obsCfg)` brings up metrics (Prometheus or OTLP, per config) and optional tracing. Its shutdown is deferred immediately, so traces and metrics flush cleanly on exit. See [Observability](observability.md) for the configuration surface.
+4. **The custom counter.** `obs.Counter(...)` registers `todo_service_todos_created_total` — the metric the Features section's `WithCreatedCounter` seam expects.
+5. **Storage adapter.** `storage.StorageAdapterFactory{}.GetInstance(...)` builds the adapter from `storage.type` and `storage.config` — the same factory call the feature layer makes. See [Storage Adapters](storage.md).
+6. **Migrations.** `storage.NewDatabaseMigration(storageAdapter).Migrate()` runs every pending migration against that adapter — the Migrations section's SQL, applied here, before the first request.
+7. **Optional pub/sub publisher.** When `pubsub.enabled` is true, an SNS publisher is built; otherwise `publisher` stays nil. Either way it goes into `PubSubConfig` for the routes.
+8. **Leadership election and scheduler.** `leadership.NewLeaderElection(...).Start()` runs leader election against the storage adapter; a goroutine watches `election.Results` and starts the background `createScheduler()` only on the replica that's elected leader.
+9. **Auth middleware and `AuthConfig`.** `middlewares.EnsureValidToken(...)` is built from the `auth.*` config and wrapped into a `routes.AuthConfig` along with `Enabled` and `WriteRole`. This is the config-gated middleware the Routes section's protected-writes group consumes.
+10. **`PubSubConfig`.** The publisher from step 7 and `pubsub.topic_arn` are packed into a `routes.PubSubConfig`.
+11. **Build the router.** `initRoutes(obs, todosCreated, authCfg, pubSubCfg)` constructs the chi router — base middleware (logging, panic recovery, CORS, observability), then `NewTodoRouter` mounted at `/todos`.
+12. **Mount the operational endpoints.** `/metrics` serves the Prometheus handler, `/api-docs` writes the embedded OpenAPI spec, and the two health probes — `/health/liveness` (always 204) and `/health/readiness` (runs `health.NewHealthChecker` against storage and configured dependencies) — are registered directly on the router.
+13. **Serve and block.** The `http.Server` runs in a goroutine; `runServer` blocks on `<-ctx.Done()`. When the signal arrives it calls `srv.Shutdown` with a 10-second timeout for an in-flight-safe graceful stop.
 
-```bash
-go run .
-```
+### Health probes and observability skips
 
-In another shell:
+The health probes are registered **outside** the route group that carries the auth middleware — they're unauthenticated by design, so an orchestrator can probe `/health/liveness` and `/health/readiness` without a token. The observability middleware is configured to skip them too: `ObservabilityOptions` sets `SkipPathPrefixes: []string{"/health/"}` and `SkipPaths: []string{"/metrics"}`, keeping probe traffic and the metrics scrape itself out of the request metrics and traces.
 
-```bash
-# liveness
-curl -i http://localhost:8080/health/liveness
+### Where the seams get populated
 
-# create a task (auth disabled locally)
-curl -s -X POST http://localhost:8080/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Pour foundation","status":"open","priority":2}'
+This is where the loose ends from the earlier layers get tied off. The `AuthConfig` and `PubSubConfig` structs the Routes section declared but left empty are filled in here from configuration. The `WithCreatedCounter` and `WithPublisher` seams the Features section exposed get their real collaborators — the `todos_created` counter and, when enabled, the SNS publisher — passed down through `initRoutes` and `NewTodoRouter`. The layers are independent; the server is what composes them.
 
-# list with a Lucene filter
-curl -s 'http://localhost:8080/tasks?filter=status:open%20AND%20priority:%5B1%20TO%203%5D'
-```
-
-That last URL decodes to `filter=status:open AND priority:[1 TO 3]`. Full syntax: [Lucene](lucene.md).
-
-## Step 5: Swap memory for SQL
-
-This is the payoff. Change exactly the storage factory call:
-
-```go title="main.go (storage init only)"
-store, err := storage.StorageAdapterFactory{}.GetInstance(storage.SQL, map[string]string{
-	"provider": "postgresql",
-	"host":     "localhost",
-	"port":     "5432",
-	"user":     "postgres",
-	"password": "admin",
-	"dbname":   "tasks",
-	"schema":   "public",
-})
-```
-
-Your handler code doesn't change. Lucene queries compile to parameterized Postgres SQL. Health, observability, and auth keep working.
-
-!!! warning "Schema lifecycle"
-    On a fresh database, call `store.CreateSchema()` and `storage.NewDatabaseMigration(store).Migrate()` once at startup — see the [examples](https://github.com/tink3rlabs/magic/tree/main/examples) for the full migration pattern.
-
-## Where to next
-
-- **Filter syntax** — every operator, every provider quirk: [Lucene](lucene.md).
-- **Pick an adapter** — SQL vs DynamoDB vs CosmosDB tradeoffs: [Storage Adapters](storage.md).
-- **Metrics and traces** — custom metrics, OTLP, troubleshooting: [Observability](observability.md).
-- **Help us improve magic** — [Contributing](contributing.md).
+With every layer assembled, the only thing left is to start the service and watch it answer.

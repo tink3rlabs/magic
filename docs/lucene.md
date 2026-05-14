@@ -156,7 +156,7 @@ func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) error {
 }
 ```
 
-`magicerrors.BadRequest` maps to HTTP 400 via the [`ErrorHandler` middleware](tutorial.md#step-3-add-a-handler). A user sending `?filter=does_not_exist:foo` gets back the structured `InvalidFieldError` message with a list of valid fields.
+`magicerrors.BadRequest` maps to HTTP 400 via the [`ErrorHandler` middleware](tutorial.md#routes). A user sending `?filter=does_not_exist:foo` gets back the structured `InvalidFieldError` message with a list of valid fields.
 
 ## Safety limits
 

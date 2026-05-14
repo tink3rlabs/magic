@@ -43,6 +43,18 @@ Open http://localhost:8000. Pages live under `docs/` and the nav is set in `mkdo
 
 `--strict` turns warnings (broken links, unrecognized references) into errors.
 
+### Keeping the tutorial in sync
+
+`docs/tutorial.md` is a build-along over the real [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service) repo. Every code snippet in it is copied **verbatim** from todo-service at a **pinned git ref** — cited once near the top of `tutorial.md` (currently a commit SHA, to become a release tag once todo-service cuts one). MkDocs can't pull source across repos, so the snippets live inline and drift is controlled by process, not tooling.
+
+When todo-service changes in a way that affects the tutorial, the *same* change set to `docs/tutorial.md` must:
+
+- re-copy the affected snippets verbatim from the new ref,
+- update the pinned ref reference in the tutorial's intro, and
+- re-run `mkdocs build --strict`.
+
+The tutorial must **never** contain code that doesn't exist verbatim in todo-service at the pinned ref — no hand-edited, paraphrased, or "cleaned-up" snippets.
+
 ## Branching and commits
 
 Trunk-based, short-lived topic branches off `main`. Naming: `feat/<desc>`, `fix/<desc>`, `docs/<desc>`, `chore/<desc>`. CI enforces [Conventional Commits](https://www.conventionalcommits.org/): `feat:` cuts a minor release, `fix:` cuts a patch, `docs:`/`chore:`/`test:` cut nothing. Full table and release flow: [root CONTRIBUTING.md](https://github.com/tink3rlabs/magic/blob/main/CONTRIBUTING.md).

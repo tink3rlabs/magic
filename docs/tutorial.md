@@ -922,7 +922,7 @@ func main() {
 }
 ```
 
-`main.go` does almost nothing itself. The `//go:embed config` directive bakes the entire `config/` tree — `development.yaml`, `openapi.json`, and crucially the `migrations/` directory — into the binary as an `embed.FS`. That filesystem is then handed to two places: `storage.ConfigFs`, which is where magic's storage package looks for the migration files at startup (this is what makes the Migrations section's SQL available at runtime, with no files to ship alongside the binary), and `cmd.ConfigFS`, which the `server` command reads `openapi.json` from to serve `/api-docs`. Then `cmd.Execute()` hands control to cobra.
+`main.go` does almost nothing itself. The `//go:embed config` directive bakes the entire `config/` tree — `development.yaml`, the generated `openapi.json`, and crucially the `migrations/` directory — into the binary as an `embed.FS`. That filesystem is then handed to two places: `storage.ConfigFs`, which is where magic's storage package looks for the migration files at startup (this is what makes the Migrations section's SQL available at runtime, with no files to ship alongside the binary), and `cmd.ConfigFS`, which the `server` command reads `openapi.json` from to serve `/api-docs`. Then `cmd.Execute()` hands control to cobra.
 
 ### `cmd/root.go` — the cobra root and viper config
 

@@ -1,32 +1,52 @@
-# Build a microservice in 15 minutes
+# Build a microservice with magic
 
-You will build a small **tasks** service: create a task, list tasks with a Lucene filter, behind health probes and JWT auth — all using magic. When you're done, this works:
+You will build **todo-service** — the canonical reference service for magic — and come away understanding it layer by layer. todo-service is a small but complete microservice: a CRUD API for todo items that exercises magic's features end to end. The source lives at [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service).
+
+Every snippet below is from [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service) at commit `2c27181`.
+
+!!! note "Pinned to a commit, for now"
+    todo-service hasn't cut a tagged release yet, so this tutorial pins to commit `2c27181`. Once todo-service tags a release, this will be re-pinned to that tag.
+
+todo-service is a properly layered service, and that layering is the spine of this tutorial. We walk it in the order the request flows — and the order you'd build it:
+
+**migrations → types → features → routes → server**
+
+- **migrations** — the database schema, applied at startup.
+- **types** — the data types and their OpenAPI annotations.
+- **features** — the business logic.
+- **routes** — the HTTP routing that wires features to URLs.
+- **server** — the bootstrap that assembles everything: storage, observability, health probes, auth, and the router.
+
+When you're done you have a running service you can `curl`: health probes answer, full CRUD on `/todos` works, and a Lucene `?filter=` query returns matching todos.
+
+## Get the code
 
 ```bash
-curl -s 'http://localhost:8080/tasks?filter=status:open%20AND%20priority:%5B1%20TO%203%5D' \
-  -H "Authorization: Bearer $TOKEN"
+git clone https://github.com/tink3rlabs/todo-service.git
+cd todo-service
+go mod download
 ```
 
-Total moving parts: one `main.go`, one `routes/tasks.go`, and a `go.mod`. Then we swap memory for SQL with one line.
-
-## Step 1: Project setup
-
-```bash
-mkdir tasks-svc && cd tasks-svc
-go mod init example.com/tasks-svc
-go get github.com/tink3rlabs/magic@latest
-go get github.com/go-chi/chi/v5 github.com/go-chi/render github.com/google/uuid
-```
-
-Layout:
+Here's the map before the walk:
 
 ```text
-tasks-svc/
-  go.mod
-  main.go
-  routes/
-    tasks.go
+todo-service/
+  main.go              # entrypoint — embeds config, hands off to the cobra CLI
+  cmd/                  # cobra commands — root.go wires viper; server.go runs the service
+  pkg/
+    types/              # data types (Todo) plus their OpenAPI annotations
+    features/           # business logic — the todo feature package
+    routes/             # HTTP routing — maps /todos verbs onto the feature
+  config/
+    development.yaml    # service configuration (storage, auth, observability, ...)
+    migrations/         # startup migrations, one set per SQL provider
+    openapi.json        # generated OpenAPI spec artifact
+  build/
+    generate.go         # generates config/openapi.json from the type annotations
 ```
+
+!!! tip "It runs with no external services"
+    todo-service defaults to the in-memory storage adapter, with auth and pub/sub disabled. `go run . server --config config/development.yaml` starts it with no database, no tokens, and no AWS credentials.
 
 ## Step 2: Wire `main.go`
 

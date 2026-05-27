@@ -45,13 +45,13 @@ Open http://localhost:8000. Pages live under `docs/` and the nav is set in `mkdo
 
 ### Keeping the tutorial in sync
 
-`docs/tutorial.md` is a build-along over the real [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service) repo. Its code blocks are not copied — they're **included live** from todo-service via `pymdownx.snippets` URL includes, each pinned to a **commit SHA** (a release tag, once todo-service cuts one). The included regions are delimited in todo-service's source by `--8<-- [start:name]` / `--8<-- [end:name]` marker comments.
+`docs/tutorial.md` is a build-along over the real [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service) repo. Its code blocks are not copied — they're **included live** from todo-service via `pymdownx.snippets` URL includes, each pinned to a todo-service **release tag** (currently `v0.9.0`). The included regions are delimited in todo-service's source by `--8<-- [start:name]` / `--8<-- [end:name]` marker comments.
 
-To re-sync after a todo-service change, bump the SHA in the snippet URLs in `tutorial.md` (find/replace the old SHA with the new one). If a quoted region's shape changed, update the marker comments in todo-service in the same change so the included slice still lines up with the surrounding prose.
+To re-sync after a todo-service release, bump the tag in the snippet URLs in `tutorial.md` (find/replace the old tag with the new one). If a quoted region's shape changed, update the marker comments in todo-service in the same change so the included slice still lines up with the surrounding prose.
 
-`mkdocs build --strict` fetches every include and fails on a stale or broken pin — a missing file, a renamed marker, an unreachable SHA. Drift is caught by CI, not left to process: the tutorial can't quote code that doesn't exist in todo-service at the pinned ref.
+`mkdocs build --strict` fetches every include and fails on a stale or broken pin — a missing file, a renamed marker, an unreachable tag. Drift is caught by CI, not left to process: the tutorial can't quote code that doesn't exist in todo-service at the pinned ref.
 
-Note that this couples the docs build to the network: it fetches these URLs from GitHub's raw CDN at build time, so the docs deploy depends on GitHub raw being reachable and the pinned commit staying live. If a docs build fails on a snippet fetch for a change unrelated to the tutorial, suspect a transient CDN issue or a force-pushed/deleted pinned commit before anything else.
+Note that this couples the docs build to the network: it fetches these URLs from GitHub's raw CDN at build time, so the docs deploy depends on GitHub raw being reachable and the pinned tag staying live. If a docs build fails on a snippet fetch for a change unrelated to the tutorial, suspect a transient CDN issue or a deleted/moved pinned tag before anything else.
 
 ## Branching and commits
 

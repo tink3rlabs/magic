@@ -2,10 +2,10 @@
 
 You will build **todo-service** — the canonical reference service for magic — and come away understanding it layer by layer. todo-service is a small but complete microservice: a CRUD API for todo items that exercises magic's features end to end. The source lives at [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service).
 
-Every snippet below is included live from [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service) at commit `1483fdcb85a151625a3028ae296aa5dbd44e0a66` — pulled straight from the repo at build time, not copied into this page.
+Every snippet below is included live from [`tink3rlabs/todo-service`](https://github.com/tink3rlabs/todo-service) at the release tag `v0.9.0` — pulled straight from the repo at build time, not copied into this page.
 
-!!! note "Pinned to a commit, for now"
-    The code blocks below are not copied — they're included live from `tink3rlabs/todo-service` at the pinned commit `1483fdcb85a151625a3028ae296aa5dbd44e0a66` via mkdocs `pymdownx.snippets` URL includes. `mkdocs build --strict` fetches and validates every include, so the tutorial can no longer silently drift from the real repo. todo-service hasn't cut a tagged release yet; once it does, this pin moves from the SHA to that release tag.
+!!! note "Pinned to a release tag"
+    The code blocks below are not copied — they're included live from `tink3rlabs/todo-service` at the pinned tag `v0.9.0` via mkdocs `pymdownx.snippets` URL includes. `mkdocs build --strict` fetches and validates every include, so the tutorial can no longer silently drift from the real repo. When todo-service cuts a new release, bump this pin to the new tag (find/replace `v0.9.0` in this file).
 
 todo-service is a properly layered service, and that layering is the spine of this tutorial. We walk it in the order the request flows — and the order you'd build it:
 
@@ -55,7 +55,7 @@ The first layer is the schema — the shape of the data the rest of the service 
 todo-service has exactly one table, created by one migration:
 
 ```yaml title="config/migrations/postgresql/01__base.yaml"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/config/migrations/postgresql/01__base.yaml:migration-postgres"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/config/migrations/postgresql/01__base.yaml:migration-postgres"
 ```
 
 ### The file format
@@ -87,13 +87,13 @@ SQL dialects differ — Postgres spells the id column `TEXT`, MySQL wants `VARCH
 The migration files ship inside the binary. `main.go` embeds the whole `config` tree and hands it to magic's storage package:
 
 ```go title="main.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/main.go:main-imports"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/main.go:main-imports"
 ```
 
 At startup, `runServer` builds the storage adapter and then runs any pending migrations against it:
 
 ```go title="cmd/server.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/cmd/server.go:server-cmd-a"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/cmd/server.go:server-cmd-a"
 ```
 
 The Server section later covers the full bootstrap; for now the point is just that migrations run automatically, before the first request is served. This holds even for the default in-memory adapter used in local dev — it runs the same migrations, so the service behaves identically whether it's backed by Postgres or an in-process store. For the adapter details, see [Storage Adapters](storage.md).
@@ -108,7 +108,7 @@ With the schema defined, the next layer is the **types** — the Go structs that
 The second layer is the data shapes the rest of the service is built around. Every layer above this one — features, routes, the generated OpenAPI spec — refers back to these structs. todo-service defines all three in a single file:
 
 ```go title="pkg/types/todo.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/pkg/types/todo.go:types-todo"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/pkg/types/todo.go:types-todo"
 ```
 
 ### The `json` tags do double duty
@@ -116,7 +116,7 @@ The second layer is the data shapes the rest of the service is built around. Eve
 The `json` struct tags are not just for serialization. magic's storage layer reads them too — they are the field and column names it uses, not the Go field names. The `Todo.Id` field is `json:"id"`, so storage knows it as `id`. That's the same `id` you saw as the primary key in the Migrations section, and it's the literal string passed as the sort key in the feature layer:
 
 ```go
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/pkg/features/todo/todoService.go:feature-list-call"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/pkg/features/todo/todoService.go:feature-list-call"
 ```
 
 The same tags decide what's searchable. When a Lucene `?filter=` query names a field, it names the `json` tag — `summary:groceries`, not `Summary:groceries`. magic introspects the struct once and builds the set of searchable fields from the tagged fields and their Go types. The Features section puts this to work; for the exact rules — which types are implicitly searchable, how `json:"-"` excludes a field — see [Search (Lucene)](lucene.md).
@@ -145,7 +145,7 @@ The features layer is where the business logic lives. It sits between the types 
 todo-service keeps the whole layer in one file:
 
 ```go title="pkg/features/todo/todoService.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/pkg/features/todo/todoService.go:feature-service"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/pkg/features/todo/todoService.go:feature-service"
 ```
 
 ### Constructing the service
@@ -169,7 +169,7 @@ This service exposes **two** ways to read a collection, and the difference betwe
 `ListTodos` is the **plain list**. It calls `storage.List` with a structured, exact-match filter map and cursor pagination:
 
 ```go
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/pkg/features/todo/todoService.go:feature-list-call"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/pkg/features/todo/todoService.go:feature-list-call"
 ```
 
 The third argument is a `map[string]any` of field/value pairs ANDed together as exact matches — here it's empty, so every todo is returned, a page at a time.
@@ -177,7 +177,7 @@ The third argument is a `map[string]any` of field/value pairs ANDed together as 
 `SearchTodos` is the **search path**. It calls `storage.Search` with a single Lucene `filter` string:
 
 ```go
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/pkg/features/todo/todoService.go:feature-search-call"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/pkg/features/todo/todoService.go:feature-search-call"
 ```
 
 The caller passes one expressive query — `summary:groceries AND done:1` — and magic compiles it to safe, parameterized SQL. No string concatenation, no injection surface. An empty filter returns everything, just like `List`.
@@ -205,7 +205,7 @@ The routes layer is the HTTP boundary. It turns the feature methods — which kn
 The first half declares the JSON-schema validation maps, the two wiring structs, and `NewTodoRouter` — the constructor that assembles the router:
 
 ```go title="pkg/routes/todo.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/pkg/routes/todo.go:routes-a"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/pkg/routes/todo.go:routes-a"
 ```
 
 ### Public reads, protected writes
@@ -234,7 +234,7 @@ Every handler has the signature `func(w http.ResponseWriter, r *http.Request) er
 The handlers themselves make up the second half of the file:
 
 ```go title="pkg/routes/todo.go (continued)"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/pkg/routes/todo.go:routes-b"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/pkg/routes/todo.go:routes-b"
 ```
 
 ### The `GET /todos` query surface
@@ -262,7 +262,7 @@ The server is the final layer — the wiring that assembles everything below it 
 ### `main.go` — embed the config, hand off to the CLI
 
 ```go title="main.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/main.go:main-run"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/main.go:main-run"
 ```
 
 `main.go` does almost nothing itself. The `//go:embed config` directive bakes the entire `config/` tree — `development.yaml`, the generated `openapi.json`, and crucially the `migrations/` directory — into the binary as an `embed.FS`. That filesystem is then handed to two places: `storage.ConfigFs`, which is where magic's storage package looks for the migration files at startup (this is what makes the Migrations section's SQL available at runtime, with no files to ship alongside the binary), and `cmd.ConfigFS`, which the `server` command reads `openapi.json` from to serve `/api-docs`. Then `cmd.Execute()` hands control to cobra.
@@ -270,7 +270,7 @@ The server is the final layer — the wiring that assembles everything below it 
 ### `cmd/root.go` — the cobra root and viper config
 
 ```go title="cmd/root.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/cmd/root.go:root-cmd"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/cmd/root.go:root-cmd"
 ```
 
 `root.go` defines the cobra root command and registers the `server` subcommand. The work happens in `initConfig`, run by `cobra.OnInitialize` before any command executes: it points viper at the config file (the `--config` flag, or `~/.todo.yaml` by default), enables `TODO_`-prefixed environment overrides, and reads the file. Every `viper.GetString(...)` call you'll see in `server.go` resolves against the config loaded here. Finally it calls `logger.Init` with the level and format from the config, so magic's structured logger is ready before the server starts.
@@ -280,7 +280,7 @@ The server is the final layer — the wiring that assembles everything below it 
 `server.go` is the centrepiece. Its `runServer` function does the full bootstrap in wiring order. Here it is whole:
 
 ```go title="cmd/server.go"
---8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/1483fdcb85a151625a3028ae296aa5dbd44e0a66/cmd/server.go:server-cmd-b"
+--8<-- "https://raw.githubusercontent.com/tink3rlabs/todo-service/v0.9.0/cmd/server.go:server-cmd-b"
 ```
 
 ### The `runServer` wiring walk

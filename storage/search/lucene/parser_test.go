@@ -735,8 +735,9 @@ func TestNullValueQueries(t *testing.T) {
 		{
 			name:       "NOT null (is not null)",
 			query:      "NOT deleted_at:null",
-			wantSQL:    []string{"NOT", `"deleted_at"`},
-			wantParams: []any{"null"}, // NOT null is parsed as NOT field=null, not NOT field IS NULL
+			wantSQL:    []string{`"deleted_at"`, "IS NOT NULL"},
+			wantNot:    []string{"=", "?"},
+			wantParams: []any{},
 			wantErr:    false,
 		},
 		{
@@ -744,6 +745,14 @@ func TestNullValueQueries(t *testing.T) {
 			query:      "name:nil",
 			wantSQL:    []string{`"name"`, "=", "?"},
 			wantParams: []any{"nil"},
+			wantErr:    false,
+		},
+		{
+			name:       "quoted \"null\" is a literal string, not IS NULL",
+			query:      `name:"null"`,
+			wantSQL:    []string{`"name"`, "=", "?"},
+			wantNot:    []string{"IS NULL"},
+			wantParams: []any{"null"},
 			wantErr:    false,
 		},
 	}

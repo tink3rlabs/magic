@@ -45,7 +45,7 @@ That's it. You now get:
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | Trace-only override.                                        |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Metric-only override (OTLP mode).                           |
 
-For OTLP push mode, set `cfg.MetricsMode = observability.MetricsModeOTLP` and `cfg.EnableTracing = true`.
+For OTLP push mode, set `cfg.MetricsMode = observability.MetricsModeOTLP` and `cfg.EnableTracing = true`. OTLP mode also needs a metrics endpoint — set `cfg.MetricsOTLPEndpoint` or one of the `OTEL_EXPORTER_OTLP_[METRICS_]ENDPOINT` env vars above, or `Init` fails fast with `MetricsMode=otlp but no OTLP metrics endpoint configured`.
 
 !!! warning "Prometheus vs OTLP — pick one"
     In Prometheus mode, `/metrics` returns the scrape format. In OTLP mode, `/metrics` returns 404 by design — metrics are pushed, not scraped.
@@ -119,7 +119,7 @@ Pass `ctx` (not `r.Context()`) into anything downstream so it picks up the paren
 
 **Storage spans missing.** Adapters only emit spans when called via `ContextualStorageAdapter` methods (`CreateContext`, `GetContext`, etc.). Pre-context call sites (`s.Create(item)`) work but won't link to the request trace.
 
-**Init returns "metrics mode invalid".** `cfg.MetricsMode` was zero-valued. It's required — set it to `MetricsModePrometheus` or `MetricsModeOTLP`.
+**Init returns `invalid MetricsMode ""`.** `cfg.MetricsMode` was zero-valued. It's required — set it to `MetricsModePrometheus` or `MetricsModeOTLP`.
 
 ---
 

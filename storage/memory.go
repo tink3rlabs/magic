@@ -97,7 +97,7 @@ func (m *MemoryAdapter) Create(item any, params ...map[string]any) error {
 }
 
 func (m *MemoryAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
-	return m.DB.CreateContext(ctx, item)
+	return m.DB.CreateContext(ctx, item, params...)
 }
 
 func (m *MemoryAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
@@ -105,7 +105,7 @@ func (m *MemoryAdapter) Get(dest any, filter map[string]any, params ...map[strin
 }
 
 func (m *MemoryAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
-	return m.DB.GetContext(ctx, dest, filter)
+	return m.DB.GetContext(ctx, dest, filter, params...)
 }
 
 func (m *MemoryAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
@@ -113,7 +113,7 @@ func (m *MemoryAdapter) Update(item any, filter map[string]any, params ...map[st
 }
 
 func (m *MemoryAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
-	return m.DB.UpdateContext(ctx, item, filter)
+	return m.DB.UpdateContext(ctx, item, filter, params...)
 }
 
 func (m *MemoryAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
@@ -121,7 +121,7 @@ func (m *MemoryAdapter) Delete(item any, filter map[string]any, params ...map[st
 }
 
 func (m *MemoryAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
-	return m.DB.DeleteContext(ctx, item, filter)
+	return m.DB.DeleteContext(ctx, item, filter, params...)
 }
 
 func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
@@ -129,7 +129,7 @@ func (m *MemoryAdapter) List(dest any, sortKey string, filter map[string]any, li
 }
 
 func (m *MemoryAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return m.DB.ListContext(ctx, dest, sortKey, filter, limit, cursor)
+	return m.DB.ListContext(ctx, dest, sortKey, filter, limit, cursor, params...)
 }
 
 func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
@@ -137,7 +137,7 @@ func (m *MemoryAdapter) Search(dest any, sortKey string, query string, limit int
 }
 
 func (m *MemoryAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return m.DB.SearchContext(ctx, dest, sortKey, query, limit, cursor)
+	return m.DB.SearchContext(ctx, dest, sortKey, query, limit, cursor, params...)
 }
 
 func (m *MemoryAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
@@ -145,7 +145,7 @@ func (m *MemoryAdapter) Count(dest any, filter map[string]any, params ...map[str
 }
 
 func (m *MemoryAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	return m.DB.CountContext(ctx, dest, filter)
+	return m.DB.CountContext(ctx, dest, filter, params...)
 }
 
 func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
@@ -153,5 +153,5 @@ func (m *MemoryAdapter) Query(dest any, statement string, limit int, cursor stri
 }
 
 func (m *MemoryAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return m.DB.QueryContext(ctx, dest, statement, limit, cursor)
+	return m.DB.QueryContext(ctx, dest, statement, limit, cursor, params...)
 }

@@ -26,6 +26,8 @@ type Task struct {
 func main() {
 	// setup errors elided for brevity; the Search below shows real error handling
 	store, _ := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, nil)
+	// in-memory is SQLite with no tables yet — a real service migrates; here we create one
+	_ = store.Execute(`CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, title TEXT, status TEXT)`)
 	_ = store.Create(Task{ID: "1", Title: "Pour foundation", Status: "open"})
 
 	var hits []Task

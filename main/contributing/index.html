@@ -283,7 +283,27 @@
         
   
   <span class="md-ellipsis">
-    Getting Started
+    Quick start
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorial/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tutorial
   </span>
   
 
@@ -303,7 +323,7 @@
         
   
   <span class="md-ellipsis">
-    Search (Lucene)
+    Lucene
   </span>
   
 
@@ -323,7 +343,7 @@
         
   
   <span class="md-ellipsis">
-    Storage Adapters
+    Storage
   </span>
   
 
@@ -368,6 +388,17 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -377,6 +408,76 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#local-go-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local Go development
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-docs-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local docs build
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Local docs build">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#keeping-the-tutorial-in-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      Keeping the tutorial in sync
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#branching-and-commits" class="md-nav__link">
+    <span class="md-ellipsis">
+      Branching and commits
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-add-an-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      How to add an example
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -402,6 +503,65 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#local-go-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local Go development
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-docs-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      Local docs build
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Local docs build">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#keeping-the-tutorial-in-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      Keeping the tutorial in sync
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#branching-and-commits" class="md-nav__link">
+    <span class="md-ellipsis">
+      Branching and commits
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-add-an-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      How to add an example
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -424,13 +584,41 @@
 
 
 <h1 id="contributing">Contributing<a class="headerlink" href="#contributing" title="Permanent link">&para;</a></h1>
-<p>The contributing guide lives in the repo root: <a href="https://github.com/tink3rlabs/magic/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.</p>
-<p>It covers:</p>
+<p>Thanks for wanting to help. This page covers what you need to hack on magic itself — code or docs. The root <a href="https://github.com/tink3rlabs/magic/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> has the full branching, release, and Conventional Commits reference.</p>
+<h2 id="local-go-development">Local Go development<a class="headerlink" href="#local-go-development" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/tink3rlabs/magic.git
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>magic
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...
+</code></pre></div>
+<p>Unit tests don't need a database — adapters that need one (Postgres, MySQL, DynamoDB, CosmosDB) use testcontainers and skip themselves when Docker isn't available. The in-memory adapter and Lucene parser have full coverage you can iterate against without any infra.</p>
+<p>Useful entry points:</p>
 <ul>
-<li>Branching strategy</li>
-<li>Conventional Commits</li>
-<li>Release flow and prereleases</li>
+<li><code>examples/main.go</code> — a runnable end-to-end example. Run it with <code>go run ./examples</code> (see <code>examples/README.md</code> for the env vars it expects).</li>
+<li><code>storage/storage_test.go</code> — adapter contract tests, parameterized by backend.</li>
+<li><code>storage/search/lucene/</code> — the Lucene parser and per-provider SQL drivers.</li>
 </ul>
+<p>Run the full check before opening a PR:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>go<span class="w"> </span>vet<span class="w"> </span>./...
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>go<span class="w"> </span><span class="nb">test</span><span class="w"> </span>./...
+</code></pre></div>
+<h2 id="local-docs-build">Local docs build<a class="headerlink" href="#local-docs-build" title="Permanent link">&para;</a></h2>
+<p>The docs site is MkDocs (Material) with versioning via <code>mike</code>. Build dependencies live in <code>requirements-docs.txt</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>.venv-docs
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>.venv-docs/bin/pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>requirements-docs.txt
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>.venv-docs/bin/mkdocs<span class="w"> </span>serve
+</code></pre></div>
+<p>Open http://localhost:8000. Pages live under <code>docs/</code> and the nav is set in <code>mkdocs.yml</code>. Build strictly before committing doc changes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>.venv-docs/bin/mkdocs<span class="w"> </span>build<span class="w"> </span>--strict
+</code></pre></div>
+<p><code>--strict</code> turns warnings (broken links, unrecognized references) into errors.</p>
+<h3 id="keeping-the-tutorial-in-sync">Keeping the tutorial in sync<a class="headerlink" href="#keeping-the-tutorial-in-sync" title="Permanent link">&para;</a></h3>
+<p>To re-sync after a todo-service change, bump the SHA in the snippet URLs in <code>tutorial.md</code> (find/replace the old SHA with the new one). If a quoted region's shape changed, update the marker comments in todo-service in the same change so the included slice still lines up with the surrounding prose.</p>
+<p><code>mkdocs build --strict</code> fetches every include and fails on a stale or broken pin — a missing file, a renamed marker, an unreachable SHA. Drift is caught by CI, not left to process: the tutorial can't quote code that doesn't exist in todo-service at the pinned ref.</p>
+<p>Note that this couples the docs build to the network: it fetches these URLs from GitHub's raw CDN at build time, so the docs deploy depends on GitHub raw being reachable and the pinned commit staying live. If a docs build fails on a snippet fetch for a change unrelated to the tutorial, suspect a transient CDN issue or a force-pushed/deleted pinned commit before anything else.</p>
+<h2 id="branching-and-commits">Branching and commits<a class="headerlink" href="#branching-and-commits" title="Permanent link">&para;</a></h2>
+<p>Trunk-based, short-lived topic branches off <code>main</code>. Naming: <code>feat/&lt;desc&gt;</code>, <code>fix/&lt;desc&gt;</code>, <code>docs/&lt;desc&gt;</code>, <code>chore/&lt;desc&gt;</code>. CI enforces <a href="https://www.conventionalcommits.org/">Conventional Commits</a>: <code>feat:</code> cuts a minor release, <code>fix:</code> cuts a patch, <code>docs:</code>/<code>chore:</code>/<code>test:</code> cut nothing. Full table and release flow: <a href="https://github.com/tink3rlabs/magic/blob/main/CONTRIBUTING.md">root CONTRIBUTING.md</a>.</p>
+<h2 id="how-to-add-an-example">How to add an example<a class="headerlink" href="#how-to-add-an-example" title="Permanent link">&para;</a></h2>
+<p>Put new examples under <code>examples/&lt;name&gt;/</code> with a <code>main.go</code> and a top-of-file comment block explaining how to run it (env vars, expected output). Reference them from the relevant doc page rather than inlining 100 lines of setup.</p>
 
 
 

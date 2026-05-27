@@ -305,27 +305,27 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#install" class="md-nav__link">
+  <a href="#see-it" class="md-nav__link">
     <span class="md-ellipsis">
-      Install
+      See it
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#start-here" class="md-nav__link">
+  <a href="#pick-your-path" class="md-nav__link">
     <span class="md-ellipsis">
-      Start here
+      Pick your path
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#other-packages" class="md-nav__link">
+  <a href="#whats-in-the-box" class="md-nav__link">
     <span class="md-ellipsis">
-      Other packages
+      What's in the box
     </span>
   </a>
   
@@ -350,7 +350,27 @@
         
   
   <span class="md-ellipsis">
-    Getting Started
+    Quick start
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="tutorial/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tutorial
   </span>
   
 
@@ -370,7 +390,7 @@
         
   
   <span class="md-ellipsis">
-    Search (Lucene)
+    Lucene
   </span>
   
 
@@ -390,7 +410,7 @@
         
   
   <span class="md-ellipsis">
-    Storage Adapters
+    Storage
   </span>
   
 
@@ -466,27 +486,27 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#install" class="md-nav__link">
+  <a href="#see-it" class="md-nav__link">
     <span class="md-ellipsis">
-      Install
+      See it
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#start-here" class="md-nav__link">
+  <a href="#pick-your-path" class="md-nav__link">
     <span class="md-ellipsis">
-      Start here
+      Pick your path
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#other-packages" class="md-nav__link">
+  <a href="#whats-in-the-box" class="md-nav__link">
     <span class="md-ellipsis">
-      Other packages
+      What's in the box
     </span>
   </a>
   
@@ -516,34 +536,51 @@
 
 
 <h1 id="magic">magic<a class="headerlink" href="#magic" title="Permanent link">&para;</a></h1>
-<p>Common building blocks for Go microservices, so your service code can focus on business logic.</p>
-<p><code>magic</code> bundles the parts every Go service rebuilds from scratch: a unified storage layer with adapters for SQL, DynamoDB, CosmosDB and in-memory; a Lucene query frontend that compiles to safe parameterized SQL or DynamoDB PartiQL; observability conventions; auth and validation middleware; a leadership election helper; a typed error model; and a few utilities. One library, one set of idioms.</p>
-<h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>go<span class="w"> </span>get<span class="w"> </span>github.com/tink3rlabs/magic@latest
+<p>Every Go microservice rebuilds the same plumbing: CRUD over a database, list-with-search endpoints, observability, typed errors, auth middleware, health probes. magic gives you those as one coherent library so your service code can stay about your domain.</p>
+<p>One storage interface for memory, SQL, DynamoDB, and CosmosDB. One Lucene-backed <code>?filter=</code> syntax that compiles to safe parameterized queries on every backend. OpenTelemetry traces and metrics with one <code>Init</code> call. Typed HTTP errors that map themselves to status codes.</p>
+<h2 id="see-it">See it<a class="headerlink" href="#see-it" title="Permanent link">&para;</a></h2>
+<div class="highlight"><span class="filename">main.go</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">package</span><span class="w"> </span><span class="nx">main</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kn">import</span><span class="w"> </span><span class="p">(</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="s">&quot;errors&quot;</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="s">&quot;fmt&quot;</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="s">&quot;github.com/tink3rlabs/magic/storage&quot;</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nx">magicerrors</span><span class="w"> </span><span class="s">&quot;github.com/tink3rlabs/magic/errors&quot;</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="kd">type</span><span class="w"> </span><span class="nx">Task</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="nx">ID</span><span class="w">     </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:&quot;id&quot;`</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nx">Title</span><span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:&quot;title&quot;`</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nx">Status</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="s">`json:&quot;status&quot;`</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="p">}</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="kd">func</span><span class="w"> </span><span class="nx">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">    </span><span class="c1">// setup errors elided for brevity; the Search below shows real error handling</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">    </span><span class="nx">store</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">storage</span><span class="p">.</span><span class="nx">StorageAdapterFactory</span><span class="p">{}.</span><span class="nx">GetInstance</span><span class="p">(</span><span class="nx">storage</span><span class="p">.</span><span class="nx">MEMORY</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">    </span><span class="nx">_</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">Create</span><span class="p">(</span><span class="nx">Task</span><span class="p">{</span><span class="nx">ID</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">Title</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Pour foundation&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">Status</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;open&quot;</span><span class="p">})</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">hits</span><span class="w"> </span><span class="p">[]</span><span class="nx">Task</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">store</span><span class="p">.</span><span class="nx">Search</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">hits</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;id&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;status:open&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p">);</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="nx">bad</span><span class="w"> </span><span class="o">*</span><span class="nx">magicerrors</span><span class="p">.</span><span class="nx">BadRequest</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">As</span><span class="p">(</span><span class="nx">err</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">bad</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">            </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Println</span><span class="p">(</span><span class="s">&quot;bad filter:&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">bad</span><span class="p">.</span><span class="nx">Message</span><span class="p">)</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="w">        </span><span class="k">return</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="w">    </span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Printf</span><span class="p">(</span><span class="s">&quot;matched %d tasks\n&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">len</span><span class="p">(</span><span class="nx">hits</span><span class="p">))</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a><span class="p">}</span>
 </code></pre></div>
-<p>Requires Go 1.25 or newer. Pre-v1.0: the API may change in minor releases — see <a href="https://github.com/tink3rlabs/magic#versioning--releases">Versioning &amp; Releases</a>.</p>
-<h2 id="start-here">Start here<a class="headerlink" href="#start-here" title="Permanent link">&para;</a></h2>
+<p>Swap <code>storage.MEMORY</code> for <code>storage.SQL</code> (with a config map) and the same code runs against Postgres.</p>
+<h2 id="pick-your-path">Pick your path<a class="headerlink" href="#pick-your-path" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong><a href="getting-started/">Getting Started</a></strong> — install, build an adapter, do CRUD, paginate, search.</li>
-<li><strong><a href="lucene/">Search (Lucene)</a></strong> — full filter syntax reference with per-provider behavior.</li>
-<li><strong><a href="storage/">Storage Adapters</a></strong> — SQL / DynamoDB / CosmosDB / memory: when to use which, how to configure.</li>
-<li><strong><a href="observability/">Observability</a></strong> — logs, traces, metrics.</li>
-<li><strong><a href="https://pkg.go.dev/github.com/tink3rlabs/magic">API reference on pkg.go.dev</a></strong> — auto-generated, always current.</li>
+<li><strong><a href="getting-started/">Quick start</a></strong> — install, run a script, see Lucene search work in under a minute.</li>
+<li><strong><a href="tutorial/">Tutorial</a></strong> — build a real microservice in 15 minutes: handlers, auth, health, observability.</li>
+<li><strong><a href="https://pkg.go.dev/github.com/tink3rlabs/magic">Reference</a></strong> — full API on pkg.go.dev.</li>
 </ul>
-<h2 id="other-packages">Other packages<a class="headerlink" href="#other-packages" title="Permanent link">&para;</a></h2>
-<p>These are documented in the <a href="https://github.com/tink3rlabs/magic#usage">repository README</a> and on <a href="https://pkg.go.dev/github.com/tink3rlabs/magic">pkg.go.dev</a>:</p>
-<ul>
-<li><code>errors</code> — typed <code>NotFound</code>, <code>BadRequest</code>, <code>Unauthorized</code> with HTTP status mapping.</li>
-<li><code>health</code> — readiness/liveness probe handlers.</li>
-<li><code>leadership</code> — single-leader election for background workers.</li>
-<li><code>logger</code> — structured logging conventions.</li>
-<li><code>middlewares</code> — authentication, validation, error-handler middleware for <code>chi</code> / <code>net/http</code>.</li>
-<li><code>mql</code> — a simpler query-string parser (distinct from the Lucene system above).</li>
-<li><code>pubsub</code> — SNS publisher and friends.</li>
-<li><code>telemetry</code> — OpenTelemetry plumbing used by the observability layer.</li>
-<li><code>types</code> — shared response/request envelopes.</li>
-<li><code>utils</code> — reverse-sorted UUID and other small helpers.</li>
-</ul>
+<h2 id="whats-in-the-box">What's in the box<a class="headerlink" href="#whats-in-the-box" title="Permanent link">&para;</a></h2>
+<p><code>errors</code>, <code>health</code>, <code>leadership</code>, <code>logger</code>, <code>middlewares</code>, <code>mql</code>, <code>observability</code>, <code>pubsub</code>, <code>storage</code>, <code>telemetry</code>, <code>types</code>, <code>utils</code>. The headline packages have dedicated guides above; the rest are documented on <a href="https://pkg.go.dev/github.com/tink3rlabs/magic">pkg.go.dev</a>.</p>
+<p>Requires Go 1.25 or newer. Pre-v1.0: the API may change in minor releases.</p>
 
 
 

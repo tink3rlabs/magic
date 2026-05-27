@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://tink3rlabs.github.io/magic/main/lucene/">
       
       
-        <link rel="prev" href="../getting-started/">
+        <link rel="prev" href="../tutorial/">
       
       
         <link rel="next" href="../storage/">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Search (Lucene) - magic</title>
+        <title>Lucene - magic</title>
       
     
     
@@ -116,7 +116,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Search (Lucene)
+              Lucene
             
           </span>
         </div>
@@ -285,7 +285,27 @@
         
   
   <span class="md-ellipsis">
-    Getting Started
+    Quick start
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorial/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tutorial
   </span>
   
 
@@ -314,7 +334,7 @@
           
   
   <span class="md-ellipsis">
-    Search (Lucene)
+    Lucene
   </span>
   
 
@@ -325,7 +345,7 @@
         
   
   <span class="md-ellipsis">
-    Search (Lucene)
+    Lucene
   </span>
   
 
@@ -452,6 +472,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-full-http-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      A full HTTP handler
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#safety-limits" class="md-nav__link">
     <span class="md-ellipsis">
       Safety limits
@@ -506,7 +535,7 @@
         
   
   <span class="md-ellipsis">
-    Storage Adapters
+    Storage
   </span>
   
 
@@ -687,6 +716,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-full-http-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      A full HTTP handler
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#safety-limits" class="md-nav__link">
     <span class="md-ellipsis">
       Safety limits
@@ -746,15 +784,19 @@
 
 
 <h1 id="search-lucene">Search (Lucene)<a class="headerlink" href="#search-lucene" title="Permanent link">&para;</a></h1>
-<p>magic exposes a single <code>filter=</code> query parameter on every list endpoint. The value is a <a href="https://lucene.apache.org/core/2_9_4/queryparsersyntax.html">Lucene query string</a> which magic compiles to safe, parameterized SQL or DynamoDB PartiQL. There are no string-concatenated values anywhere — even wildcards and JSON path keys are validated and parameterized.</p>
+<p>You expose a single <code>filter=</code> query parameter on every list endpoint. The value is a <a href="https://lucene.apache.org/core/2_9_4/queryparsersyntax.html">Lucene query string</a> that magic compiles to safe, parameterized SQL or DynamoDB PartiQL. No string-concatenated values anywhere — wildcards and JSON path keys are validated and parameterized.</p>
 <h2 id="the-two-line-setup">The two-line setup<a class="headerlink" href="#the-two-line-setup" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nx">parser</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">lucene</span><span class="p">.</span><span class="nx">NewParser</span><span class="p">(</span><span class="nx">Task</span><span class="p">{})</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nx">sql</span><span class="p">,</span><span class="w"> </span><span class="nx">params</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToSQL</span><span class="p">(</span><span class="s">&quot;status:received AND amount:[100 TO 500]&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;postgresql&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1">// sql:    &quot;(\&quot;status\&quot; = $1) AND (\&quot;amount\&quot; BETWEEN $2 AND $3)&quot;</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1">// params: []any{&quot;received&quot;, 100, 500}</span>
+<div class="highlight"><span class="filename">parser.go</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nx">parser</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">lucene</span><span class="p">.</span><span class="nx">NewParser</span><span class="p">(</span><span class="nx">Task</span><span class="p">{})</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">err</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="p">}</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nx">sql</span><span class="p">,</span><span class="w"> </span><span class="nx">params</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToSQL</span><span class="p">(</span><span class="s">&quot;status:received AND amount:[100 TO 500]&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;postgresql&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1">// sql:    &quot;(\&quot;status\&quot; = ?) AND (\&quot;amount\&quot; BETWEEN ? AND ?)&quot;</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1">// params: []any{&quot;received&quot;, &quot;100&quot;, &quot;500&quot;}</span>
 </code></pre></div>
-<p>The same parser also drives the storage adapter's <code>Search</code> method, so most code never calls <code>ParseToSQL</code> directly — it just passes the user's filter string through.</p>
-<p><code>NewParser</code> introspects the model struct once. Only fields with a <code>json</code> tag are searchable; <code>json:"-"</code> and untagged fields are excluded. The field's Go type controls how it can be queried:</p>
+<p><code>ParseToSQL</code> returns <code>?</code> placeholders for every provider; GORM's Postgres driver rewrites them to <code>$1, $2, …</code> when it executes the query.</p>
+<p>The same parser drives the storage adapter's <code>Search</code> method, so most code never calls <code>ParseToSQL</code> directly — you just pass the user's filter string through.</p>
+<p><code>NewParser</code> introspects the model struct once. Only fields with a <code>json</code> tag are searchable; <code>json:"-"</code> and untagged fields are excluded. The field's Go type controls how you query it:</p>
 <table>
 <thead>
 <tr>
@@ -787,19 +829,19 @@
 <h3 id="equality">Equality<a class="headerlink" href="#equality" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>status:received
 </code></pre></div>
-<p>Compiles to <code>"status" = $1</code>. Values may be unquoted (<code>foo</code>), quoted (<code>"foo bar"</code>), numeric (<code>42</code>), or boolean (<code>true</code>).</p>
+<p>Compiles to <code>"status" = ?</code>. Values may be unquoted (<code>foo</code>), quoted (<code>"foo bar"</code>), numeric (<code>42</code>), or boolean (<code>true</code>).</p>
 <h3 id="boolean-composition">Boolean composition<a class="headerlink" href="#boolean-composition" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>status:received AND counterparty_id:abc123
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>status:received OR status:pending
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>status:received AND NOT status:cancelled
 </code></pre></div>
-<p>Operators are case-sensitive (<code>AND</code> / <code>OR</code> / <code>NOT</code>). Parentheses group: <code>(a OR b) AND c</code>. Within a single field, group with <code>field:(a OR b)</code> — magic re-renders the inner leaves with the outer field name correctly, so <code>tenant_id:(abc OR null)</code> becomes <code>("tenant_id" = $1) OR ("tenant_id" IS NULL)</code>, not the broken form some Lucene libraries produce.</p>
+<p>Operators are case-sensitive (<code>AND</code> / <code>OR</code> / <code>NOT</code>). Parentheses group: <code>(a OR b) AND c</code>. Within a single field, group with <code>field:(a OR b)</code> — magic re-renders the inner leaves with the outer field name correctly, so <code>tenant_id:(abc OR null)</code> becomes <code>("tenant_id" = ?) OR ("tenant_id" IS NULL)</code>, not the broken form some Lucene libraries produce.</p>
 <h3 id="range">Range<a class="headerlink" href="#range" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>amount:[100 TO 500]      # inclusive
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>amount:{100 TO 500}      # exclusive
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>created_at:[2025-01-01 TO 2025-12-31]
 </code></pre></div>
-<p>Inclusive ranges compile to <code>BETWEEN $1 AND $2</code>; exclusive ranges compile to <code>&gt; $1 AND &lt; $2</code>.</p>
+<p>Inclusive ranges compile to <code>BETWEEN ? AND ?</code>; exclusive ranges compile to <code>&gt; ? AND &lt; ?</code>.</p>
 <h3 id="wildcards">Wildcards<a class="headerlink" href="#wildcards" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>name:foo*       # starts with foo
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>name:foo?bar    # exactly one char between foo and bar
@@ -816,15 +858,15 @@
 <tbody>
 <tr>
 <td>Postgres</td>
-<td><code>"col"::text ILIKE $1</code> (case-insensitive)</td>
+<td><code>"col"::text ILIKE ?</code> (case-insensitive)</td>
 </tr>
 <tr>
 <td>MySQL</td>
-<td><code>LOWER("col") LIKE LOWER($1)</code> (case-insensitive)</td>
+<td><code>LOWER("col") LIKE LOWER(?)</code> (case-insensitive)</td>
 </tr>
 <tr>
 <td>SQLite</td>
-<td><code>"col" LIKE $1</code> (case-insensitive for ASCII)</td>
+<td><code>"col" LIKE ?</code> (case-insensitive for ASCII)</td>
 </tr>
 </tbody>
 </table>
@@ -832,7 +874,10 @@
 <h3 id="fuzzy">Fuzzy<a class="headerlink" href="#fuzzy" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>name:foo~2
 </code></pre></div>
-<p>Per-provider behavior — read this table before promising fuzzy search to users:</p>
+<div class="admonition warning">
+<p class="admonition-title">Fuzzy is not consistent across providers</p>
+<p>Postgres requires the <code>pg_trgm</code> extension. MySQL falls back to SOUNDEX and ignores the distance hint. SQLite returns an error — use wildcards instead. Read the table below before promising fuzzy search to users.</p>
+</div>
 <table>
 <thead>
 <tr>
@@ -843,11 +888,11 @@
 <tbody>
 <tr>
 <td>Postgres</td>
-<td><code>similarity("col"::text, $1) &gt; 0.3</code> — <strong>requires the <code>pg_trgm</code> extension</strong>.</td>
+<td><code>similarity("col"::text, ?) &gt; 0.3</code> — <strong>requires the <code>pg_trgm</code> extension</strong>.</td>
 </tr>
 <tr>
 <td>MySQL</td>
-<td><code>SOUNDEX("col") = SOUNDEX($1)</code> — phonetic match only, the <code>~N</code> distance is ignored.</td>
+<td><code>SOUNDEX("col") = SOUNDEX(?)</code> — phonetic match only, the <code>~N</code> distance is ignored.</td>
 </tr>
 <tr>
 <td>SQLite</td>
@@ -866,7 +911,7 @@
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>amount:&gt;=100
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>amount:&lt;=500
 </code></pre></div>
-<p>Compile to <code>"amount" &gt; $1</code> etc. Combining with <code>null</code> is an error (see above).</p>
+<p>Compile to <code>"amount" &gt; ?</code> etc. Combining with <code>null</code> is an error (see above).</p>
 <h3 id="json-sub-fields">JSON sub-fields<a class="headerlink" href="#json-sub-fields" title="Permanent link">&para;</a></h3>
 <p>If a field's Go type is a struct, map, or slice (a JSONB column in Postgres), use dot notation to reach inside it:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>metadata.tier:gold
@@ -882,15 +927,15 @@
 <tbody>
 <tr>
 <td>Postgres</td>
-<td><code>metadata-&gt;&gt;'tier' = $1</code></td>
+<td><code>metadata-&gt;&gt;'tier' = ?</code></td>
 </tr>
 <tr>
 <td>MySQL</td>
-<td><code>JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = $1</code></td>
+<td><code>JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?</code></td>
 </tr>
 <tr>
 <td>SQLite</td>
-<td><code>JSON_EXTRACT(metadata, '$.tier') = $1</code></td>
+<td><code>JSON_EXTRACT(metadata, '$.tier') = ?</code></td>
 </tr>
 </tbody>
 </table>
@@ -899,7 +944,27 @@
 <p>If your model has any string field with <code>ImplicitSearch=true</code>, you can search across all such fields with a bare term:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>foundation
 </code></pre></div>
-<p>This is rewritten to <code>(string_field_1:foundation OR string_field_2:foundation OR ...)</code> before being parsed. Non-string fields are never included in implicit search — the user must reference them explicitly.</p>
+<p>This is rewritten to a contains-match across those fields — <code>(name:*foundation* OR description:*foundation*)</code> — before being parsed (each bare term is wrapped in <code>*…*</code> unless it is quoted or already contains wildcards). Non-string fields are never included in implicit search — the user must reference them explicitly.</p>
+<h2 id="a-full-http-handler">A full HTTP handler<a class="headerlink" href="#a-full-http-handler" title="Permanent link">&para;</a></h2>
+<p>In practice you almost never call <code>ParseToSQL</code> yourself — the storage adapter's <code>Search</code> method does it for you. A complete list-with-filter endpoint:</p>
+<div class="highlight"><span class="filename">routes/tasks.go</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">h</span><span class="w"> </span><span class="o">*</span><span class="nx">TasksHandler</span><span class="p">)</span><span class="w"> </span><span class="nx">List</span><span class="p">(</span><span class="nx">w</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">ResponseWriter</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="w"> </span><span class="o">*</span><span class="nx">http</span><span class="p">.</span><span class="nx">Request</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="nx">filter</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">URL</span><span class="p">.</span><span class="nx">Query</span><span class="p">().</span><span class="nx">Get</span><span class="p">(</span><span class="s">&quot;filter&quot;</span><span class="p">)</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nx">cursor</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">r</span><span class="p">.</span><span class="nx">URL</span><span class="p">.</span><span class="nx">Query</span><span class="p">().</span><span class="nx">Get</span><span class="p">(</span><span class="s">&quot;next&quot;</span><span class="p">)</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">tasks</span><span class="w"> </span><span class="p">[]</span><span class="nx">Task</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nx">next</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">h</span><span class="p">.</span><span class="nx">store</span><span class="p">.</span><span class="nx">Search</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">tasks</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;id&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">filter</span><span class="p">,</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span><span class="w"> </span><span class="nx">cursor</span><span class="p">)</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="nx">bad</span><span class="w"> </span><span class="o">*</span><span class="nx">magicerrors</span><span class="p">.</span><span class="nx">BadRequest</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">As</span><span class="p">(</span><span class="nx">err</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">bad</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="nx">bad</span><span class="w"> </span><span class="c1">// client error: bad filter string — 400</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="c1">// storage/runtime failure — let ErrorHandler map it to 500</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">    </span><span class="nx">render</span><span class="p">.</span><span class="nx">JSON</span><span class="p">(</span><span class="nx">w</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="p">,</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">&quot;items&quot;</span><span class="p">:</span><span class="w"> </span><span class="nx">tasks</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;next&quot;</span><span class="p">:</span><span class="w"> </span><span class="nx">next</span><span class="p">})</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="kc">nil</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="p">}</span>
+</code></pre></div>
+<p><code>Search</code> already does the parse/validation-vs-runtime classification for you: it wraps a bad <code>filter</code> string — including an <code>*lucene.InvalidFieldError</code> — into a <code>*magicerrors.BadRequest</code> before returning, so checking for <code>InvalidFieldError</code> here would never match. Match <code>*magicerrors.BadRequest</code> instead. It maps to HTTP 400 via the <a href="../tutorial/#routes"><code>ErrorHandler</code> middleware</a>; any other returned error falls through to 500. (Since <code>BadRequest</code> already maps to 400, a plain <code>return err</code> is also correct — the explicit branch is here only to show where you'd attach handler-specific context.) You only match the raw <code>*lucene.InvalidFieldError</code> when you call <code>parser.ParseToSQL</code> yourself — see <a href="#errors">Errors</a> below. A user sending <code>?filter=does_not_exist:foo</code> gets back the structured message with a list of valid fields.</p>
 <h2 id="safety-limits">Safety limits<a class="headerlink" href="#safety-limits" title="Permanent link">&para;</a></h2>
 <p><code>NewParser</code> applies three limits to incoming queries. All are configurable via <code>lucene.ParserConfig</code>:</p>
 <table>
@@ -928,11 +993,14 @@
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nx">parser</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">lucene</span><span class="p">.</span><span class="nx">NewParser</span><span class="p">(</span><span class="nx">Task</span><span class="p">{},</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">lucene</span><span class="p">.</span><span class="nx">ParserConfig</span><span class="p">{</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="nx">MaxQueryLength</span><span class="p">:</span><span class="w"> </span><span class="mi">2000</span><span class="p">,</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nx">MaxDepth</span><span class="p">:</span><span class="w">       </span><span class="mi">8</span><span class="p">,</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nx">MaxTerms</span><span class="p">:</span><span class="w">       </span><span class="mi">30</span><span class="p">,</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="p">})</span>
+<div class="highlight"><span class="filename">parser.go</span><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nx">parser</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">lucene</span><span class="p">.</span><span class="nx">NewParser</span><span class="p">(</span><span class="nx">Task</span><span class="p">{},</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">lucene</span><span class="p">.</span><span class="nx">ParserConfig</span><span class="p">{</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span><span class="nx">MaxQueryLength</span><span class="p">:</span><span class="w"> </span><span class="mi">2000</span><span class="p">,</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="nx">MaxDepth</span><span class="p">:</span><span class="w">       </span><span class="mi">8</span><span class="p">,</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="nx">MaxTerms</span><span class="p">:</span><span class="w">       </span><span class="mi">30</span><span class="p">,</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="p">})</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">err</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="p">}</span>
 </code></pre></div>
 <p>Exceeding any limit produces a wrapped error from <code>parser.ParseToSQL</code> / <code>parser.ParseToDynamoDBPartiQL</code>. Callers should map these to HTTP 400.</p>
 <h2 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h2>
@@ -943,19 +1011,19 @@
 <li><strong>Provider errors</strong> — <code>unsupported SQL provider: xxx</code> from <code>ParseToSQL</code> if you pass anything other than <code>"postgresql"</code>, <code>"mysql"</code>, <code>"sqlite"</code>. Programmer error, not user input.</li>
 <li><strong>SQLite fuzzy</strong> — <code>fuzzy search (field:term~N) is not supported with SQLite; use wildcards instead</code> — return as 400 with the suggestion.</li>
 </ul>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nx">sql</span><span class="p">,</span><span class="w"> </span><span class="nx">params</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToSQL</span><span class="p">(</span><span class="nx">userInput</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;postgresql&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">invalid</span><span class="w"> </span><span class="o">*</span><span class="nx">lucene</span><span class="p">.</span><span class="nx">InvalidFieldError</span>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">As</span><span class="p">(</span><span class="nx">err</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">invalid</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">badRequest</span><span class="p">(</span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">&quot;unknown field %q; valid fields: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">invalid</span><span class="p">.</span><span class="nx">Field</span><span class="p">,</span><span class="w"> </span><span class="nx">invalid</span><span class="p">.</span><span class="nx">ValidFields</span><span class="p">))</span>
-<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">    </span><span class="p">}</span>
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">badRequest</span><span class="p">(</span><span class="nx">err</span><span class="p">.</span><span class="nx">Error</span><span class="p">())</span>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="p">}</span>
+<div class="highlight"><span class="filename">handler.go</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nx">sql</span><span class="p">,</span><span class="w"> </span><span class="nx">params</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToSQL</span><span class="p">(</span><span class="nx">userInput</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;postgresql&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">invalid</span><span class="w"> </span><span class="o">*</span><span class="nx">lucene</span><span class="p">.</span><span class="nx">InvalidFieldError</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">As</span><span class="p">(</span><span class="nx">err</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="nx">invalid</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nx">badRequest</span><span class="p">(</span><span class="nx">fmt</span><span class="p">.</span><span class="nx">Sprintf</span><span class="p">(</span><span class="s">&quot;unknown field %q; valid fields: %v&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">invalid</span><span class="p">.</span><span class="nx">Field</span><span class="p">,</span><span class="w"> </span><span class="nx">invalid</span><span class="p">.</span><span class="nx">ValidFields</span><span class="p">))</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nx">badRequest</span><span class="p">(</span><span class="nx">err</span><span class="p">.</span><span class="nx">Error</span><span class="p">())</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="p">}</span>
 </code></pre></div>
 <h2 id="dynamodb">DynamoDB<a class="headerlink" href="#dynamodb" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nx">partiql</span><span class="p">,</span><span class="w"> </span><span class="nx">attrs</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToDynamoDBPartiQL</span><span class="p">(</span><span class="s">&quot;status:received AND amount:&gt;100&quot;</span><span class="p">)</span>
+<div class="highlight"><span class="filename">handler.go</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nx">partiql</span><span class="p">,</span><span class="w"> </span><span class="nx">attrs</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToDynamoDBPartiQL</span><span class="p">(</span><span class="s">&quot;status:received AND amount:&gt;100&quot;</span><span class="p">)</span>
 </code></pre></div>
-<p>The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL does not support fuzzy search, case-insensitive matching, or JSON path access the same way. Wildcards (<code>LIKE</code>) and equality are supported. See <code>storage/search/lucene/dynamodb_driver.go</code> for the exact mapping.</p>
+<p>The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL does not support fuzzy search, case-insensitive matching, or JSON path access the same way. Wildcards (rendered as PartiQL <code>begins_with</code>/<code>contains</code>) and equality are supported. See <code>storage/search/lucene/dynamodb_driver.go</code> for the exact mapping.</p>
 <h2 id="full-operator-reference">Full operator reference<a class="headerlink" href="#full-operator-reference" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -971,9 +1039,9 @@
 <tr>
 <td>Equality</td>
 <td><code>status:received</code></td>
-<td><code>"status" = $1</code></td>
-<td><code>"status" = $1</code></td>
-<td><code>"status" = $1</code></td>
+<td><code>"status" = ?</code></td>
+<td><code>"status" = ?</code></td>
+<td><code>"status" = ?</code></td>
 </tr>
 <tr>
 <td>Boolean</td>
@@ -992,36 +1060,36 @@
 <tr>
 <td>Inclusive range</td>
 <td><code>amount:[100 TO 500]</code></td>
-<td><code>BETWEEN $1 AND $2</code></td>
+<td><code>BETWEEN ? AND ?</code></td>
 <td>same</td>
 <td>same</td>
 </tr>
 <tr>
 <td>Exclusive range</td>
 <td><code>amount:{100 TO 500}</code></td>
-<td><code>&gt; $1 AND &lt; $2</code></td>
+<td><code>&gt; ? AND &lt; ?</code></td>
 <td>same</td>
 <td>same</td>
 </tr>
 <tr>
 <td>Comparison</td>
 <td><code>amount:&gt;100</code></td>
-<td><code>"amount" &gt; $1</code></td>
+<td><code>"amount" &gt; ?</code></td>
 <td>same</td>
 <td>same</td>
 </tr>
 <tr>
 <td>Wildcard</td>
 <td><code>name:foo*</code></td>
-<td><code>"name"::text ILIKE $1</code></td>
-<td><code>LOWER("name") LIKE LOWER($1)</code></td>
-<td><code>"name" LIKE $1</code></td>
+<td><code>"name"::text ILIKE ?</code></td>
+<td><code>LOWER("name") LIKE LOWER(?)</code></td>
+<td><code>"name" LIKE ?</code></td>
 </tr>
 <tr>
 <td>Fuzzy</td>
 <td><code>name:foo~2</code></td>
-<td><code>similarity("name"::text, $1) &gt; 0.3</code></td>
-<td><code>SOUNDEX("name") = SOUNDEX($1)</code></td>
+<td><code>similarity("name"::text, ?) &gt; 0.3</code></td>
+<td><code>SOUNDEX("name") = SOUNDEX(?)</code></td>
 <td><strong>error</strong> — use wildcards</td>
 </tr>
 <tr>
@@ -1041,14 +1109,14 @@
 <tr>
 <td>JSON sub-field</td>
 <td><code>metadata.tier:gold</code></td>
-<td><code>metadata-&gt;&gt;'tier' = $1</code></td>
-<td><code>JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = $1</code></td>
-<td><code>JSON_EXTRACT(metadata, '$.tier') = $1</code></td>
+<td><code>metadata-&gt;&gt;'tier' = ?</code></td>
+<td><code>JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?</code></td>
+<td><code>JSON_EXTRACT(metadata, '$.tier') = ?</code></td>
 </tr>
 <tr>
 <td>Grouped field</td>
 <td><code>tenant_id:(a OR null)</code></td>
-<td><code>("tenant_id" = $1) OR ("tenant_id" IS NULL)</code></td>
+<td><code>("tenant_id" = ?) OR ("tenant_id" IS NULL)</code></td>
 <td>same</td>
 <td>same</td>
 </tr>

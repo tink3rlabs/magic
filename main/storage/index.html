@@ -24,7 +24,7 @@
     
     
       
-        <title>Storage Adapters - magic</title>
+        <title>Storage - magic</title>
       
     
     
@@ -116,7 +116,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Storage Adapters
+              Storage
             
           </span>
         </div>
@@ -285,7 +285,27 @@
         
   
   <span class="md-ellipsis">
-    Getting Started
+    Quick start
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorial/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tutorial
   </span>
   
 
@@ -305,7 +325,7 @@
         
   
   <span class="md-ellipsis">
-    Search (Lucene)
+    Lucene
   </span>
   
 
@@ -334,7 +354,7 @@
           
   
   <span class="md-ellipsis">
-    Storage Adapters
+    Storage
   </span>
   
 
@@ -345,7 +365,7 @@
         
   
   <span class="md-ellipsis">
-    Storage Adapters
+    Storage
   </span>
   
 
@@ -776,7 +796,7 @@
 
 
 <h1 id="storage-adapters">Storage Adapters<a class="headerlink" href="#storage-adapters" title="Permanent link">&para;</a></h1>
-<p>Every adapter implements the same <code>storage.StorageAdapter</code> interface, so swapping one for another is a one-line change to the factory call. The interface covers CRUD, pagination, Lucene-backed search, count, and raw query escape hatches — plus schema and migration helpers.</p>
+<p>Every adapter implements the same <code>storage.StorageAdapter</code> interface, so swapping one for another is a one-line change to the factory call. You get CRUD, pagination, Lucene-backed search, count, and raw query escape hatches — plus schema and migration helpers.</p>
 <h2 id="picking-an-adapter">Picking an adapter<a class="headerlink" href="#picking-an-adapter" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -791,7 +811,7 @@
 <tr>
 <td>In-memory</td>
 <td><code>storage.MEMORY</code></td>
-<td>An in-process slice</td>
+<td>An in-process SQLite database (no file on disk)</td>
 <td>Tests, demos, prototypes. <strong>All data is lost on process exit.</strong></td>
 </tr>
 <tr>
@@ -816,7 +836,7 @@
 </table>
 <p>Cassandra was supported historically but is currently disabled in the factory (see <code>storage/storage.go</code>); the source file is preserved as <code>storage/cassandra.go.backup</code>.</p>
 <h2 id="building-an-adapter">Building an adapter<a class="headerlink" href="#building-an-adapter" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="s">&quot;github.com/tink3rlabs/magic/storage&quot;</span>
+<div class="highlight"><span class="filename">main.go</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="s">&quot;github.com/tink3rlabs/magic/storage&quot;</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nx">adapter</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">storage</span><span class="p">.</span><span class="nx">StorageAdapterFactory</span><span class="p">{}.</span><span class="nx">GetInstance</span><span class="p">(</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nx">storage</span><span class="p">.</span><span class="nx">SQL</span><span class="p">,</span>
@@ -835,11 +855,15 @@
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="p">}</span>
 </code></pre></div>
 <p>The returned adapter is always wrapped with a telemetry-instrumented adapter. If you need the concrete <code>*SQLAdapter</code> — for example, to register a custom GORM plugin — call <code>storage.UnwrapAdapter(adapter)</code>. See <a href="https://pkg.go.dev/github.com/tink3rlabs/magic/storage#UnwrapAdapter"><code>UnwrapAdapter</code></a> on pkg.go.dev.</p>
+<div class="admonition tip">
+<p class="admonition-title">Same code, different backend</p>
+<p>The whole point: swap <code>storage.MEMORY</code> for <code>storage.SQL</code> (and pass a config map) and your handler code keeps working. Lucene filters, cursor pagination, typed errors — all unchanged.</p>
+</div>
 <h2 id="configuration-by-adapter">Configuration by adapter<a class="headerlink" href="#configuration-by-adapter" title="Permanent link">&para;</a></h2>
 <h3 id="in-memory">In-memory<a class="headerlink" href="#in-memory" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nx">adapter</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">storage</span><span class="p">.</span><span class="nx">StorageAdapterFactory</span><span class="p">{}.</span><span class="nx">GetInstance</span><span class="p">(</span><span class="nx">storage</span><span class="p">.</span><span class="nx">MEMORY</span><span class="p">,</span><span class="w"> </span><span class="kc">nil</span><span class="p">)</span>
 </code></pre></div>
-<p>No config keys. Use only for tests and prototypes.</p>
+<p>No config keys. Use only for tests and prototypes. Internally it's an in-memory SQLite database — so SQLite quirks apply, e.g. boolean Lucene filters must be written <code>done:1</code>, not <code>done:true</code> (see <a href="../lucene/">Search</a>).</p>
 <h3 id="sql-postgres-mysql-sqlite">SQL (Postgres / MySQL / SQLite)<a class="headerlink" href="#sql-postgres-mysql-sqlite" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1">// Postgres</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nx">config</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">string</span><span class="p">{</span>
@@ -909,7 +933,11 @@
 <a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>
 <a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="nx">adapter</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">storage</span><span class="p">.</span><span class="nx">StorageAdapterFactory</span><span class="p">{}.</span><span class="nx">GetInstance</span><span class="p">(</span><span class="nx">storage</span><span class="p">.</span><span class="nx">COSMOSDB</span><span class="p">,</span><span class="w"> </span><span class="nx">config</span><span class="p">)</span>
 </code></pre></div>
-<p>CosmosDB additionally takes per-call params for the partition key. Pass these in the variadic <code>params ...map[string]any</code> argument on <code>Create</code> / <code>Get</code> / <code>Update</code> / <code>Delete</code> / <code>List</code> / <code>Search</code>:</p>
+<div class="admonition warning">
+<p class="admonition-title">CosmosDB partition key is per-call, not global</p>
+<p>Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter exposes this via the variadic <code>params ...map[string]any</code> argument. If you forget, queries either fail or cross-partition-fan-out (slow and expensive). See the table and example below.</p>
+</div>
+<p>CosmosDB takes per-call params for the partition key. Pass them in the variadic <code>params ...map[string]any</code> argument on <code>Create</code> / <code>Get</code> / <code>Update</code> / <code>Delete</code> / <code>List</code> / <code>Search</code>:</p>
 <table>
 <thead>
 <tr>
@@ -932,7 +960,7 @@
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nx">params</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
+<div class="highlight"><span class="filename">storage.go</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nx">params</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="s">&quot;pk_field&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tenant&quot;</span><span class="p">,</span>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="s">&quot;pk_value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;acme-corp&quot;</span><span class="p">,</span>
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="p">}</span>
@@ -942,7 +970,7 @@
 <h2 id="common-patterns">Common patterns<a class="headerlink" href="#common-patterns" title="Permanent link">&para;</a></h2>
 <h3 id="cursor-pagination">Cursor pagination<a class="headerlink" href="#cursor-pagination" title="Permanent link">&para;</a></h3>
 <p><code>List</code> and <code>Search</code> return a cursor string. Pass <code>""</code> on the first call; pass whatever the previous call returned for each subsequent page. An empty cursor on the response means there are no more pages.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kd">var</span><span class="w"> </span><span class="nx">page</span><span class="w"> </span><span class="p">[]</span><span class="nx">Task</span>
+<div class="highlight"><span class="filename">paginate.go</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kd">var</span><span class="w"> </span><span class="nx">page</span><span class="w"> </span><span class="p">[]</span><span class="nx">Task</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nx">cursor</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="s">&quot;&quot;</span>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">for</span><span class="w"> </span><span class="p">{</span>
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="kt">error</span>
@@ -957,7 +985,7 @@
 <a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="p">}</span>
 </code></pre></div>
 <h3 id="sort-direction">Sort direction<a class="headerlink" href="#sort-direction" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">import</span><span class="w"> </span><span class="s">&quot;github.com/tink3rlabs/magic/storage&quot;</span>
+<div class="highlight"><span class="filename">sort.go</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">import</span><span class="w"> </span><span class="s">&quot;github.com/tink3rlabs/magic/storage&quot;</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nx">_</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">List</span><span class="p">(</span>
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="o">&amp;</span><span class="nx">page</span><span class="p">,</span>
@@ -1001,15 +1029,15 @@
 <p>When you need a raw query that doesn't fit the interface, use:</p>
 <ul>
 <li><code>adapter.Execute(statement)</code> — fire-and-forget DDL/DML.</li>
-<li><code>adapter.Query(dest, statement, limit, cursor, params...)</code> — paginated raw query.</li>
+<li><code>adapter.Query(dest, statement, limit, cursor, params...)</code> — <strong>not implemented on the SQL adapter</strong> (returns a "not implemented yet" error today).</li>
 </ul>
 <p>These bypass the Lucene layer entirely. <strong>You are responsible for parameter binding.</strong> Prefer <code>List</code> / <code>Search</code> whenever possible.</p>
 <h2 id="adapter-specific-limitations">Adapter-specific limitations<a class="headerlink" href="#adapter-specific-limitations" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Memory</strong> — data lost on restart, single process only, no transactions.</li>
+<li><strong>Memory</strong> — an in-memory SQLite database: data lost on restart, single process only, and SQLite's limitations (below) apply.</li>
 <li><strong>SQLite</strong> — no <code>pg_trgm</code>, so fuzzy Lucene search is unsupported (returns an explanatory error). Use wildcards instead.</li>
 <li><strong>MySQL</strong> — fuzzy search uses <code>SOUNDEX</code>, which ignores the distance hint (<code>~2</code>) and works only on ASCII pronunciations.</li>
-<li><strong>DynamoDB</strong> — the Lucene compiler targets PartiQL; fuzzy search and JSON path access are intentionally not implemented. Equality, range, wildcards (<code>LIKE</code>), and boolean composition work.</li>
+<li><strong>DynamoDB</strong> — the Lucene compiler targets PartiQL; fuzzy search and JSON path access are intentionally not implemented. Equality, range, wildcards (rendered as <code>begins_with</code>/<code>contains</code>), and boolean composition work.</li>
 <li><strong>CosmosDB</strong> — see <a href="https://github.com/tink3rlabs/magic/blob/main/storage/cosmosdb.go"><code>storage/cosmosdb.go</code></a> for the supported subset and partition-key handling.</li>
 </ul>
 

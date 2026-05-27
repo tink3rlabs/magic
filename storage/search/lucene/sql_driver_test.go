@@ -487,7 +487,7 @@ func TestSQLDriver_RenderComparison(t *testing.T) {
 			name:      "equals null",
 			provider:  "postgresql",
 			op:        expr.Equals,
-			right:     &expr.Expression{Op: expr.Literal, Left: "null"},
+			right:     &expr.Expression{Op: expr.Null},
 			wantSQL:   []string{`"name"`, "IS NULL"},
 			wantCount: 0,
 			wantErr:   false,
@@ -496,7 +496,7 @@ func TestSQLDriver_RenderComparison(t *testing.T) {
 			name:     "greater than null (error)",
 			provider: "postgresql",
 			op:       expr.Greater,
-			right:    &expr.Expression{Op: expr.Literal, Left: "null"},
+			right:    &expr.Expression{Op: expr.Null},
 			wantErr:  true,
 		},
 	}
@@ -554,8 +554,8 @@ func TestSQLDriver_GroupedFieldOR(t *testing.T) {
 		},
 		Right: &expr.Expression{
 			Op:    expr.Equals,
-			Left:  expr.Column("id"), // default field — wrong field, bug we're fixing
-			Right: false,             // go-lucene represents null as bool(false)
+			Left:  expr.Column("id"),               // default field — wrong field, bug we're fixing
+			Right: &expr.Expression{Op: expr.Null}, // go-lucene parses the bare null keyword to a typed Null node
 		},
 	}
 	outerEq := &expr.Expression{
@@ -1186,29 +1186,9 @@ func TestIsNullValue(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "null string (lowercase)",
-			input: "null",
+			name:  "typed null expression (go-lucene bare null keyword)",
+			input: &expr.Expression{Op: expr.Null},
 			want:  true,
-		},
-		{
-			name:  "NULL string (uppercase)",
-			input: "NULL",
-			want:  true,
-		},
-		{
-			name:  "Null string (mixed case)",
-			input: "Null",
-			want:  true,
-		},
-		{
-			name:  "null in literal expression",
-			input: &expr.Expression{Op: expr.Literal, Left: "null"},
-			want:  true,
-		},
-		{
-			name:  "empty string",
-			input: "",
-			want:  false,
 		},
 		{
 			name:  "nil value",
@@ -1216,9 +1196,19 @@ func TestIsNullValue(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "bool false (go-lucene grouped OR null representation)",
+			name:  "quoted \"null\" parses to a string literal, not null",
+			input: &expr.Expression{Op: expr.Literal, Left: "null"},
+			want:  false,
+		},
+		{
+			name:  "bare null string is not the typed null node",
+			input: "null",
+			want:  false,
+		},
+		{
+			name:  "bool false is a literal, not null",
 			input: false,
-			want:  true,
+			want:  false,
 		},
 		{
 			name:  "bool true (not null)",
@@ -1237,7 +1227,7 @@ func TestIsNullValue(t *testing.T) {
 		},
 		{
 			name:  "empty string",
-			input: "empty",
+			input: "",
 			want:  false,
 		},
 	}

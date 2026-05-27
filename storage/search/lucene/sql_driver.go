@@ -565,37 +565,17 @@ func isJSONSyntax(col string) bool {
 	return false
 }
 
-// isNullValue checks if a value represents null in Lucene query syntax.
-// Handles the string "null" (case-insensitive), Go nil, and Go bool(false).
-// Note: go-lucene parses the bare `null` keyword as bool(false) in grouped
-// expressions like field:(a OR null), bypassing the string literal path.
+// isNullValue reports whether v is the bare `null` keyword, which go-lucene
+// parses into a typed Null expression node (Op == expr.Null). A Go nil also
+// counts as null. The quoted form `field:"null"` parses to a string literal
+// instead and is intentionally NOT treated as null — it's a search for the
+// text "null".
 func isNullValue(v any) bool {
 	if v == nil {
 		return true
 	}
-	// go-lucene parses the bare `null` keyword as bool(false) in grouped OR/AND
-	if b, ok := v.(bool); ok && !b {
-		return true
-	}
-	strVal := extractStringValue(v)
-	if strVal == "" {
-		return false
-	}
-	return strings.ToLower(strVal) == "null"
-}
-
-func extractStringValue(v any) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case *expr.Expression:
-		if val.Op == expr.Literal && val.Left != nil {
-			if strVal, ok := val.Left.(string); ok {
-				return strVal
-			}
-		}
-	}
-	return ""
+	e, ok := v.(*expr.Expression)
+	return ok && e.Op == expr.Null
 }
 
 func extractLiteralValue(v any) string {

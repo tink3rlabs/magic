@@ -1,10 +1,8 @@
-# Getting Started
+# Quick start
 
-By the end of this page you will have built a Go program that uses magic's in-memory storage adapter to create, fetch, list, and search records. The same code works against Postgres, MySQL, SQLite, DynamoDB, or CosmosDB by swapping one constant — see [Storage Adapters](./storage.md).
+You'll have magic's in-memory adapter creating, fetching, listing, and searching records in under a minute. The same code runs against Postgres, MySQL, SQLite, DynamoDB, or CosmosDB by swapping one constant — see [Storage Adapters](storage.md).
 
-## Requirements
-
-- Go 1.25 or newer.
+Requires Go 1.25 or newer.
 
 ## Install
 
@@ -12,11 +10,9 @@ By the end of this page you will have built a Go program that uses magic's in-me
 go get github.com/tink3rlabs/magic@latest
 ```
 
-## A first program
+## Run this
 
-Create a file called `main.go`:
-
-```go
+```go title="main.go"
 package main
 
 import (
@@ -66,12 +62,12 @@ func main() {
     }
     fmt.Println("listed:", len(page), "cursor:", cursor)
 
-    // 5. Search with a Lucene filter (status field, exact match).
+    // 5. Search with a Lucene filter.
     parser, err := lucene.NewParser(Task{})
     if err != nil {
         log.Fatal(err)
     }
-    _ = parser // parser is what your HTTP handler would hold across requests.
+    _ = parser // your HTTP handler would hold this across requests.
 
     var hits []Task
     cursor, err = adapter.Search(&hits, "id", "status:in_progress", 10, "")
@@ -82,13 +78,11 @@ func main() {
 }
 ```
 
-Run it:
-
 ```bash
 go run main.go
 ```
 
-Expected output:
+You'll see:
 
 ```text
 got: {02 Frame walls in_progress}
@@ -98,15 +92,15 @@ searched: [{02 Frame walls in_progress}] next:
 
 ## What just happened
 
-- **Factory** — `StorageAdapterFactory{}.GetInstance` returns an adapter that conforms to `storage.StorageAdapter`. The result is wrapped with telemetry instrumentation; if you need the concrete `*SQLAdapter` for things like registering GORM plugins, use [`storage.UnwrapAdapter`](https://pkg.go.dev/github.com/tink3rlabs/magic/storage#UnwrapAdapter).
-- **`sortKey`** — pass the JSON/column name (`"id"`), not the Go struct field name (`"ID"`). `magic` validates it against `^[a-zA-Z_][a-zA-Z0-9_]*$` to prevent injection.
-- **Cursor pagination** — `List` and `Search` return an opaque cursor string. Pass it back as the `cursor` argument to fetch the next page. An empty cursor (`""`) means there are no more pages.
-- **Sort direction** — defaults to ascending. Pass `map[string]any{storage.SortDirectionKey: "DESC"}` as the final variadic argument to flip it.
-- **Lucene** — `lucene.NewParser` introspects your struct via the `json` tags and figures out which fields are searchable. The adapter's `Search` method uses this when you pass a query string. See [Search (Lucene)](./lucene.md) for the full syntax.
+- **Factory** — `StorageAdapterFactory{}.GetInstance` returns a `storage.StorageAdapter`. The result is wrapped with telemetry instrumentation. If you need the concrete `*SQLAdapter` (for example, to register a GORM plugin), use [`storage.UnwrapAdapter`](https://pkg.go.dev/github.com/tink3rlabs/magic/storage#UnwrapAdapter).
+- **`sortKey`** — pass the JSON/column name (`"id"`), not the Go struct field name (`"ID"`). magic validates it against `^[a-zA-Z_][a-zA-Z0-9_]*$` to block injection.
+- **Cursor pagination** — `List` and `Search` return an opaque cursor. Pass it back to fetch the next page. An empty cursor means you're done.
+- **Sort direction** — defaults to ascending. Flip with `map[string]any{storage.SortDirectionKey: "DESC"}` as the final variadic argument.
+- **Lucene** — `NewParser` introspects your struct via `json` tags and figures out which fields are searchable. `Search` uses this when you pass a query string. Full syntax: [Lucene](lucene.md).
 
-## Next steps
+## Now what
 
-- Swap the in-memory adapter for SQL or DynamoDB → [Storage Adapters](./storage.md).
-- Learn the full Lucene filter syntax → [Search (Lucene)](./lucene.md).
-- Wire up observability → [Observability](./observability.md).
-- See the [API reference on pkg.go.dev](https://pkg.go.dev/github.com/tink3rlabs/magic).
+You just tried magic. Two paths from here:
+
+- **Want a real service?** Continue to the [tutorial](tutorial.md) — handlers, auth, health, observability, swap to SQL.
+- **Want more depth?** [Storage Adapters](storage.md) covers each backend; [Lucene](lucene.md) covers every operator.

@@ -1067,10 +1067,10 @@
 
 <h1 id="build-a-microservice-with-magic">Build a microservice with magic<a class="headerlink" href="#build-a-microservice-with-magic" title="Permanent link">&para;</a></h1>
 <p>You will build <strong>todo-service</strong> — the canonical reference service for magic — and come away understanding it layer by layer. todo-service is a small but complete microservice: a CRUD API for todo items that exercises magic's features end to end. The source lives at <a href="https://github.com/tink3rlabs/todo-service"><code>tink3rlabs/todo-service</code></a>.</p>
-<p>Every snippet below is included live from <a href="https://github.com/tink3rlabs/todo-service"><code>tink3rlabs/todo-service</code></a> at commit <code>1483fdcb85a151625a3028ae296aa5dbd44e0a66</code> — pulled straight from the repo at build time, not copied into this page.</p>
+<p>Every snippet below is included live from <a href="https://github.com/tink3rlabs/todo-service"><code>tink3rlabs/todo-service</code></a> at the release tag <code>v0.9.0</code> — pulled straight from the repo at build time, not copied into this page.</p>
 <div class="admonition note">
-<p class="admonition-title">Pinned to a commit, for now</p>
-<p>The code blocks below are not copied — they're included live from <code>tink3rlabs/todo-service</code> at the pinned commit <code>1483fdcb85a151625a3028ae296aa5dbd44e0a66</code> via mkdocs <code>pymdownx.snippets</code> URL includes. <code>mkdocs build --strict</code> fetches and validates every include, so the tutorial can no longer silently drift from the real repo. todo-service hasn't cut a tagged release yet; once it does, this pin moves from the SHA to that release tag.</p>
+<p class="admonition-title">Pinned to a release tag</p>
+<p>The code blocks below are not copied — they're included live from <code>tink3rlabs/todo-service</code> at the pinned tag <code>v0.9.0</code> via mkdocs <code>pymdownx.snippets</code> URL includes. <code>mkdocs build --strict</code> fetches and validates every include, so the tutorial can no longer silently drift from the real repo. When todo-service cuts a new release, bump this pin to the new tag (find/replace <code>v0.9.0</code> in this file).</p>
 </div>
 <p>todo-service is a properly layered service, and that layering is the spine of this tutorial. We walk it in the order the request flows — and the order you'd build it:</p>
 <p><strong>migrations → types → features → routes → server</strong></p>

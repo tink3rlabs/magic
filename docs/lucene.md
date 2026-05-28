@@ -48,7 +48,7 @@ status:received OR status:pending
 status:received AND NOT status:cancelled
 ```
 
-Operators are case-sensitive (`AND` / `OR` / `NOT`). Parentheses group: `(a OR b) AND c`. Within a single field, group with `field:(a OR b)` — magic re-renders the inner leaves with the outer field name correctly, so `tenant_id:(abc OR null)` becomes `("tenant_id" = ?) OR ("tenant_id" IS NULL)`, not the broken form some Lucene libraries produce.
+Operators are case-sensitive (`AND` / `OR` / `NOT`). Parentheses group: `(a OR b) AND c`. Within a single field, group with `field:(a OR b)` — magic re-renders the inner leaves with the outer field name correctly, so `tenant_id:(abc OR null)` becomes `("tenant_id" = ? OR "tenant_id" IS NULL)`, not the broken form some Lucene libraries produce.
 
 ### Range
 
@@ -98,10 +98,10 @@ name:foo~2
 
 ```text
 deleted_at:null      # IS NULL
-deleted_at:*         # IS NOT NULL
+deleted_at:*         # any value (matches non-null)
 ```
 
-`field:null` compiles to `"field" IS NULL`. The empty-wildcard `field:*` compiles to `"field" IS NOT NULL`.
+`field:null` compiles to `"field" IS NULL`. The empty-wildcard `field:*` is a wildcard match against everything — it compiles to the same form as any other wildcard (`"field"::text ILIKE ?` on Postgres, `LIKE` elsewhere) with `%` as the bound parameter. Since `NULL` never matches `LIKE`/`ILIKE`, this effectively selects rows where the field has a value.
 
 Comparison operators (`>`, `<`, `>=`, `<=`) with `null` return a parse error — they are meaningless.
 
@@ -231,7 +231,7 @@ The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL do
 | Wildcard              | `name:foo*`                      | `"name"::text ILIKE ?`                     | `LOWER("name") LIKE LOWER(?)`                         | `"name" LIKE ?`                       |
 | Fuzzy                 | `name:foo~2`                     | `similarity("name"::text, ?) > 0.3`        | `SOUNDEX("name") = SOUNDEX(?)`                        | **error** — use wildcards             |
 | Null                  | `field:null`                     | `"field" IS NULL`                          | same                                                  | same                                  |
-| Not null              | `field:*`                        | `"field" IS NOT NULL`                      | same                                                  | same                                  |
+| Has value             | `field:*`                        | `"field"::text ILIKE ?` (param `%`)        | `LOWER("field") LIKE LOWER(?)`                        | `"field" LIKE ?`                      |
 | JSON sub-field        | `metadata.tier:gold`             | `metadata->>'tier' = ?`                    | `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?`  | `JSON_EXTRACT(metadata, '$.tier') = ?` |
-| Grouped field         | `tenant_id:(a OR null)`          | `("tenant_id" = ?) OR ("tenant_id" IS NULL)` | same                                               | same                                  |
+| Grouped field         | `tenant_id:(a OR null)`          | `("tenant_id" = ? OR "tenant_id" IS NULL)` | same                                                  | same                                  |
 | Implicit (unfielded)  | `foo`                            | OR across all `ImplicitSearch=true` fields | same                                                  | same                                  |

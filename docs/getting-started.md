@@ -7,6 +7,8 @@ Requires Go 1.25 or newer.
 ## Install
 
 ```bash
+mkdir magic-quickstart && cd magic-quickstart
+go mod init magic-quickstart
 go get github.com/tink3rlabs/magic@latest
 ```
 
@@ -33,6 +35,15 @@ func main() {
     // 1. Build an adapter. In-memory needs no config.
     adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, nil)
     if err != nil {
+        log.Fatal(err)
+    }
+
+    // 1a. The in-memory adapter is a fresh SQLite database with no tables yet.
+    // A real service creates tables via magic's migrations (see the Tutorial);
+    // for this single-file demo we create the one table directly.
+    if err := adapter.Execute(
+        `CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, title TEXT, status TEXT)`,
+    ); err != nil {
         log.Fatal(err)
     }
 
@@ -79,6 +90,7 @@ func main() {
 ```
 
 ```bash
+go mod tidy
 go run main.go
 ```
 

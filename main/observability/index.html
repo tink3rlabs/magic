@@ -629,7 +629,7 @@
 </tr>
 </tbody>
 </table>
-<p>For OTLP push mode, set <code>cfg.MetricsMode = observability.MetricsModeOTLP</code> and <code>cfg.EnableTracing = true</code>.</p>
+<p>For OTLP push mode, set <code>cfg.MetricsMode = observability.MetricsModeOTLP</code> and <code>cfg.EnableTracing = true</code>. OTLP mode also needs a metrics endpoint — set <code>cfg.MetricsOTLPEndpoint</code> or one of the <code>OTEL_EXPORTER_OTLP_[METRICS_]ENDPOINT</code> env vars above, or <code>Init</code> fails fast with <code>MetricsMode=otlp but no OTLP metrics endpoint configured</code>.</p>
 <div class="admonition warning">
 <p class="admonition-title">Prometheus vs OTLP — pick one</p>
 <p>In Prometheus mode, <code>/metrics</code> returns the scrape format. In OTLP mode, <code>/metrics</code> returns 404 by design — metrics are pushed, not scraped.</p>
@@ -687,7 +687,7 @@
 <p><strong><code>/metrics</code> returns 404.</strong> You're in OTLP mode. Either switch <code>cfg.MetricsMode</code> to <code>MetricsModePrometheus</code>, or scrape your collector's exposition endpoint instead of the app.</p>
 <p><strong>Custom metric observations silently disappear.</strong> You added a label key that wasn't declared in <code>MetricDefinition.Labels</code>. Either add the key to the declaration or relax with <code>cfg.AllowUndeclaredLabels = true</code>. Check the warning logs — magic logs once per unknown key.</p>
 <p><strong>Storage spans missing.</strong> Adapters only emit spans when called via <code>ContextualStorageAdapter</code> methods (<code>CreateContext</code>, <code>GetContext</code>, etc.). Pre-context call sites (<code>s.Create(item)</code>) work but won't link to the request trace.</p>
-<p><strong>Init returns "metrics mode invalid".</strong> <code>cfg.MetricsMode</code> was zero-valued. It's required — set it to <code>MetricsModePrometheus</code> or <code>MetricsModeOTLP</code>.</p>
+<p><strong>Init returns <code>invalid MetricsMode ""</code>.</strong> <code>cfg.MetricsMode</code> was zero-valued. It's required — set it to <code>MetricsModePrometheus</code> or <code>MetricsModeOTLP</code>.</p>
 <hr />
 <p><strong>Advanced:</strong> the design rationale, package layout, and full instrumentation surface live in <a href="../observability-internals/">observability-internals.md</a>.</p>
 

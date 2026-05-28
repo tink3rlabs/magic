@@ -835,7 +835,7 @@
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>status:received OR status:pending
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>status:received AND NOT status:cancelled
 </code></pre></div>
-<p>Operators are case-sensitive (<code>AND</code> / <code>OR</code> / <code>NOT</code>). Parentheses group: <code>(a OR b) AND c</code>. Within a single field, group with <code>field:(a OR b)</code> — magic re-renders the inner leaves with the outer field name correctly, so <code>tenant_id:(abc OR null)</code> becomes <code>("tenant_id" = ?) OR ("tenant_id" IS NULL)</code>, not the broken form some Lucene libraries produce.</p>
+<p>Operators are case-sensitive (<code>AND</code> / <code>OR</code> / <code>NOT</code>). Parentheses group: <code>(a OR b) AND c</code>. Within a single field, group with <code>field:(a OR b)</code> — magic re-renders the inner leaves with the outer field name correctly, so <code>tenant_id:(abc OR null)</code> becomes <code>("tenant_id" = ? OR "tenant_id" IS NULL)</code>, not the broken form some Lucene libraries produce.</p>
 <h3 id="range">Range<a class="headerlink" href="#range" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>amount:[100 TO 500]      # inclusive
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>amount:{100 TO 500}      # exclusive
@@ -902,9 +902,9 @@
 </table>
 <h3 id="null-and-not-null">Null and not-null<a class="headerlink" href="#null-and-not-null" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>deleted_at:null      # IS NULL
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>deleted_at:*         # IS NOT NULL
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>deleted_at:*         # any value (matches non-null)
 </code></pre></div>
-<p><code>field:null</code> compiles to <code>"field" IS NULL</code>. The empty-wildcard <code>field:*</code> compiles to <code>"field" IS NOT NULL</code>.</p>
+<p><code>field:null</code> compiles to <code>"field" IS NULL</code>. The empty-wildcard <code>field:*</code> is a wildcard match against everything — it compiles to the same form as any other wildcard (<code>"field"::text ILIKE ?</code> on Postgres, <code>LIKE</code> elsewhere) with <code>%</code> as the bound parameter. Since <code>NULL</code> never matches <code>LIKE</code>/<code>ILIKE</code>, this effectively selects rows where the field has a value.</p>
 <p>Comparison operators (<code>&gt;</code>, <code>&lt;</code>, <code>&gt;=</code>, <code>&lt;=</code>) with <code>null</code> return a parse error — they are meaningless.</p>
 <h3 id="comparison">Comparison<a class="headerlink" href="#comparison" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>amount:&gt;100
@@ -1100,11 +1100,11 @@
 <td>same</td>
 </tr>
 <tr>
-<td>Not null</td>
+<td>Has value</td>
 <td><code>field:*</code></td>
-<td><code>"field" IS NOT NULL</code></td>
-<td>same</td>
-<td>same</td>
+<td><code>"field"::text ILIKE ?</code> (param <code>%</code>)</td>
+<td><code>LOWER("field") LIKE LOWER(?)</code></td>
+<td><code>"field" LIKE ?</code></td>
 </tr>
 <tr>
 <td>JSON sub-field</td>
@@ -1116,7 +1116,7 @@
 <tr>
 <td>Grouped field</td>
 <td><code>tenant_id:(a OR null)</code></td>
-<td><code>("tenant_id" = ?) OR ("tenant_id" IS NULL)</code></td>
+<td><code>("tenant_id" = ? OR "tenant_id" IS NULL)</code></td>
 <td>same</td>
 <td>same</td>
 </tr>

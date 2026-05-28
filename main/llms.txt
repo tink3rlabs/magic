@@ -1,0 +1,20 @@
+# magic
+
+> Common building blocks for Go microservices, so your service code can focus on business logic.
+
+## Overview
+
+- [Home](https://tink3rlabs.github.io/magic/main/index.md)
+
+## Guides
+
+- [Quick start](https://tink3rlabs.github.io/magic/main/getting-started/index.md)
+- [Tutorial](https://tink3rlabs.github.io/magic/main/tutorial/index.md)
+- [Lucene](https://tink3rlabs.github.io/magic/main/lucene/index.md)
+- [Storage](https://tink3rlabs.github.io/magic/main/storage/index.md)
+- [Observability](https://tink3rlabs.github.io/magic/main/observability/index.md)
+
+## Contributing
+
+- [Contributing](https://tink3rlabs.github.io/magic/main/contributing/index.md)
+

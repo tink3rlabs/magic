@@ -40,7 +40,7 @@ jobs:
     needs: conventional-commits
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: actions/setup-go@v6
@@ -74,7 +74,7 @@ jobs:
     #       --health-timeout 5s
     #       --health-retries 7
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: actions/setup-go@v6

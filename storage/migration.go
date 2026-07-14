@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -73,6 +72,49 @@ func (m *DatabaseMigration) rollbackMigration(migration MigrationFile) error {
 	return err
 }
 
+// migrationID extracts the numeric id from a migration filename of the form
+// "<id>__<description>.yaml". It is the single source of truth for both
+// ordering migrations (sortMigrationKeys) and gating them against the applied
+// high-water mark (runMigrations), so the two can never disagree.
+//
+// The "__" separator is required: descriptions are snake_case, so a single "_"
+// is a word boundary, not an id boundary. A missing separator is a malformed
+// filename and is surfaced as an error rather than silently misparsed.
+func migrationID(key string) (int, error) {
+	prefix, _, ok := strings.Cut(key, "__")
+	if !ok {
+		return 0, fmt.Errorf("migration %q is missing the %q id separator", key, "__")
+	}
+	return strconv.Atoi(prefix)
+}
+
+// sortMigrationKeys orders migration filenames by their parsed numeric id
+// rather than lexically. Filenames are not fixed-width, so a 3-digit id like
+// "100__" sorts before "10__".."99__" under a plain string sort, while the
+// apply gate compares ids numerically. That mismatch makes the runner apply
+// 100/101 first on a fresh database, advance the numeric high-water mark past
+// 99, then silently skip every migration 10..99 (their ids fall below the
+// mark). Sorting by the same id the gate uses keeps run order and gate
+// consistent regardless of digit count. Ties — and keys whose prefix does not
+// parse — fall back to a lexical compare so ordering stays deterministic; an
+// unparseable id is surfaced by runMigrations when it reaches that key.
+func sortMigrationKeys(keys []string) {
+	slices.SortStableFunc(keys, func(a, b string) int {
+		idA, errA := migrationID(a)
+		idB, errB := migrationID(b)
+		if errA != nil || errB != nil {
+			return strings.Compare(a, b)
+		}
+		if idA != idB {
+			if idA < idB {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+}
+
 func (m *DatabaseMigration) runMigrations(migrations map[string]MigrationFile) {
 	slog.Info("Getting last migration applied")
 	rollback := false
@@ -86,10 +128,10 @@ func (m *DatabaseMigration) runMigrations(migrations map[string]MigrationFile) {
 	for k := range migrations {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	sortMigrationKeys(keys)
 
 	for _, k := range keys {
-		migrationId, err := strconv.Atoi(strings.Split(k, "__")[0])
+		migrationId, err := migrationID(k)
 		if err != nil {
 			logger.Fatal("failed to determine migration id", slog.Any("error", err))
 		}

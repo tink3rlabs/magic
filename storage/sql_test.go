@@ -302,3 +302,68 @@ func TestMemoryAdapterDelegatesNonContextCountAndQuery(t *testing.T) {
 		t.Fatalf("expected memory.Query to propagate not-implemented error")
 	}
 }
+
+// nilFilterItem has a nullable column so we can build filters whose
+// only entry has a nil value, exercising buildQuery's IS NULL branch.
+type nilFilterItem struct {
+	Id        string  `json:"id" gorm:"primaryKey;column:id"`
+	DeletedAt *string `json:"deleted_at" gorm:"column:deleted_at"`
+}
+
+func (nilFilterItem) TableName() string { return "nil_filter_items" }
+
+// TestSQLAdapterNilOnlyFilterDoesNotForwardEmptyBindings pins the fix
+// for the pgx5 simple-protocol crash where buildQuery returned an empty
+// map[string]any{} as bindings for nil-only filters and gorm forwarded
+// it to pgx as a parameter ("unable to encode map[string]interface{}{}
+// into text format for unknown type (OID 0): cannot find encode plan").
+//
+// applyFilter must call q.Where(query) with NO variadic args when
+// bindings are empty. Sqlite tolerates the broken shape, so this test
+// exercises behavioral correctness (nil-only filters return the right
+// rows) — if a future cleanup reintroduces empty-map forwarding, this
+// keeps passing under sqlite but the matching pgx5 path will regress.
+// The unit invariant we lock in here is "Count/Get/List with a nil-only
+// filter return the expected rows without error".
+func TestSQLAdapterNilOnlyFilterDoesNotForwardEmptyBindings(t *testing.T) {
+	m := storage.GetMemoryAdapterInstance()
+	if err := m.Execute(`CREATE TABLE IF NOT EXISTS nil_filter_items (id TEXT PRIMARY KEY, deleted_at TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if err := m.Execute(`DELETE FROM nil_filter_items`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	sql := m.DB
+
+	if err := sql.Create(&nilFilterItem{Id: "live"}); err != nil {
+		t.Fatalf("Create live: %v", err)
+	}
+	deletedTs := "2026-01-01"
+	if err := sql.Create(&nilFilterItem{Id: "gone", DeletedAt: &deletedTs}); err != nil {
+		t.Fatalf("Create gone: %v", err)
+	}
+
+	total, err := sql.Count(&[]nilFilterItem{}, map[string]any{"deleted_at": nil})
+	if err != nil {
+		t.Fatalf("Count with nil-only filter: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("Count = %d; want 1 (only the non-deleted row)", total)
+	}
+
+	var got nilFilterItem
+	if err := sql.Get(&got, map[string]any{"deleted_at": nil}); err != nil {
+		t.Fatalf("Get with nil-only filter: %v", err)
+	}
+	if got.Id != "live" {
+		t.Fatalf("Get id = %q; want %q", got.Id, "live")
+	}
+
+	var listed []nilFilterItem
+	if _, err := sql.List(&listed, "id", map[string]any{"deleted_at": nil}, 10, ""); err != nil {
+		t.Fatalf("List with nil-only filter: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Id != "live" {
+		t.Fatalf("List = %+v; want one row id=live", listed)
+	}
+}

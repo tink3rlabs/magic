@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 5
     steps:
      - name: Conventional Commits
-       uses: webiny/action-conventional-commits@v1.4.2
+       uses: webiny/action-conventional-commits@7f91b1595ca1951cdb671ddc9f07a49081ec5b69 # v1.4.2
        with:
          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
          allowed-commit-types: "feat,fix,cicd,chore,patch,release,test,docs,refactor,ci,dev,test"
@@ -40,17 +40,17 @@ jobs:
     needs: conventional-commits
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: '1.25.3'
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          version: v2.12.2
           args: --timeout=5m
           skip-cache: true
           skip-save-cache: true
@@ -74,10 +74,10 @@ jobs:
     #       --health-timeout 5s
     #       --health-retries 7
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: '1.25.3'
           cache: true

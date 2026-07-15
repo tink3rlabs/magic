@@ -12,7 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.60.1
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.17
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/grindlemire/go-lucene v0.2.0
+	github.com/grindlemire/go-lucene v0.2.1
 	github.com/prometheus/client_golang v1.23.2
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.68.0
 	go.opentelemetry.io/otel v1.43.0

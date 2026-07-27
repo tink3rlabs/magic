@@ -178,9 +178,16 @@ func (p *Parser) parseValueFromPos(startPos int) string {
 		}
 		if endIdx < len(p.input) {
 			val := p.input[startIdx+1 : endIdx]
-			// Advance scanner past the quoted string
+			// Advance scanner past the quoted string. When the closing quote is
+			// the final character, the scanner is already at EOF and next() no
+			// longer advances its offset, so guard on forward progress to avoid
+			// looping forever (issue #221).
 			for p.s.Pos().Offset-1 < endIdx+1 {
+				prev := p.s.Pos().Offset
 				p.next()
+				if p.s.Pos().Offset == prev {
+					break // scanner reached EOF, no further progress possible
+				}
 			}
 			return val
 		}

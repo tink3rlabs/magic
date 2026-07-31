@@ -22,9 +22,9 @@ type nodeRenderer func(*expr.Expression) (string, []any, error)
 // ok reports whether e.Op was a logical operator. When ok is false the caller
 // handles the node itself.
 //
-//	   And/Or (binary)          Must/MustNot (unary)
-//	      /      \                     |
-//	 renderNode  renderNode        renderNode
+//	  And/Or (binary)          Must/MustNot (unary)
+//	     /      \                     |
+//	renderNode  renderNode        renderNode
 //
 // fallback is used when a child is not an *expr.Expression and the driver has
 // no better option; it may be nil, in which case such a node is an error.

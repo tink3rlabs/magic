@@ -1,6 +1,7 @@
 package lucene
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1397,5 +1398,44 @@ func BenchmarkParser(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _, _ = parser.ParseToSQL(query, "postgresql")
+	}
+}
+
+type jsonbTags []string // name contains no JSON marker
+
+type JSONPayload []byte // name contains "JSON" -> nested access, not array
+
+func TestIsArrayField(t *testing.T) {
+	strSlice := []string{}
+	intSlice := []int{}
+	byteSlice := []byte{}
+	strArray := [3]string{}
+	ptrSlice := &strSlice
+
+	tests := []struct {
+		name string
+		typ  reflect.Type
+		want bool
+	}{
+		{"nil type", nil, false},
+		{"[]string", reflect.TypeOf(strSlice), true},
+		{"[]int", reflect.TypeOf(intSlice), true},
+		{"[3]string array kind", reflect.TypeOf(strArray), true},
+		{"pointer to []string", reflect.TypeOf(ptrSlice), true},
+		{"named []string", reflect.TypeOf(jsonbTags{}), true},
+		{"[]byte is not an array field", reflect.TypeOf(byteSlice), false},
+		{"JSON-named slice keeps nested access", reflect.TypeOf(JSONPayload{}), false},
+		{"map is not an array field", reflect.TypeOf(map[string]any{}), false},
+		{"struct is not an array field", reflect.TypeOf(struct{}{}), false},
+		{"string scalar", reflect.TypeOf(""), false},
+		{"int scalar", reflect.TypeOf(0), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isArrayField(tt.typ); got != tt.want {
+				t.Errorf("isArrayField(%v) = %v, want %v", tt.typ, got, tt.want)
+			}
+		})
 	}
 }

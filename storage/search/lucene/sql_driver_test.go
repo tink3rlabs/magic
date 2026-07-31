@@ -1692,8 +1692,9 @@ func TestQuoteColumnNameFor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := quoteColumnNameFor(tt.provider, tt.col); got != tt.want {
-				t.Errorf("quoteColumnNameFor(%q, %q) = %q, want %q", tt.provider, tt.col, got, tt.want)
+			d := &SQLDriver{provider: tt.provider}
+			if got := d.quoteColumn(tt.col); got != tt.want {
+				t.Errorf("quoteColumn(%q) on %s = %q, want %q", tt.col, tt.provider, got, tt.want)
 			}
 		})
 	}

@@ -1938,3 +1938,107 @@ func TestSQLDriver_ArrayNullIsUnchanged(t *testing.T) {
 		t.Errorf("tags:null must render IS NULL, got %q", sql)
 	}
 }
+
+func TestSQLDriver_ArrayWildcard(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		pattern  string
+		wantSQL  []string
+		notSQL   []string
+	}{
+		{
+			name:     "postgres per-element wildcard",
+			provider: "postgresql",
+			pattern:  "*go*",
+			wantSQL:  []string{"EXISTS", "unnest(\"tags\")", "ILIKE ?"},
+			notSQL:   []string{"::text ILIKE"},
+		},
+		{
+			name:     "mysql wildcard via JSON_SEARCH",
+			provider: "mysql",
+			pattern:  "*go*",
+			wantSQL:  []string{"JSON_SEARCH", "`tags`", "'one'", "IS NOT NULL"},
+			notSQL:   []string{},
+		},
+		{
+			name:     "sqlite per-element wildcard",
+			provider: "sqlite",
+			pattern:  "*go*",
+			wantSQL:  []string{"EXISTS", "json_each", "value LIKE ?"},
+			notSQL:   []string{},
+		},
+		{
+			name:     "bare star is has-value on postgres",
+			provider: "postgresql",
+			pattern:  "*",
+			wantSQL:  []string{`"tags" IS NOT NULL`},
+			notSQL:   []string{"unnest", "ILIKE"},
+		},
+		{
+			name:     "bare star is has-value on mysql",
+			provider: "mysql",
+			pattern:  "*",
+			wantSQL:  []string{"`tags` IS NOT NULL"},
+			notSQL:   []string{"JSON_SEARCH"},
+		},
+		{
+			name:     "bare star is has-value on sqlite",
+			provider: "sqlite",
+			pattern:  "*",
+			wantSQL:  []string{`"tags" IS NOT NULL`},
+			notSQL:   []string{"json_each"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := NewSQLDriver(arrayTestFields(), tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver: %v", err)
+			}
+
+			e := &expr.Expression{
+				Op:    expr.Wild,
+				Left:  expr.Column("tags"),
+				Right: &expr.Expression{Op: expr.Literal, Left: tt.pattern},
+			}
+
+			sql, _, err := d.RenderParam(e)
+			if err != nil {
+				t.Fatalf("RenderParam: %v", err)
+			}
+			for _, want := range tt.wantSQL {
+				if !strings.Contains(sql, want) {
+					t.Errorf("sql %q missing %q", sql, want)
+				}
+			}
+			for _, not := range tt.notSQL {
+				if strings.Contains(sql, not) {
+					t.Errorf("sql %q must not contain %q", sql, not)
+				}
+			}
+		})
+	}
+}
+
+func TestSQLDriver_ScalarWildcardUnchanged(t *testing.T) {
+	d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Wild,
+		Left:  expr.Column("title"),
+		Right: &expr.Expression{Op: expr.Literal, Left: "*foo*"},
+	}
+
+	sql, _, err := d.RenderParam(e)
+	if err != nil {
+		t.Fatalf("RenderParam: %v", err)
+	}
+	if !strings.Contains(sql, "::text ILIKE") {
+		t.Errorf("scalar wildcard must keep ::text ILIKE, got %q", sql)
+	}
+}

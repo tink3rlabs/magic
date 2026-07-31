@@ -118,10 +118,12 @@ func (s *SQLDriver) renderParamInternal(e *expr.Expression) (string, []any, erro
 
 // renderLikeOrWild converts LIKE and Wild operators to provider-specific case-insensitive matching.
 func (s *SQLDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) {
-	leftStr, leftParams, err := s.serializeColumn(e.Left)
+	ref, err := s.resolveField(e.Left)
 	if err != nil {
 		return "", nil, err
 	}
+	leftStr := ref.sql
+	leftParams := ref.params
 
 	rightStr, rightParams, err := s.serializeValue(e.Right)
 	if err != nil {
@@ -129,6 +131,10 @@ func (s *SQLDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) 
 	}
 
 	params := append(leftParams, rightParams...)
+
+	if ref.isArray() {
+		return s.renderArrayWildcard(ref, e, params)
+	}
 
 	switch s.provider {
 	case "postgresql":
@@ -149,6 +155,43 @@ func (s *SQLDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) 
 	default:
 		return "", nil, fmt.Errorf("unsupported SQL provider: %s", s.provider)
 	}
+}
+
+// renderArrayWildcard renders a wildcard match against a multi-valued column.
+//
+// Two distinct forms:
+//
+//	field:*     "has a value"  -> IS NOT NULL (whole column)
+//	field:*go*  pattern match   -> per element
+//
+// Per-element matching is required for correctness: casting the whole array to
+// text and substring-matching lets a pattern span the separator between two
+// elements, so {alpha,beta} wrongly matches '%ha,be%'.
+//
+// The bare-star form stays whole-column so it keeps matching rows holding an
+// empty array, which the per-element form would silently drop. This is a
+// deliberate divergence from Elasticsearch's exists query.
+func (s *SQLDriver) renderArrayWildcard(ref fieldRef, e *expr.Expression, params []any) (string, []any, error) {
+	if isBareWildcard(e.Right) {
+		return fmt.Sprintf("%s IS NOT NULL", ref.sql), nil, nil
+	}
+
+	switch s.provider {
+	case "postgresql":
+		return fmt.Sprintf("EXISTS (SELECT 1 FROM unnest(%s) AS elem WHERE elem ILIKE ?)", ref.sql), params, nil
+	case "mysql":
+		return fmt.Sprintf("JSON_SEARCH(%s, 'one', ?) IS NOT NULL", ref.sql), params, nil
+	case "sqlite":
+		return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value LIKE ?)", ref.sql), params, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported SQL provider: %s", s.provider)
+	}
+}
+
+// isBareWildcard reports whether a value is exactly "*" — the documented
+// "field has a value" form, as opposed to a pattern like "*go*".
+func isBareWildcard(v any) bool {
+	return extractLiteralValue(v) == "*"
 }
 
 // renderFuzzy handles fuzzy search with provider-specific implementations.

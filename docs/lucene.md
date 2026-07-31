@@ -24,7 +24,8 @@ The same parser drives the storage adapter's `Search` method, so most code never
 |------------------------------------|-------------------|----------------------------------------------------------------|
 | `string`                           | yes               | Matched by bare terms like `foo` (across all string fields).   |
 | `int`, `float64`, `time.Time`, `uuid.UUID` | no        | Must be referenced explicitly: `created_at:[X TO Y]`.          |
-| Map / slice / struct (JSONB)       | no                | Reachable via `field.subfield` syntax (see [JSON paths](#json-sub-fields)). |
+| Map / struct (JSONB)               | no                | Reachable via `field.subfield` syntax (see [JSON paths](#json-sub-fields)). |
+| Slice / array (`text[]`, JSON array) | no              | Multi-valued; `field:value` means containment (see [Array fields](#array-multi-valued-fields)). |
 
 Field names in the query are the JSON tag, not the Go field name.
 
@@ -117,7 +118,7 @@ Compile to `"amount" > ?` etc. Combining with `null` is an error (see above).
 
 ### JSON sub-fields
 
-If a field's Go type is a struct, map, or slice (a JSONB column in Postgres), use dot notation to reach inside it:
+If a field's Go type is a struct or map (a JSONB column in Postgres), use dot notation to reach inside it:
 
 ```text
 metadata.tier:gold
@@ -131,6 +132,79 @@ labels.region:eu-west-1
 | SQLite     | `JSON_EXTRACT(metadata, '$.tier') = ?`                |
 
 Subfield names must match `^[a-zA-Z0-9_.]+$`. Single quotes inside Postgres path keys are escaped. Whitespace and other special characters are rejected up-front to block injection.
+
+### Array (multi-valued) fields
+
+If a field's Go type is a slice or array (a Postgres `text[]`, or a JSON array
+in MySQL/SQLite), `field:value` means **containment** — the row matches if any
+element equals the value. This follows Lucene/Elasticsearch semantics, where a
+multi-valued field is queried exactly like a single-valued one. `[]byte` is
+excluded — it's treated as a scalar blob (bytea), not a collection.
+
+```text
+tags:golang        # rows whose tags contain "golang"
+tags:*go*          # rows where any single element matches *go*
+tags:(a OR b)      # contains a, or contains b
+tags:*             # tags column is not null
+NOT tags:golang    # does not contain golang (including rows with no tags)
+```
+
+| Operator | Postgres | MySQL | SQLite |
+|---|---|---|---|
+| Containment | `COALESCE("tags" @> ARRAY[?], false)` | `` COALESCE(JSON_CONTAINS(`tags`, JSON_QUOTE(?)), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
+| Wildcard | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(`tags`, 'one', ?) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
+| Has value | `"tags" IS NOT NULL` | `` `tags` IS NOT NULL `` | `"tags" IS NOT NULL` |
+
+The containment and wildcard rows above are the string-element form; see
+"Non-string elements" below for how the Postgres containment cast changes for
+numeric and boolean element types.
+
+`>`, `<`, `>=`, `<=` and range queries (`field:[a TO b]`) return a parse error
+on array fields — they have no meaning against a collection. Fuzzy
+(`tags:foo~2`) is **not** rejected: it still renders
+`similarity("tags"::text, ?) > 0.3` on Postgres (comparing the whole array's
+text form), which is unlikely to be useful but does not error.
+
+**Index your array columns.** Containment uses `@>` rather than the more
+familiar `= ANY(...)` specifically so Postgres can use a GIN index — measured
+on a 200k-row table, `@>` produced a bitmap index scan while `= ANY` fell back
+to a sequential scan. GORM does not create this index for you:
+
+```sql
+CREATE INDEX idx_articles_tags ON articles USING GIN (tags);
+```
+
+Wildcard matching unnests each row and cannot use the index — that is
+inherent to substring matching, not a limitation of this layer.
+
+**`field:*` means "column is not null"**, so it matches a row holding an empty
+array. This is a deliberate, documented divergence from Elasticsearch's
+`exists` query, which treats an empty array as having no value.
+
+**Known limitations.**
+
+- MySQL array wildcards are case-sensitive. `JSON_SEARCH` compares JSON
+  string scalars under the `utf8mb4_bin` collation regardless of the column's
+  or session's collation, so `tags:*Go*` will not match `["golang"]` on
+  MySQL — unlike the Postgres `ILIKE` and SQLite `LIKE` branches above (both
+  case-insensitive), and unlike MySQL's own scalar wildcard branch, which
+  wraps in `LOWER(...)` to force case-folding. This is an accepted limitation;
+  a fix could not be verified against a live MySQL instance.
+- A slice type whose name contains `JSON`/`JSONB` keeps the nested-access
+  path from [JSON sub-fields](#json-sub-fields) instead — it is not treated
+  as an array.
+- `Tags []string` tagged `gorm:"serializer:json"` is stored as JSON but is
+  still detected as a native array by its Go type, so Postgres receives
+  `@> ARRAY[?]` against a JSON column and errors. If you want a JSON-backed
+  array, use an explicitly JSON-named type instead.
+- Non-string element types are cast on Postgres so the bound parameter's type
+  matches the column's array type exactly (`@>` requires an exact type
+  match): `int`/`int64`/`uint`/`uint64`/`uint32` → `::bigint[]`,
+  `int8`/`int16`/`uint8` → `::smallint[]`, `int32`/`uint16` → `::int[]`,
+  `float64` → `::double precision[]`, `float32` → `::real[]`, `bool` →
+  `::boolean[]`. The Go element type can't always determine the column's
+  actual element type (e.g. a narrower or wider Postgres column than the cast
+  assumes), so a mismatch will error rather than silently coerce.
 
 ### Implicit (unfielded) terms
 
@@ -228,10 +302,13 @@ The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL do
 | Inclusive range       | `amount:[100 TO 500]`            | `BETWEEN ? AND ?`                          | same                                                  | same                                  |
 | Exclusive range       | `amount:{100 TO 500}`            | `> ? AND < ?`                              | same                                                  | same                                  |
 | Comparison            | `amount:>100`                    | `"amount" > ?`                             | same                                                  | same                                  |
-| Wildcard              | `name:foo*`                      | `"name"::text ILIKE ?`                     | `LOWER("name") LIKE LOWER(?)`                         | `"name" LIKE ?`                       |
+| Wildcard (scalar)     | `name:foo*`                      | `"name"::text ILIKE ?`                     | `LOWER("name") LIKE LOWER(?)`                         | `"name" LIKE ?`                       |
 | Fuzzy                 | `name:foo~2`                     | `similarity("name"::text, ?) > 0.3`        | `SOUNDEX("name") = SOUNDEX(?)`                        | **error** — use wildcards             |
 | Null                  | `field:null`                     | `"field" IS NULL`                          | same                                                  | same                                  |
-| Has value             | `field:*`                        | `"field"::text ILIKE ?` (param `%`)        | `LOWER("field") LIKE LOWER(?)`                        | `"field" LIKE ?`                      |
+| Has value (scalar)    | `field:*`                        | `"field"::text ILIKE ?` (param `%`)        | `LOWER("field") LIKE LOWER(?)`                        | `"field" LIKE ?`                      |
 | JSON sub-field        | `metadata.tier:gold`             | `metadata->>'tier' = ?`                    | `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?`  | `JSON_EXTRACT(metadata, '$.tier') = ?` |
+| Array containment     | `tags:golang`                    | `COALESCE("tags" @> ARRAY[?], false)`      | `` COALESCE(JSON_CONTAINS(`tags`, JSON_QUOTE(?)), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
+| Array wildcard        | `tags:*go*`                      | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(`tags`, 'one', ?) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
+| Array has value       | `tags:*`                         | `"tags" IS NOT NULL`                       | same                                                  | same                                  |
 | Grouped field         | `tenant_id:(a OR null)`          | `("tenant_id" = ? OR "tenant_id" IS NULL)` | same                                                  | same                                  |
 | Implicit (unfielded)  | `foo`                            | OR across all `ImplicitSearch=true` fields | same                                                  | same                                  |

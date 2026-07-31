@@ -2042,3 +2042,87 @@ func TestSQLDriver_ScalarWildcardUnchanged(t *testing.T) {
 		t.Errorf("scalar wildcard must keep ::text ILIKE, got %q", sql)
 	}
 }
+
+func TestSQLDriver_ArrayUnsupportedOperators(t *testing.T) {
+	ops := []struct {
+		name string
+		op   expr.Operator
+	}{
+		{"greater", expr.Greater},
+		{"less", expr.Less},
+		{"greater or equal", expr.GreaterEq},
+		{"less or equal", expr.LessEq},
+	}
+
+	for _, tt := range ops {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+			if err != nil {
+				t.Fatalf("NewSQLDriver: %v", err)
+			}
+
+			e := &expr.Expression{
+				Op:    tt.op,
+				Left:  expr.Column("tags"),
+				Right: &expr.Expression{Op: expr.Literal, Left: "x"},
+			}
+
+			_, _, err = d.RenderParam(e)
+			if err == nil {
+				t.Fatalf("expected error for %s on array field, got nil", tt.name)
+			}
+			if !strings.Contains(err.Error(), "tags") {
+				t.Errorf("error must name the field, got %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestSQLDriver_ArrayRangeIsError(t *testing.T) {
+	d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:   expr.Range,
+		Left: expr.Column("tags"),
+		Right: &expr.RangeBoundary{
+			Min:       &expr.Expression{Op: expr.Literal, Left: "a"},
+			Max:       &expr.Expression{Op: expr.Literal, Left: "z"},
+			Inclusive: true,
+		},
+	}
+
+	_, _, err = d.RenderParam(e)
+	if err == nil {
+		t.Fatal("expected error for range on array field, got nil")
+	}
+	if !strings.Contains(err.Error(), "tags") {
+		t.Errorf("error must name the field, got %q", err.Error())
+	}
+}
+
+func TestSQLDriver_ArrayFuzzyStillWorks(t *testing.T) {
+	d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op: expr.Fuzzy,
+		Left: &expr.Expression{
+			Op:    expr.Equals,
+			Left:  expr.Column("tags"),
+			Right: &expr.Expression{Op: expr.Literal, Left: "golang"},
+		},
+	}
+
+	sql, _, err := d.RenderParam(e)
+	if err != nil {
+		t.Fatalf("fuzzy on an array field must keep working, got error: %v", err)
+	}
+	if !strings.Contains(sql, "similarity") {
+		t.Errorf("expected similarity(), got %q", sql)
+	}
+}

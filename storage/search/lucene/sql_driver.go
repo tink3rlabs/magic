@@ -289,6 +289,13 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 		return sqlStr, append(leftParams, extractLiteralValue(e.Right)), nil
 	}
 
+	if ref.isArray() {
+		return "", nil, fmt.Errorf(
+			"operator %s is not supported on array field '%s'; array fields support containment (%s:value), wildcards (%s:*value*) and null checks",
+			e.Op, ref.name, ref.name, ref.name,
+		)
+	}
+
 	rightStr, rightParams, err := s.serializeValue(e.Right)
 	if err != nil {
 		return "", nil, err
@@ -770,10 +777,17 @@ func extractLiteralValue(v any) string {
 
 // renderRange handles range queries including open-ended ranges with wildcards (*).
 func (s *SQLDriver) renderRange(e *expr.Expression) (string, []any, error) {
-	colStr, _, err := s.serializeColumn(e.Left)
+	ref, err := s.resolveField(e.Left)
 	if err != nil {
 		return "", nil, err
 	}
+	if ref.isArray() {
+		return "", nil, fmt.Errorf(
+			"range queries are not supported on array field '%s'; array fields support containment (%s:value), wildcards (%s:*value*) and null checks",
+			ref.name, ref.name, ref.name,
+		)
+	}
+	colStr := ref.sql
 
 	rangeBoundary, ok := e.Right.(*expr.RangeBoundary)
 	if !ok {
@@ -781,7 +795,7 @@ func (s *SQLDriver) renderRange(e *expr.Expression) (string, []any, error) {
 	}
 
 	var minVal, maxVal string
-	var params []any
+	params := append([]any{}, ref.params...)
 
 	if rangeBoundary.Min != nil {
 		minVal = extractLiteralValue(rangeBoundary.Min)

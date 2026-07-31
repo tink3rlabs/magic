@@ -605,8 +605,9 @@ func (s *SQLDriver) resolveField(in any) (fieldRef, error) {
 // signed width picks the smallest Postgres integer that holds it; unsigned kinds
 // need one more bit and so step up a width.
 //
-// reflect.Uint8 never reaches here — isArrayField excludes []byte as a scalar
-// blob — but it is listed so the width branches are exhaustive.
+// reflect.Uint8 is deliberately absent: isArrayField excludes any slice or
+// array of bytes as a scalar blob, so a uint8 element cannot reach this layer.
+// Listing it would imply a byte-array code path that does not exist.
 func arrayElemCast(t reflect.Type) string {
 	if t == nil {
 		return ""
@@ -623,7 +624,7 @@ func arrayElemCast(t reflect.Type) string {
 	case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint64, reflect.Uint32:
 		// Go int is 64-bit; uint32 needs 33 bits, so it too only fits bigint.
 		return "::bigint[]"
-	case reflect.Int8, reflect.Int16, reflect.Uint8:
+	case reflect.Int8, reflect.Int16:
 		return "::smallint[]"
 	case reflect.Int32, reflect.Uint16:
 		return "::int[]"

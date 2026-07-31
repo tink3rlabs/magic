@@ -1723,3 +1723,152 @@ func TestSQLDriver_MySQLUsesBackticks(t *testing.T) {
 		t.Errorf("mysql must not use double quotes (they are string literals), got %q", sql)
 	}
 }
+
+// arrayTestFields is the shared field set for array rendering tests.
+func arrayTestFields() []FieldInfo {
+	return []FieldInfo{
+		{Name: "title", Type: reflect.TypeOf("")},
+		{Name: "tags", Type: reflect.TypeOf([]string{})},
+		{Name: "nums", Type: reflect.TypeOf([]int{})},
+		{Name: "blob", Type: reflect.TypeOf([]byte{})},
+		{Name: "metadata", Type: reflect.TypeOf(map[string]any{})},
+	}
+}
+
+func TestSQLDriver_ArrayEquality(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		field    string
+		value    string
+		wantSQL  []string
+		notSQL   []string
+	}{
+		{
+			name:     "postgres containment",
+			provider: "postgresql",
+			field:    "tags",
+			value:    "golang",
+			wantSQL:  []string{`"tags" @> ARRAY[?]`, "COALESCE"},
+			notSQL:   []string{`"tags" = ?`},
+		},
+		{
+			name:     "mysql containment",
+			provider: "mysql",
+			field:    "tags",
+			value:    "golang",
+			wantSQL:  []string{"JSON_CONTAINS", "`tags`", "JSON_QUOTE(?)"},
+			notSQL:   []string{"`tags` = ?"},
+		},
+		{
+			name:     "sqlite containment",
+			provider: "sqlite",
+			field:    "tags",
+			value:    "golang",
+			wantSQL:  []string{"EXISTS", "json_each", `"tags"`, "value = ?"},
+			notSQL:   []string{`"tags" = ?`},
+		},
+		{
+			name:     "postgres int array gets typed cast",
+			provider: "postgresql",
+			field:    "nums",
+			value:    "42",
+			wantSQL:  []string{`"nums" @> ARRAY[?]::int[]`},
+			notSQL:   []string{},
+		},
+		{
+			name:     "scalar field unchanged",
+			provider: "postgresql",
+			field:    "title",
+			value:    "hello",
+			wantSQL:  []string{`"title" = ?`},
+			notSQL:   []string{"@>", "COALESCE"},
+		},
+		{
+			name:     "byte slice stays scalar",
+			provider: "postgresql",
+			field:    "blob",
+			value:    "abc",
+			wantSQL:  []string{`"blob" = ?`},
+			notSQL:   []string{"@>"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := NewSQLDriver(arrayTestFields(), tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver: %v", err)
+			}
+
+			e := &expr.Expression{
+				Op:    expr.Equals,
+				Left:  expr.Column(tt.field),
+				Right: &expr.Expression{Op: expr.Literal, Left: tt.value},
+			}
+
+			sql, params, err := d.RenderParam(e)
+			if err != nil {
+				t.Fatalf("RenderParam: %v", err)
+			}
+			for _, want := range tt.wantSQL {
+				if !strings.Contains(sql, want) {
+					t.Errorf("sql %q missing %q", sql, want)
+				}
+			}
+			for _, not := range tt.notSQL {
+				if strings.Contains(sql, not) {
+					t.Errorf("sql %q must not contain %q", sql, not)
+				}
+			}
+			if len(params) != 1 {
+				t.Errorf("want 1 param, got %d: %#v", len(params), params)
+			}
+			if len(params) == 1 && params[0] != tt.value {
+				t.Errorf("param = %#v, want %q", params[0], tt.value)
+			}
+		})
+	}
+}
+
+func TestSQLDriver_ArrayEqualityDoesNotConvertWildcards(t *testing.T) {
+	d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Equals,
+		Left:  expr.Column("tags"),
+		Right: &expr.Expression{Op: expr.Literal, Left: "what?"},
+	}
+
+	_, params, err := d.RenderParam(e)
+	if err != nil {
+		t.Fatalf("RenderParam: %v", err)
+	}
+	if len(params) != 1 || params[0] != "what?" {
+		t.Errorf("equality param must keep literal punctuation, got %#v", params)
+	}
+}
+
+func TestSQLDriver_ArrayNullIsUnchanged(t *testing.T) {
+	d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Equals,
+		Left:  expr.Column("tags"),
+		Right: &expr.Expression{Op: expr.Null},
+	}
+
+	sql, _, err := d.RenderParam(e)
+	if err != nil {
+		t.Fatalf("RenderParam: %v", err)
+	}
+	if !strings.Contains(sql, "IS NULL") {
+		t.Errorf("tags:null must render IS NULL, got %q", sql)
+	}
+}

@@ -497,3 +497,107 @@ func TestDynamoDBDriver_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func ddbArrayFields() []FieldInfo {
+	return []FieldInfo{
+		{Name: "title", Type: reflect.TypeOf("")},
+		{Name: "tags", Type: reflect.TypeOf([]string{})},
+	}
+}
+
+func TestDynamoDBDriver_ArrayContainment(t *testing.T) {
+	d, err := NewDynamoDBDriver(ddbArrayFields())
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Equals,
+		Left:  expr.Column("tags"),
+		Right: &expr.Expression{Op: expr.Literal, Left: "golang"},
+	}
+
+	sql, _, err := d.RenderPartiQL(e)
+	if err != nil {
+		t.Fatalf("RenderPartiQL: %v", err)
+	}
+	if !strings.Contains(sql, "contains(") {
+		t.Errorf("expected contains() for an array field, got %q", sql)
+	}
+	if strings.Contains(sql, "tags = ") {
+		t.Errorf("array field must not render scalar equality, got %q", sql)
+	}
+}
+
+// Guards the go-lucene recursion trap: Base.RenderParam recurses through its
+// own serializeParams, so a top-level override would miss this nested node.
+func TestDynamoDBDriver_ArrayContainmentNestedInAnd(t *testing.T) {
+	d, err := NewDynamoDBDriver(ddbArrayFields())
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op: expr.And,
+		Left: &expr.Expression{
+			Op:    expr.Equals,
+			Left:  expr.Column("title"),
+			Right: &expr.Expression{Op: expr.Literal, Left: "hello"},
+		},
+		Right: &expr.Expression{
+			Op:    expr.Equals,
+			Left:  expr.Column("tags"),
+			Right: &expr.Expression{Op: expr.Literal, Left: "golang"},
+		},
+	}
+
+	sql, _, err := d.RenderPartiQL(e)
+	if err != nil {
+		t.Fatalf("RenderPartiQL: %v", err)
+	}
+	if !strings.Contains(sql, "contains(") {
+		t.Errorf("nested array equality must still render contains(), got %q", sql)
+	}
+}
+
+func TestDynamoDBDriver_ArrayWildcardIsError(t *testing.T) {
+	d, err := NewDynamoDBDriver(ddbArrayFields())
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Wild,
+		Left:  expr.Column("tags"),
+		Right: &expr.Expression{Op: expr.Literal, Left: "*go*"},
+	}
+
+	_, _, err = d.RenderPartiQL(e)
+	if err == nil {
+		t.Fatal("expected error for wildcard on a DynamoDB array field, got nil")
+	}
+	if !strings.Contains(err.Error(), "tags") {
+		t.Errorf("error must name the field, got %q", err.Error())
+	}
+}
+
+func TestDynamoDBDriver_ScalarUnchanged(t *testing.T) {
+	d, err := NewDynamoDBDriver(ddbArrayFields())
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Equals,
+		Left:  expr.Column("title"),
+		Right: &expr.Expression{Op: expr.Literal, Left: "hello"},
+	}
+
+	sql, _, err := d.RenderPartiQL(e)
+	if err != nil {
+		t.Fatalf("RenderPartiQL: %v", err)
+	}
+	if strings.Contains(sql, "contains(") {
+		t.Errorf("scalar field must not use contains(), got %q", sql)
+	}
+}

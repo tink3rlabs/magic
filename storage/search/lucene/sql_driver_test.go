@@ -1955,11 +1955,14 @@ func TestSQLDriver_ArrayWildcard(t *testing.T) {
 			notSQL:   []string{"::text ILIKE"},
 		},
 		{
-			name:     "mysql wildcard via JSON_SEARCH",
+			// Both sides are case-folded so this branch matches the
+			// case-insensitive Postgres ILIKE and SQLite LIKE branches;
+			// JSON_SEARCH alone compares under utf8mb4_bin and would not.
+			name:     "mysql wildcard via JSON_SEARCH is case-insensitive",
 			provider: "mysql",
 			pattern:  "*go*",
-			wantSQL:  []string{"JSON_SEARCH", "`tags`", "'one'", "IS NOT NULL"},
-			notSQL:   []string{"LOWER(", "LIKE LOWER"},
+			wantSQL:  []string{"JSON_SEARCH", "LOWER(CAST(`tags` AS CHAR))", "'one'", "LOWER(?)", "IS NOT NULL"},
+			notSQL:   []string{"LIKE LOWER"},
 		},
 		{
 			name:     "sqlite per-element wildcard",

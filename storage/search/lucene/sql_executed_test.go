@@ -191,3 +191,118 @@ func TestExecuted_Issue224Repro(t *testing.T) {
 		})
 	}
 }
+
+// TypedDoc models a table whose columns hold JSON arrays of non-string scalars.
+type TypedDoc struct {
+	Id    string    `json:"id"`
+	Nums  []int     `json:"nums"`
+	Rates []float64 `json:"rates"`
+	Flags []bool    `json:"flags"`
+}
+
+// newTypedDB seeds arrays of numbers and booleans.
+//
+//	id | nums    | rates      | flags
+//	 1 | [5,7]   | [1.5]      | [true]
+//	 2 | [9]     | [2.25,3.0] | [false]
+func newTypedDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE docs (id TEXT, nums TEXT, rates TEXT, flags TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO docs VALUES
+		('1','[5,7]','[1.5]','[true]'),
+		('2','[9]','[2.25,3.0]','[false]')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return db
+}
+
+// Regression guard for typed array containment: values reach the driver already
+// stringified, so binding them as-is compares a string against a JSON number or
+// boolean and silently matches nothing. Every case here would return 0 rows if
+// the element type were ignored.
+func TestExecuted_TypedArrayContainment(t *testing.T) {
+	db := newTypedDB(t)
+
+	p, err := NewParser(TypedDoc{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		filter string
+		want   int
+	}{
+		{"int element", "nums:5", 1},
+		{"int element, other row", "nums:9", 1},
+		{"int element absent", "nums:11", 0},
+		{"float element", "rates:1.5", 1},
+		{"float element trailing zero", "rates:3.0", 1},
+		{"bool true", "flags:true", 1},
+		{"bool false", "flags:false", 1},
+		{"grouped ints", "nums:(5 OR 9)", 2},
+		{"negated int keeps the other row", "NOT nums:5", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			where, params, err := p.ParseToSQL(tt.filter, "sqlite")
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q): %v", tt.filter, err)
+			}
+			var n int
+			query := "SELECT count(*) FROM docs WHERE " + where
+			if err := db.QueryRow(query, params...).Scan(&n); err != nil {
+				t.Fatalf("executing %q (from %q): %v", query, tt.filter, err)
+			}
+			if n != tt.want {
+				t.Errorf("filter %q matched %d rows, want %d (sql %q params %v)", tt.filter, n, tt.want, where, params)
+			}
+		})
+	}
+}
+
+// A value that cannot be an element of the column's type is a malformed filter,
+// so it must fail at parse time rather than reaching the database — the same
+// 500-instead-of-400 failure mode array support exists to remove.
+func TestExecuted_TypedArrayRejectsMistypedValue(t *testing.T) {
+	p, err := NewParser(TypedDoc{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, filter := range []string{"nums:abc", "rates:abc", "flags:maybe", "nums:(5 OR abc)"} {
+		t.Run(filter, func(t *testing.T) {
+			if _, _, err := p.ParseToSQL(filter, "sqlite"); err == nil {
+				t.Errorf("ParseToSQL(%q) returned no error; a mistyped value must be rejected at parse time", filter)
+			}
+		})
+	}
+}
+
+// Wildcards are substring matching, which has no meaning for numeric or boolean
+// elements: Postgres errors on ILIKE against an integer and MySQL's JSON_SEARCH
+// only inspects string scalars. Rejecting it keeps the failure a filter error.
+func TestExecuted_TypedArrayRejectsWildcard(t *testing.T) {
+	p, err := NewParser(TypedDoc{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, provider := range []string{"postgresql", "mysql", "sqlite"} {
+		t.Run(provider, func(t *testing.T) {
+			if _, _, err := p.ParseToSQL("nums:*5*", provider); err == nil {
+				t.Errorf("ParseToSQL(nums:*5*, %s) returned no error; wildcards on a numeric array must be rejected", provider)
+			}
+		})
+	}
+}

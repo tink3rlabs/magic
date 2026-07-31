@@ -301,7 +301,33 @@ func (s *SQLDriver) renderGroupedFieldLeaf(fieldSQL string, v any) (string, []an
 // renderBinary handles binary and unary logical operators via the shared walker.
 // Note: Must and MustNot are unary (only Left operand), while And and Or are binary.
 func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
-	sql, params, ok, err := renderLogicalOps(e, s.renderParamInternal, s.Base.RenderParam)
+	// Preserves the pre-refactor recovery chain for a non-expression Must/MustNot
+	// operand: try it as a column, then as a value, then let the base driver try.
+	// And/Or never had this chain — a non-expression operand there went straight
+	// to the base driver — so that behaviour is preserved here too.
+	//
+	// renderLogicalOps treats whatever this closure returns as the final
+	// answer (it applies no NOT-wrapping of its own), so — like the
+	// pre-refactor code — MustNot must be wrapped here when the column/value
+	// chain succeeds. Only the base-driver escape hatch is returned bare,
+	// since Base.RenderParam renders the whole node (including any NOT).
+	fallback := func(e *expr.Expression) (string, []any, error) {
+		if e.Op == expr.Must || e.Op == expr.MustNot {
+			str, params, err := s.serializeColumn(e.Left)
+			if err != nil {
+				str, params, err = s.serializeValue(e.Left)
+			}
+			if err == nil {
+				if e.Op == expr.MustNot {
+					return fmt.Sprintf("NOT (%s)", str), params, nil
+				}
+				return str, params, nil
+			}
+		}
+		return s.Base.RenderParam(e)
+	}
+
+	sql, params, ok, err := renderLogicalOps(e, s.renderParamInternal, fallback)
 	if err != nil {
 		return "", nil, err
 	}

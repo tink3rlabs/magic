@@ -708,6 +708,61 @@ func TestSQLDriver_RenderBinary(t *testing.T) {
 	}
 }
 
+// TestSQLDriver_RenderBinary_NonExpressionOperandFallback guards refactor
+// fidelity: renderBinary's Must/MustNot branch must still try the operand as
+// a column, then as a value, before falling back to the base driver, exactly
+// as it did before renderBinary delegated to the shared renderLogicalOps
+// walker (storage/search/lucene/walker.go).
+func TestSQLDriver_RenderBinary_NonExpressionOperandFallback(t *testing.T) {
+	fields := []FieldInfo{
+		{Name: "name", Type: reflect.TypeOf("")},
+	}
+
+	driver, err := NewSQLDriver(fields, "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver() error = %v", err)
+	}
+
+	t.Run("Must with raw column operand renders via serializeColumn", func(t *testing.T) {
+		// e.Left is an expr.Column, not *expr.Expression: serializeColumn
+		// handles it directly and must win before any Base.RenderParam fallback.
+		e := &expr.Expression{
+			Op:   expr.Must,
+			Left: expr.Column("name"),
+		}
+		sql, params, err := driver.renderBinary(e)
+		if err != nil {
+			t.Fatalf("renderBinary() error = %v", err)
+		}
+		if sql != `"name"` {
+			t.Errorf("renderBinary() sql = %q, want %q", sql, `"name"`)
+		}
+		if len(params) != 0 {
+			t.Errorf("renderBinary() params = %v, want none", params)
+		}
+	})
+
+	t.Run("MustNot with raw scalar operand renders via serializeValue", func(t *testing.T) {
+		// e.Left is an int: serializeColumn rejects it ("unexpected column
+		// type"), so the chain must fall through to serializeValue, which
+		// renders it as a placeholder param — not straight to Base.RenderParam.
+		e := &expr.Expression{
+			Op:   expr.MustNot,
+			Left: 42,
+		}
+		sql, params, err := driver.renderBinary(e)
+		if err != nil {
+			t.Fatalf("renderBinary() error = %v", err)
+		}
+		if !strings.Contains(sql, "NOT") || !strings.Contains(sql, "?") {
+			t.Errorf("renderBinary() sql = %q, want NOT (...?...)", sql)
+		}
+		if len(params) != 1 || params[0] != 42 {
+			t.Errorf("renderBinary() params = %v, want [42]", params)
+		}
+	})
+}
+
 func TestSQLDriver_RenderRange(t *testing.T) {
 	fields := []FieldInfo{
 		{Name: "age", Type: reflect.TypeOf(0)},

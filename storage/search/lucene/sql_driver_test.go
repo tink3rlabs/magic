@@ -1732,6 +1732,8 @@ func arrayTestFields() []FieldInfo {
 		{Name: "nums", Type: reflect.TypeOf([]int{})},
 		{Name: "bigs", Type: reflect.TypeOf([]int64{})},
 		{Name: "smalls", Type: reflect.TypeOf([]int32{})},
+		{Name: "tinies", Type: reflect.TypeOf([]int16{})},
+		{Name: "counts", Type: reflect.TypeOf([]uint32{})},
 		{Name: "ratios", Type: reflect.TypeOf([]float64{})},
 		{Name: "singles", Type: reflect.TypeOf([]float32{})},
 		{Name: "flags", Type: reflect.TypeOf([]bool{})},
@@ -1750,12 +1752,12 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 		notSQL   []string
 	}{
 		{
-			name:     "postgres containment",
+			name:     "postgres containment, []string gets no cast at all",
 			provider: "postgresql",
 			field:    "tags",
 			value:    "golang",
 			wantSQL:  []string{`"tags" @> ARRAY[?]`, "COALESCE"},
-			notSQL:   []string{`"tags" = ?`},
+			notSQL:   []string{`"tags" = ?`, "::"},
 		},
 		{
 			name:     "mysql containment",
@@ -1775,7 +1777,7 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 		},
 		// The @> operator requires exactly matching array types — neither
 		// narrowing nor widening rescues a mismatch — so each Go element kind
-		// must render the cast for the Postgres type GORM created for it.
+		// must render the cast for the natural Postgres array type of that kind.
 		{
 			name:     "postgres []int casts to bigint (Go int is 64-bit)",
 			provider: "postgresql",
@@ -1798,7 +1800,23 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			field:    "smalls",
 			value:    "42",
 			wantSQL:  []string{`"smalls" @> ARRAY[?]::int[]`},
-			notSQL:   []string{"::bigint[]"},
+			notSQL:   []string{"::bigint[]", "::smallint[]"},
+		},
+		{
+			name:     "postgres []int16 casts to smallint",
+			provider: "postgresql",
+			field:    "tinies",
+			value:    "3",
+			wantSQL:  []string{`"tinies" @> ARRAY[?]::smallint[]`},
+			notSQL:   []string{`ARRAY[?]::int[]`, "::bigint[]"},
+		},
+		{
+			name:     "postgres []uint32 needs 33 bits so casts to bigint",
+			provider: "postgresql",
+			field:    "counts",
+			value:    "4000000000",
+			wantSQL:  []string{`"counts" @> ARRAY[?]::bigint[]`},
+			notSQL:   []string{`ARRAY[?]::int[]`, "::smallint[]"},
 		},
 		{
 			name:     "postgres []float64 casts to double precision",
@@ -1823,14 +1841,6 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			value:    "true",
 			wantSQL:  []string{`"flags" @> ARRAY[?]::boolean[]`},
 			notSQL:   []string{},
-		},
-		{
-			name:     "postgres []string gets no cast at all",
-			provider: "postgresql",
-			field:    "tags",
-			value:    "golang",
-			wantSQL:  []string{`"tags" @> ARRAY[?],`},
-			notSQL:   []string{"::"},
 		},
 		{
 			name:     "scalar field unchanged",

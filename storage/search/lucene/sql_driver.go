@@ -449,12 +449,17 @@ func (s *SQLDriver) resolveField(in any) (fieldRef, error) {
 // The cast must name the column's ACTUAL element type. `@>` requires exactly
 // matching array types and neither narrowing nor widening rescues a mismatch:
 // `bigint[] @> ARRAY['9999999999']::int[]` errors with "value out of range for
-// type integer", and `int[] @> ARRAY['5']::bigint[]` errors with "no operator
-// matches". Likewise numeric[] does not satisfy a float8[] column. So each Go
-// element kind maps to the Postgres type GORM would have created for it, not to
-// a convenient superset.
+// type integer", `int[] @> ARRAY['5']::bigint[]` errors with "no operator
+// matches", and `smallint[] @> ARRAY['1']::int[]` errors the same way. Likewise
+// numeric[] does not satisfy a float8[] column.
 //
-// reflect.Uint8 never reaches here — isArrayField excludes []byte as a scalar blob.
+// So each Go element kind maps to the natural Postgres array type for that kind
+// — the width that round-trips it exactly — not to a convenient superset. Each
+// signed width picks the smallest Postgres integer that holds it; unsigned kinds
+// need one more bit and so step up a width.
+//
+// reflect.Uint8 never reaches here — isArrayField excludes []byte as a scalar
+// blob — but it is listed so the width branches are exhaustive.
 func arrayElemCast(t reflect.Type) string {
 	if t == nil {
 		return ""
@@ -468,10 +473,12 @@ func arrayElemCast(t reflect.Type) string {
 	switch t.Elem().Kind() {
 	case reflect.String:
 		return ""
-	case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint64:
-		// Go int is 64-bit and GORM maps it to bigint on Postgres.
+	case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint64, reflect.Uint32:
+		// Go int is 64-bit; uint32 needs 33 bits, so it too only fits bigint.
 		return "::bigint[]"
-	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Uint16, reflect.Uint32:
+	case reflect.Int8, reflect.Int16, reflect.Uint8:
+		return "::smallint[]"
+	case reflect.Int32, reflect.Uint16:
 		return "::int[]"
 	case reflect.Float64:
 		return "::double precision[]"

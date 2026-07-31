@@ -10,7 +10,7 @@ import (
 // dispatcher so the walker can recurse without knowing any SQL or PartiQL.
 type nodeRenderer func(*expr.Expression) (string, []any, error)
 
-// renderLogicalOps renders the logical operators (Must, MustNot, And, Or),
+// renderLogicalOps renders the logical operators (Must, MustNot, Not, And, Or),
 // recursing into renderNode for each child.
 //
 // It exists because go-lucene's Base.RenderParam recurses through its own
@@ -22,9 +22,13 @@ type nodeRenderer func(*expr.Expression) (string, []any, error)
 // ok reports whether e.Op was a logical operator. When ok is false the caller
 // handles the node itself.
 //
-//	  And/Or (binary)          Must/MustNot (unary)
+//	  And/Or (binary)        Must/MustNot/Not (unary)
 //	     /      \                     |
 //	renderNode  renderNode        renderNode
+//
+// Not and MustNot are the two spellings of negation (`NOT tags:go` and
+// `-tags:go`); both must walk the same path or one of them silently falls back
+// to go-lucene's base driver and never reaches a driver's leaf overrides.
 //
 // fallback is used when a child is not an *expr.Expression and the driver has
 // no better option; it may be nil, in which case such a node is an error.
@@ -34,7 +38,7 @@ func renderLogicalOps(
 	fallback nodeRenderer,
 ) (sql string, params []any, ok bool, err error) {
 	switch e.Op {
-	case expr.Must, expr.MustNot:
+	case expr.Must, expr.MustNot, expr.Not:
 		if e.Left == nil {
 			return "", nil, true, fmt.Errorf("%s operator requires a left operand", e.Op)
 		}

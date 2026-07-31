@@ -601,3 +601,132 @@ func TestDynamoDBDriver_ScalarUnchanged(t *testing.T) {
 		t.Errorf("scalar field must not use contains(), got %q", sql)
 	}
 }
+
+// The NOT keyword is a different go-lucene operator from the `-` prefix
+// (Not vs MustNot). Only MustNot reached the array interception, so
+// `NOT tags:golang` re-emitted scalar equality.
+func TestDynamoDBDriver_NotKeywordOnArrayField(t *testing.T) {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		filter  string
+		wantSQL []string
+	}{
+		{"not keyword", "NOT tags:golang", []string{"NOT (", "contains(tags, ?)"}},
+		{"mustnot prefix", "-tags:golang", []string{"NOT (", "contains(tags, ?)"}},
+		{"inside a compound expression", "title:hello AND NOT tags:golang", []string{"NOT (", "contains(tags, ?)"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, _, err := p.ParseToDynamoDBPartiQL(tt.filter)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", tt.filter, err)
+			}
+			for _, want := range tt.wantSQL {
+				if !strings.Contains(sql, want) {
+					t.Errorf("partiql %q missing %q", sql, want)
+				}
+			}
+			if strings.Contains(sql, `"tags" = ?`) {
+				t.Errorf("array field must not render scalar equality, got %q", sql)
+			}
+		})
+	}
+}
+
+// Negation over field:null stays IS NOT NULL rather than NOT (... IS NULL).
+func TestDynamoDBDriver_NegatedNullStaysIsNotNull(t *testing.T) {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, filter := range []string{"NOT tags:null", "NOT title:null", "-tags:null", "-title:null"} {
+		t.Run(filter, func(t *testing.T) {
+			sql, params, err := p.ParseToDynamoDBPartiQL(filter)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", filter, err)
+			}
+			if !strings.Contains(sql, "IS NOT NULL") {
+				t.Errorf("partiql %q must render IS NOT NULL", sql)
+			}
+			if strings.Contains(sql, "NOT (") {
+				t.Errorf("partiql %q must collapse the negation, not wrap it", sql)
+			}
+			if len(params) != 0 {
+				t.Errorf("a null check binds no params, got %#v", params)
+			}
+		})
+	}
+}
+
+// A grouped value list under an array field used to be stringified whole and
+// bound as one value ("id:golang OR id:rust"), matching nothing silently.
+func TestDynamoDBDriver_ArrayGroupedValues(t *testing.T) {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	sql, params, err := p.ParseToDynamoDBPartiQL("tags:(golang OR rust)")
+	if err != nil {
+		t.Fatalf("ParseToDynamoDBPartiQL: %v", err)
+	}
+	if strings.Count(sql, "contains(tags, ?)") != 2 {
+		t.Errorf("expected one contains() per group member, got %q", sql)
+	}
+	if !strings.Contains(sql, " OR ") {
+		t.Errorf("expected the group to stay disjunctive, got %q", sql)
+	}
+	if len(params) != 2 {
+		t.Fatalf("expected 2 params, got %d: %#v", len(params), params)
+	}
+	for i, want := range []string{"golang", "rust"} {
+		got, ok := params[i].(*types.AttributeValueMemberS)
+		if !ok || got.Value != want {
+			t.Errorf("param %d = %#v, want %q", i, params[i], want)
+		}
+	}
+}
+
+func TestDynamoDBDriver_ArrayGroupedWildcardIsError(t *testing.T) {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	_, _, err = p.ParseToDynamoDBPartiQL("tags:(golang* OR rust)")
+	if err == nil {
+		t.Fatal("expected an error for a wildcard leaf on a DynamoDB array field, got nil")
+	}
+	if !strings.Contains(err.Error(), "tags") {
+		t.Errorf("error must name the field, got %q", err.Error())
+	}
+}
+
+// PartiQL has no ordering semantics for a list attribute, so these must fail
+// closed rather than render a comparison that silently matches nothing —
+// mirroring the SQL driver.
+func TestDynamoDBDriver_ArrayOrderingAndRangeAreErrors(t *testing.T) {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, filter := range []string{"tags:>5", "tags:<5", "tags:>=5", "tags:<=5", "tags:[a TO b]", "tags:{a TO b}"} {
+		t.Run(filter, func(t *testing.T) {
+			sql, _, err := p.ParseToDynamoDBPartiQL(filter)
+			if err == nil {
+				t.Fatalf("expected an error for %q on an array field, got %q", filter, sql)
+			}
+			if !strings.Contains(err.Error(), "tags") {
+				t.Errorf("error must name the field, got %q", err.Error())
+			}
+		})
+	}
+}

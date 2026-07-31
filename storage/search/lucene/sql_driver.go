@@ -108,7 +108,7 @@ func (s *SQLDriver) renderParamInternal(e *expr.Expression) (string, []any, erro
 		return s.renderRange(e)
 	case expr.Equals, expr.Greater, expr.Less, expr.GreaterEq, expr.LessEq:
 		return s.renderComparison(e)
-	case expr.And, expr.Or, expr.Must, expr.MustNot:
+	case expr.And, expr.Or, expr.Must, expr.MustNot, expr.Not:
 		return s.renderBinary(e)
 	default:
 		// Use base implementation for all other operators
@@ -133,27 +133,37 @@ func (s *SQLDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) 
 	params := append(leftParams, rightParams...)
 
 	if ref.isArray() {
-		return s.renderArrayWildcard(ref, e, params)
+		return s.renderArrayWildcard(ref, isBareWildcard(e.Right), params)
 	}
 
+	sqlStr, err := s.renderScalarLike(leftStr, rightStr)
+	if err != nil {
+		return "", nil, err
+	}
+	return sqlStr, params, nil
+}
+
+// renderScalarLike renders provider-specific case-insensitive pattern matching
+// for a single-valued column.
+func (s *SQLDriver) renderScalarLike(leftStr, rightStr string) (string, error) {
 	switch s.provider {
 	case "postgresql":
 		// PostgreSQL: ILIKE for case-insensitive matching
 		if isJSONSyntax(leftStr) {
-			return fmt.Sprintf("%s ILIKE %s", leftStr, rightStr), params, nil
+			return fmt.Sprintf("%s ILIKE %s", leftStr, rightStr), nil
 		}
-		return fmt.Sprintf("%s::text ILIKE %s", leftStr, rightStr), params, nil
+		return fmt.Sprintf("%s::text ILIKE %s", leftStr, rightStr), nil
 
 	case "mysql":
 		// MySQL: Use LOWER() for case-insensitive matching
-		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", leftStr, rightStr), params, nil
+		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", leftStr, rightStr), nil
 
 	case "sqlite":
 		// SQLite: LIKE is already case-insensitive for ASCII by default
-		return fmt.Sprintf("%s LIKE %s", leftStr, rightStr), params, nil
+		return fmt.Sprintf("%s LIKE %s", leftStr, rightStr), nil
 
 	default:
-		return "", nil, fmt.Errorf("unsupported SQL provider: %s", s.provider)
+		return "", fmt.Errorf("unsupported SQL provider: %s", s.provider)
 	}
 }
 
@@ -171,8 +181,8 @@ func (s *SQLDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) 
 // The bare-star form stays whole-column so it keeps matching rows holding an
 // empty array, which the per-element form would silently drop. This is a
 // deliberate divergence from Elasticsearch's exists query.
-func (s *SQLDriver) renderArrayWildcard(ref fieldRef, e *expr.Expression, params []any) (string, []any, error) {
-	if isBareWildcard(e.Right) {
+func (s *SQLDriver) renderArrayWildcard(ref fieldRef, bare bool, params []any) (string, []any, error) {
+	if bare {
 		return fmt.Sprintf("%s IS NOT NULL", ref.sql), nil, nil
 	}
 
@@ -351,15 +361,19 @@ func (s *SQLDriver) renderGroupedFieldExpr(ref fieldRef, e *expr.Expression) (st
 // node's own field is.
 //
 // Operator selection goes through the same array check as renderComparison, so
-// tags:(a OR b) renders containment rather than scalar equality.
+// tags:(a OR b) renders containment rather than scalar equality, and a wildcard
+// leaf such as tags:(golang* OR rust) matches per element rather than binding
+// the raw pattern as a literal to be contained.
 func (s *SQLDriver) renderGroupedFieldLeaf(ref fieldRef, v any) (string, []any, error) {
 	if e, ok := v.(*expr.Expression); ok {
-		if e.Op == expr.Or || e.Op == expr.And {
+		switch e.Op {
+		case expr.Or, expr.And:
 			return s.renderGroupedFieldExpr(ref, e)
-		}
-		if e.Op == expr.Equals {
+		case expr.Equals, expr.Like:
 			// Use the value from this leaf but with the outer field
 			return s.renderGroupedFieldLeaf(ref, e.Right)
+		case expr.Wild:
+			return s.renderGroupedWildcardLeaf(ref, e)
 		}
 	}
 	if isNullValue(v) {
@@ -381,9 +395,52 @@ func (s *SQLDriver) renderGroupedFieldLeaf(ref fieldRef, v any) (string, []any, 
 	return fmt.Sprintf("%s = %s", ref.sql, valStr), valParams, nil
 }
 
+// renderGroupedWildcardLeaf renders a wildcard leaf inside a grouped field
+// expression — the `golang*` in tags:(golang* OR rust) — against the outer
+// field, using the same pattern-matching path as the ungrouped form.
+//
+// Without this the leaf would fall through to equality/containment and bind the
+// raw pattern (`golang*`) as a literal value, which silently matches nothing.
+func (s *SQLDriver) renderGroupedWildcardLeaf(ref fieldRef, e *expr.Expression) (string, []any, error) {
+	raw, ok := extractLiteralString(e)
+	if !ok {
+		return "", nil, fmt.Errorf("invalid wildcard value in grouped expression for field '%s'", ref.name)
+	}
+
+	valStr, valParams, err := s.serializeValue(e)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if ref.isArray() {
+		return s.renderArrayWildcard(ref, raw == "*", valParams)
+	}
+
+	sqlStr, err := s.renderScalarLike(ref.sql, valStr)
+	if err != nil {
+		return "", nil, err
+	}
+	return sqlStr, valParams, nil
+}
+
 // renderBinary handles binary and unary logical operators via the shared walker.
-// Note: Must and MustNot are unary (only Left operand), while And and Or are binary.
+// Note: Must, MustNot and Not are unary (only Left operand), while And and Or
+// are binary.
 func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
+	// A negation over field:null collapses to IS NOT NULL rather than
+	// NOT (field IS NULL). Both are correct SQL, but the base driver emits the
+	// former, and going through the walker instead would silently change the
+	// rendered output for every existing `NOT field:null` query.
+	if e.Op == expr.Not || e.Op == expr.MustNot {
+		if inner, ok := nullEqualsOperand(e.Left); ok {
+			ref, err := s.resolveField(inner.Left)
+			if err != nil {
+				return "", nil, err
+			}
+			return fmt.Sprintf("%s IS NOT NULL", ref.sql), ref.params, nil
+		}
+	}
+
 	// Preserves the pre-refactor recovery chain for a non-expression Must/MustNot
 	// operand: try it as a column, then as a value, then let the base driver try.
 	// And/Or never had this chain — a non-expression operand there went straight
@@ -767,6 +824,21 @@ func isNullValue(v any) bool {
 	}
 	e, ok := v.(*expr.Expression)
 	return ok && e.Op == expr.Null
+}
+
+// nullEqualsOperand reports whether v is an Equals(field, null) expression —
+// the operand shape that turns a negation into IS NOT NULL. Mirrors
+// go-lucene's base driver (driver.Base.RenderParam), which collapses
+// Not/MustNot over that shape rather than emitting NOT (... IS NULL).
+func nullEqualsOperand(v any) (*expr.Expression, bool) {
+	e, ok := v.(*expr.Expression)
+	if !ok || e.Op != expr.Equals {
+		return nil, false
+	}
+	if !isNullValue(e.Right) {
+		return nil, false
+	}
+	return e, true
 }
 
 func extractLiteralValue(v any) string {

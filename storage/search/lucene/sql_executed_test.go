@@ -83,9 +83,24 @@ func TestExecuted_ArrayContainment(t *testing.T) {
 		{"wildcard matches per element", "tags:*go*", 1},
 		{"wildcard misses absent pattern", "tags:*zzz*", 0},
 		{"grouped values", "tags:(golang OR rust)", 2},
+		{"grouped wildcard leaf", "tags:(golang* OR rust)", 2},
+		{"grouped wildcard leaf alone", "tags:(gop* OR zzz)", 1},
 		{"null check", "tags:null", 1},
 		{"boolean composition", "title:hello AND tags:golang", 1},
 		{"boolean composition no match", "title:world AND tags:golang", 0},
+
+		// The NOT keyword is a different operator from the `-` prefix and used
+		// to bypass array handling entirely. Rows 2, 3 and 4 (rust, [], NULL)
+		// are the non-golang rows — the NULL row included, which is what the
+		// COALESCE/EXISTS shaping is there to guarantee.
+		{"NOT keyword containment", "NOT tags:golang", 3},
+		{"NOT keyword wildcard", "NOT tags:*go*", 3},
+		{"MustNot prefix containment", "-tags:golang", 3},
+		{"NOT keyword in a compound", "title:hello AND NOT tags:rust", 1},
+		{"NOT keyword excludes its own row", "title:hello AND NOT tags:golang", 0},
+		{"NOT keyword on a scalar", "NOT title:hello", 3},
+		{"NOT keyword on null, array field", "NOT tags:null", 3},
+		{"NOT keyword on null, scalar field", "NOT title:null", 4},
 	}
 
 	for _, tt := range tests {
@@ -146,15 +161,32 @@ func TestExecuted_WildcardDoesNotSpanElements(t *testing.T) {
 	}
 }
 
-// Regression guard for the issue's exact reproduction case.
+// Regression guard for what issue #224 actually reported: ParseToSQL returned
+// a nil error for a query it could not render, so the failure surfaced as a
+// 500 from the database driver instead of a 400 from the parser.
+//
+// Row counts for these filters are asserted in TestExecuted_ArrayContainment;
+// what this test pins is the contract that the parse step reports success only
+// when the SQL it produced is actually executable — checked by executing it.
 func TestExecuted_Issue224Repro(t *testing.T) {
 	db := newExecDB(t)
 
-	for _, filter := range []string{"title:hello", "tags:golang", "tags:*go*"} {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, filter := range []string{"title:hello", "tags:golang", "tags:*go*", "NOT tags:golang"} {
 		t.Run(filter, func(t *testing.T) {
-			// The bug was that these parsed cleanly and then failed at execution.
-			if got := countMatching(t, db, filter); got != 1 {
-				t.Errorf("filter %q matched %d rows, want 1", filter, got)
+			where, params, err := p.ParseToSQL(filter, "sqlite")
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q) returned an error: %v", filter, err)
+			}
+
+			var n int
+			query := "SELECT count(*) FROM articles WHERE " + where
+			if err := db.QueryRow(query, params...).Scan(&n); err != nil {
+				t.Fatalf("ParseToSQL(%q) reported success but %q failed to execute: %v", filter, query, err)
 			}
 		})
 	}

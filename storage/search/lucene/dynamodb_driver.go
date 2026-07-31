@@ -66,6 +66,15 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 		return "", nil, nil
 	}
 
+	// A negation over field:null collapses to IS NOT NULL. The base driver
+	// already does this, and it must be intercepted before the walker below
+	// claims Not/MustNot, which would render NOT (field IS NULL) instead.
+	if e.Op == expr.Not || e.Op == expr.MustNot {
+		if _, ok := nullEqualsOperand(e.Left); ok {
+			return d.Base.RenderParam(e)
+		}
+	}
+
 	if sql, params, ok, err := renderLogicalOps(e, d.renderNode, d.Base.RenderParam); ok {
 		return sql, params, err
 	}
@@ -75,6 +84,12 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 	switch e.Op {
 	case expr.Equals:
 		if isArray && !isNullValue(e.Right) {
+			// go-lucene wraps a grouped value list as EQUALS(field, OR(...)),
+			// so the right side may be a whole sub-tree. Expand it against this
+			// field rather than stringifying it into a single bound value.
+			if group, ok := e.Right.(*expr.Expression); ok && (group.Op == expr.Or || group.Op == expr.And) {
+				return d.renderGroupedArrayExpr(name, group)
+			}
 			safe, err := escapePartiQLIdentifier(name)
 			if err != nil {
 				return "", nil, fmt.Errorf("invalid field name: %w", err)
@@ -88,9 +103,80 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 				name, name,
 			)
 		}
+	case expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
+		if isArray {
+			return "", nil, fmt.Errorf(
+				"operator %s is not supported on array field '%s'; array fields support containment (%s:value) and null checks",
+				e.Op, name, name,
+			)
+		}
+	case expr.Range:
+		if isArray {
+			return "", nil, fmt.Errorf(
+				"range queries are not supported on array field '%s'; array fields support containment (%s:value) and null checks",
+				name, name,
+			)
+		}
 	}
 
 	return d.Base.RenderParam(e)
+}
+
+// renderGroupedArrayExpr expands an OR/AND group under an array field into a
+// containment test per leaf, e.g. tags:(golang OR rust) becomes
+// (contains(tags, ?) OR contains(tags, ?)).
+//
+// The leaves carry go-lucene's default field rather than the outer one, so the
+// field name comes from the caller and each leaf contributes only its value.
+func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := d.renderGroupedArrayLeaf(name, e.Left)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if e.Right == nil {
+		return leftStr, leftParams, nil
+	}
+
+	rightStr, rightParams, err := d.renderGroupedArrayLeaf(name, e.Right)
+	if err != nil {
+		return "", nil, err
+	}
+
+	op := " OR "
+	if e.Op == expr.And {
+		op = " AND "
+	}
+	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
+}
+
+func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, v any) (string, []any, error) {
+	safe, err := escapePartiQLIdentifier(name)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid field name: %w", err)
+	}
+
+	if e, ok := v.(*expr.Expression); ok {
+		switch e.Op {
+		case expr.Or, expr.And:
+			return d.renderGroupedArrayExpr(name, e)
+		case expr.Equals:
+			// A leaf's own field is the parser's default field, not the outer
+			// one; only its value matters here.
+			return d.renderGroupedArrayLeaf(name, e.Right)
+		case expr.Wild, expr.Like:
+			return "", nil, fmt.Errorf(
+				"wildcard matching is not supported on array field '%s' in DynamoDB; PartiQL contains() tests element membership, not substrings — use %s:value for containment",
+				name, name,
+			)
+		}
+	}
+
+	if isNullValue(v) {
+		return fmt.Sprintf("%s IS NULL", safe), nil, nil
+	}
+
+	return fmt.Sprintf("contains(%s, ?)", safe), []any{extractLiteralValue(v)}, nil
 }
 
 // arrayFieldName returns the model field name for a column reference and

@@ -2199,3 +2199,180 @@ func TestSQLDriver_ArrayGroupedWithNull(t *testing.T) {
 		t.Errorf("expected IS NULL for the null branch, got %q", sql)
 	}
 }
+
+// TestSQLDriver_NotKeywordOnArrayField guards the second spelling of negation.
+//
+// `-tags:golang` (MustNot) and `NOT tags:golang` (Not) are different operators
+// in go-lucene. Only MustNot was routed through the driver's own walker, so the
+// NOT keyword fell through to the base driver and re-emitted `"tags" = ?` —
+// issue #224, still reproducible through that spelling.
+func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		filter   string
+		wantSQL  []string
+		notSQL   []string
+	}{
+		{
+			name:     "postgres containment",
+			provider: "postgresql",
+			filter:   "NOT tags:golang",
+			wantSQL:  []string{"NOT (", "COALESCE", `"tags" @> ARRAY[?]`},
+			notSQL:   []string{`"tags" = ?`},
+		},
+		{
+			name:     "postgres wildcard",
+			provider: "postgresql",
+			filter:   "NOT tags:*go*",
+			wantSQL:  []string{"NOT (", "EXISTS", `unnest("tags")`, "ILIKE ?"},
+			notSQL:   []string{"SIMILAR TO", `"tags" = ?`},
+		},
+		{
+			name:     "mysql containment",
+			provider: "mysql",
+			filter:   "NOT tags:golang",
+			wantSQL:  []string{"NOT (", "JSON_CONTAINS", "`tags`"},
+			notSQL:   []string{"`tags` = ?", `"tags"`},
+		},
+		{
+			name:     "mysql wildcard",
+			provider: "mysql",
+			filter:   "NOT tags:*go*",
+			wantSQL:  []string{"NOT (", "JSON_SEARCH", "`tags`"},
+			notSQL:   []string{"`tags` = ?"},
+		},
+		{
+			name:     "sqlite containment",
+			provider: "sqlite",
+			filter:   "NOT tags:golang",
+			wantSQL:  []string{"NOT (", "json_each", "value = ?"},
+			notSQL:   []string{`"tags" = ?`},
+		},
+		{
+			name:     "sqlite wildcard",
+			provider: "sqlite",
+			filter:   "NOT tags:*go*",
+			wantSQL:  []string{"NOT (", "json_each", "value LIKE ?"},
+			notSQL:   []string{`"tags" = ?`},
+		},
+		{
+			name:     "inside a compound expression",
+			provider: "postgresql",
+			filter:   "title:hello AND NOT tags:golang",
+			wantSQL:  []string{`"title" = ?`, "NOT (", "COALESCE", "@>"},
+			notSQL:   []string{`"tags" = ?`},
+		},
+		{
+			name:     "negated group",
+			provider: "postgresql",
+			filter:   "NOT tags:(golang OR rust)",
+			wantSQL:  []string{"NOT (", "OR"},
+			notSQL:   []string{`"tags" = ?`},
+		},
+	}
+
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, _, err := p.ParseToSQL(tt.filter, tt.provider)
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q, %q): %v", tt.filter, tt.provider, err)
+			}
+			for _, want := range tt.wantSQL {
+				if !strings.Contains(sql, want) {
+					t.Errorf("sql %q missing %q", sql, want)
+				}
+			}
+			for _, not := range tt.notSQL {
+				if strings.Contains(sql, not) {
+					t.Errorf("sql %q must not contain %q", sql, not)
+				}
+			}
+		})
+	}
+}
+
+// TestSQLDriver_NegatedNullStaysIsNotNull pins the one shape a negation must
+// NOT be walked into: go-lucene's base driver collapses Not/MustNot over
+// field:null to IS NOT NULL, and routing Not through the walker must not turn
+// that into NOT (field IS NULL).
+func TestSQLDriver_NegatedNullStaysIsNotNull(t *testing.T) {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	filters := []string{
+		"NOT tags:null", "NOT title:null", // Not keyword: array + scalar
+		"-tags:null", "-title:null", // MustNot spelling of the same
+	}
+
+	for _, provider := range []string{"postgresql", "mysql", "sqlite"} {
+		for _, filter := range filters {
+			t.Run(provider+" "+filter, func(t *testing.T) {
+				sql, params, err := p.ParseToSQL(filter, provider)
+				if err != nil {
+					t.Fatalf("ParseToSQL(%q, %q): %v", filter, provider, err)
+				}
+				if !strings.Contains(sql, "IS NOT NULL") {
+					t.Errorf("sql %q must render IS NOT NULL", sql)
+				}
+				if strings.Contains(sql, "NOT (") {
+					t.Errorf("sql %q must collapse the negation, not wrap it", sql)
+				}
+				if len(params) != 0 {
+					t.Errorf("a null check binds no params, got %#v", params)
+				}
+			})
+		}
+	}
+}
+
+// TestSQLDriver_GroupedWildcardLeaf guards a wildcard leaf inside a group.
+// tags:(golang* OR rust) used to bind the raw pattern "golang*" as a
+// containment value, silently matching nothing.
+func TestSQLDriver_GroupedWildcardLeaf(t *testing.T) {
+	p, err := NewParser(Article{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	t.Run("array field matches per element", func(t *testing.T) {
+		sql, params, err := p.ParseToSQL("tags:(golang* OR rust)", "postgresql")
+		if err != nil {
+			t.Fatalf("ParseToSQL: %v", err)
+		}
+		if !strings.Contains(sql, "unnest") || !strings.Contains(sql, "ILIKE") {
+			t.Errorf("wildcard leaf must render per-element matching, got %q", sql)
+		}
+		if !strings.Contains(sql, "@>") {
+			t.Errorf("literal leaf must still render containment, got %q", sql)
+		}
+		for _, p := range params {
+			if p == "golang*" {
+				t.Errorf("raw lucene pattern must not be bound as a value, got %#v", params)
+			}
+		}
+		if len(params) != 2 || params[0] != "golang%" || params[1] != "rust" {
+			t.Errorf("unexpected params %#v", params)
+		}
+	})
+
+	t.Run("scalar field uses ILIKE", func(t *testing.T) {
+		sql, params, err := p.ParseToSQL("title:(hello* OR world)", "postgresql")
+		if err != nil {
+			t.Fatalf("ParseToSQL: %v", err)
+		}
+		if !strings.Contains(sql, "ILIKE") {
+			t.Errorf("scalar wildcard leaf must render ILIKE, got %q", sql)
+		}
+		if len(params) != 2 || params[0] != "hello%" {
+			t.Errorf("unexpected params %#v", params)
+		}
+	})
+}

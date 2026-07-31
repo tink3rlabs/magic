@@ -346,8 +346,12 @@ func (s *SQLDriver) renderGroupedFieldExpr(ref fieldRef, e *expr.Expression) (st
 	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
 }
 
-// renderGroupedFieldLeaf renders a single node (leaf or sub-tree) in a grouped field expression,
-// always using ref's column regardless of what the node's own field is.
+// renderGroupedFieldLeaf renders a single node (leaf or sub-tree) in a grouped
+// field expression, always using ref as the column regardless of what the
+// node's own field is.
+//
+// Operator selection goes through the same array check as renderComparison, so
+// tags:(a OR b) renders containment rather than scalar equality.
 func (s *SQLDriver) renderGroupedFieldLeaf(ref fieldRef, v any) (string, []any, error) {
 	if e, ok := v.(*expr.Expression); ok {
 		if e.Op == expr.Or || e.Op == expr.And {
@@ -361,6 +365,15 @@ func (s *SQLDriver) renderGroupedFieldLeaf(ref fieldRef, v any) (string, []any, 
 	if isNullValue(v) {
 		return fmt.Sprintf("%s IS NULL", ref.sql), nil, nil
 	}
+
+	if ref.isArray() {
+		sqlStr, err := s.renderArrayContains(ref)
+		if err != nil {
+			return "", nil, err
+		}
+		return sqlStr, []any{extractLiteralValue(v)}, nil
+	}
+
 	valStr, valParams, err := s.serializeValue(v)
 	if err != nil {
 		return "", nil, err

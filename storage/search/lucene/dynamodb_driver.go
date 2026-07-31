@@ -80,7 +80,7 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 		return sql, params, err
 	}
 
-	name, elemType, isArray := d.arrayFieldName(e.Left)
+	name, fieldType, isArray := d.resolveArrayField(e.Left)
 
 	switch e.Op {
 	case expr.Equals:
@@ -89,24 +89,21 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 			// so the right side may be a whole sub-tree. Expand it against this
 			// field rather than stringifying it into a single bound value.
 			if group, ok := e.Right.(*expr.Expression); ok && (group.Op == expr.Or || group.Op == expr.And) {
-				return d.renderGroupedArrayExpr(name, elemType, group)
+				return d.renderGroupedArrayExpr(name, fieldType, group)
 			}
 			safe, err := escapePartiQLIdentifier(name)
 			if err != nil {
 				return "", nil, fmt.Errorf("invalid field name: %w", err)
 			}
-			val, err := normalizeArrayElemValue(name, elemType, extractLiteralValue(e.Right))
+			val, err := normalizeArrayElemValue(name, fieldType, extractLiteralValue(e.Right))
 			if err != nil {
 				return "", nil, err
 			}
-			return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(elemType, val)}, nil
+			return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, val)}, nil
 		}
 	case expr.Wild, expr.Like:
 		if isArray {
-			return "", nil, fmt.Errorf(
-				"wildcard matching is not supported on array field '%s' in DynamoDB; PartiQL contains() tests element membership, not substrings — use %s:value for containment",
-				name, name,
-			)
+			return "", nil, errArrayWildcardUnsupported(name)
 		}
 	case expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
 		if isArray {
@@ -127,14 +124,24 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 	return d.Base.RenderParam(e)
 }
 
+// errArrayWildcardUnsupported is the shared rejection for a wildcard against a
+// DynamoDB array: PartiQL contains() tests element membership, not substrings,
+// so no rendering would mean what the user asked for.
+func errArrayWildcardUnsupported(name string) error {
+	return fmt.Errorf(
+		"wildcard matching is not supported on array field '%s' in DynamoDB; PartiQL contains() tests element membership, not substrings — use %s:value for containment",
+		name, name,
+	)
+}
+
 // renderGroupedArrayExpr expands an OR/AND group under an array field into a
 // containment test per leaf, e.g. tags:(golang OR rust) becomes
 // (contains(tags, ?) OR contains(tags, ?)).
 //
 // The leaves carry go-lucene's default field rather than the outer one, so the
 // field name comes from the caller and each leaf contributes only its value.
-func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, elemType reflect.Type, e *expr.Expression) (string, []any, error) {
-	leftStr, leftParams, err := d.renderGroupedArrayLeaf(name, elemType, e.Left)
+func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, fieldType reflect.Type, e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := d.renderGroupedArrayLeaf(name, fieldType, e.Left)
 	if err != nil {
 		return "", nil, err
 	}
@@ -143,7 +150,7 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, elemType ref
 		return leftStr, leftParams, nil
 	}
 
-	rightStr, rightParams, err := d.renderGroupedArrayLeaf(name, elemType, e.Right)
+	rightStr, rightParams, err := d.renderGroupedArrayLeaf(name, fieldType, e.Right)
 	if err != nil {
 		return "", nil, err
 	}
@@ -155,7 +162,7 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, elemType ref
 	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
 }
 
-func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, elemType reflect.Type, v any) (string, []any, error) {
+func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, fieldType reflect.Type, v any) (string, []any, error) {
 	safe, err := escapePartiQLIdentifier(name)
 	if err != nil {
 		return "", nil, fmt.Errorf("invalid field name: %w", err)
@@ -164,16 +171,13 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, elemType ref
 	if e, ok := v.(*expr.Expression); ok {
 		switch e.Op {
 		case expr.Or, expr.And:
-			return d.renderGroupedArrayExpr(name, elemType, e)
+			return d.renderGroupedArrayExpr(name, fieldType, e)
 		case expr.Equals:
 			// A leaf's own field is the parser's default field, not the outer
 			// one; only its value matters here.
-			return d.renderGroupedArrayLeaf(name, elemType, e.Right)
+			return d.renderGroupedArrayLeaf(name, fieldType, e.Right)
 		case expr.Wild, expr.Like:
-			return "", nil, fmt.Errorf(
-				"wildcard matching is not supported on array field '%s' in DynamoDB; PartiQL contains() tests element membership, not substrings — use %s:value for containment",
-				name, name,
-			)
+			return "", nil, errArrayWildcardUnsupported(name)
 		}
 	}
 
@@ -181,11 +185,11 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, elemType ref
 		return fmt.Sprintf("%s IS NULL", safe), nil, nil
 	}
 
-	val, err := normalizeArrayElemValue(name, elemType, extractLiteralValue(v))
+	val, err := normalizeArrayElemValue(name, fieldType, extractLiteralValue(v))
 	if err != nil {
 		return "", nil, err
 	}
-	return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(elemType, val)}, nil
+	return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, val)}, nil
 }
 
 // arrayContainsParam converts a normalized containment value into a typed
@@ -194,39 +198,32 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, elemType ref
 //
 // raw has already been through normalizeArrayElemValue, so the numeric literal
 // is well-formed and the boolean is exactly "true" or "false".
-func arrayContainsParam(t reflect.Type, raw string) types.AttributeValue {
-	k := arrayElemKind(t)
+func arrayContainsParam(fieldType reflect.Type, raw string) types.AttributeValue {
 	switch {
-	case k == reflect.Bool:
+	case arrayElemKind(fieldType) == reflect.Bool:
 		return &types.AttributeValueMemberBOOL{Value: raw == "true"}
-	case isNonStringElem(k):
+	case isNumericArray(fieldType):
 		return &types.AttributeValueMemberN{Value: raw}
 	default:
 		return &types.AttributeValueMemberS{Value: raw}
 	}
 }
 
-// arrayFieldName returns the model field name for a column reference and
-// whether that field is a multi-valued (array) attribute.
-func (d *DynamoDBPartiQLDriver) arrayFieldName(in any) (string, reflect.Type, bool) {
-	var raw string
-	switch v := in.(type) {
-	case expr.Column:
-		raw = string(v)
-	case string:
-		raw = v
-	case *expr.Expression:
-		if v.Op == expr.Literal && v.Left != nil {
-			if col, ok := v.Left.(expr.Column); ok {
-				raw = string(col)
-			}
-		}
-	}
-	if raw == "" {
+// resolveArrayField returns the model field name for a column reference, the
+// field's Go type, and whether it is a multi-valued (array) attribute.
+//
+// The type is nil unless the field is a known array, so a caller that ignores
+// the bool cannot read a stale zero value.
+func (d *DynamoDBPartiQLDriver) resolveArrayField(in any) (string, reflect.Type, bool) {
+	raw, ok := columnName(in)
+	if !ok || raw == "" {
 		return "", nil, false
 	}
 	info, exists := d.fields[raw]
-	return raw, info.Type, exists && isArrayField(info.Type)
+	if !exists || !isArrayField(info.Type) {
+		return raw, nil, false
+	}
+	return raw, info.Type, true
 }
 
 // RenderPartiQL renders the expression to DynamoDB PartiQL with AttributeValue parameters.

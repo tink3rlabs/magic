@@ -32,6 +32,10 @@ type nodeRenderer func(*expr.Expression) (string, []any, error)
 //
 // fallback is used when a child is not an *expr.Expression and the driver has
 // no better option; it may be nil, in which case such a node is an error.
+//
+// fallback is called with e itself, NOT the offending child, and its result is
+// returned verbatim — the walker applies no negation wrapping to it, so a
+// fallback handling a MustNot node owns emitting the NOT.
 func renderLogicalOps(
 	e *expr.Expression,
 	renderNode nodeRenderer,

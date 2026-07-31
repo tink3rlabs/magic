@@ -2,9 +2,7 @@ package lucene
 
 import (
 	"fmt"
-	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/grindlemire/go-lucene/pkg/driver"
@@ -184,7 +182,10 @@ func (s *SQLDriver) renderScalarLike(leftStr, rightStr string) (string, error) {
 // deliberate divergence from Elasticsearch's exists query.
 func (s *SQLDriver) renderArrayWildcard(ref fieldRef, bare bool, params []any) (string, []any, error) {
 	if bare {
-		return fmt.Sprintf("%s IS NOT NULL", ref.sql), nil, nil
+		// The pattern param is deliberately dropped: this form tests the whole
+		// column, not a pattern. ref.params is still returned so a rendered
+		// sub-expression column keeps its own placeholders bound.
+		return fmt.Sprintf("%s IS NOT NULL", ref.sql), ref.params, nil
 	}
 
 	// A wildcard is substring matching, which only means something for string
@@ -192,7 +193,7 @@ func (s *SQLDriver) renderArrayWildcard(ref fieldRef, bare bool, params []any) (
 	// (Postgres: "operator does not exist: integer ~~* unknown") or silently
 	// matches nothing (MySQL JSON_SEARCH only searches string scalars), so
 	// reject it here and return a filter error rather than a database one.
-	if isNonStringElem(arrayElemKind(ref.info.Type)) {
+	if isNumericArray(ref.info.Type) {
 		return "", nil, fmt.Errorf(
 			"wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)",
 			ref.name, ref.name,
@@ -431,7 +432,7 @@ func (s *SQLDriver) renderGroupedWildcardLeaf(ref fieldRef, e *expr.Expression) 
 	}
 
 	if ref.isArray() {
-		return s.renderArrayWildcard(ref, raw == "*", valParams)
+		return s.renderArrayWildcard(ref, isBareWildcard(raw), valParams)
 	}
 
 	sqlStr, err := s.renderScalarLike(ref.sql, valStr)
@@ -495,45 +496,37 @@ func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
 	return sql, params, nil
 }
 
-// quoteColumnNameFor quotes a column name using the provider's identifier
+// quoteColumn quotes a column name using the provider's identifier
 // syntax, unless the string is already provider-specific JSON access syntax.
 //
 // MySQL's default sql_mode does not include ANSI_QUOTES, so a double-quoted
 // "col" there is a string LITERAL, not an identifier — the comparison would
 // silently run against the constant text instead of the column. MySQL uses
 // backticks; Postgres and SQLite use double quotes.
-func quoteColumnNameFor(provider, colStr string) string {
+func (s *SQLDriver) quoteColumn(colStr string) string {
 	if isJSONSyntax(colStr) {
 		return colStr
 	}
-	if provider == "mysql" {
+	if s.provider == "mysql" {
 		return fmt.Sprintf("`%s`", strings.ReplaceAll(colStr, "`", "``"))
 	}
 	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(colStr, `"`, `""`))
 }
 
 func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
-	switch v := in.(type) {
-	case expr.Column:
-		return quoteColumnNameFor(s.provider, string(v)), nil, nil
-	case string:
-		return quoteColumnNameFor(s.provider, v), nil, nil
-	case *expr.Expression:
-		if v.Op == expr.Literal && v.Left != nil {
-			if col, ok := v.Left.(expr.Column); ok {
-				return quoteColumnNameFor(s.provider, string(col)), nil, nil
-			}
-		}
-		return s.renderParamInternal(v)
-	default:
-		return "", nil, fmt.Errorf("unexpected column type: %T", v)
+	if name, ok := columnName(in); ok {
+		return s.quoteColumn(name), nil, nil
 	}
+	if sub, ok := in.(*expr.Expression); ok {
+		return s.renderParamInternal(sub)
+	}
+	return "", nil, fmt.Errorf("unexpected column type: %T", in)
 }
 
 // fieldRef is a column reference resolved back to its model metadata.
 //
 // Resolution must happen BEFORE quoting: by the time a column has been through
-// quoteColumnNameFor it is `"tags"` or `metadata->>'k'`, and the original model
+// quoteColumn it is `"tags"` or `metadata->>'k'`, and the original model
 // field name — the key into s.fields — is no longer recoverable.
 type fieldRef struct {
 	name   string    // original model field name ("" when unresolvable)
@@ -551,31 +544,22 @@ func (f fieldRef) isArray() bool {
 // resolveField turns an expression's left-hand side into a fieldRef, looking up
 // the model metadata before the name is quoted away.
 func (s *SQLDriver) resolveField(in any) (fieldRef, error) {
-	var raw string
-
-	switch v := in.(type) {
-	case expr.Column:
-		raw = string(v)
-	case string:
-		raw = v
-	case *expr.Expression:
-		if v.Op == expr.Literal && v.Left != nil {
-			if col, ok := v.Left.(expr.Column); ok {
-				raw = string(col)
-			}
+	raw, ok := columnName(in)
+	if !ok {
+		// Not a column reference: a rendered sub-expression carries its own SQL
+		// and params, and anything else is a caller error.
+		sub, isExpr := in.(*expr.Expression)
+		if !isExpr {
+			return fieldRef{}, fmt.Errorf("unexpected column type: %T", in)
 		}
-		if raw == "" {
-			sql, params, err := s.renderParamInternal(v)
-			if err != nil {
-				return fieldRef{}, err
-			}
-			return fieldRef{sql: sql, params: params}, nil
+		sql, params, err := s.renderParamInternal(sub)
+		if err != nil {
+			return fieldRef{}, err
 		}
-	default:
-		return fieldRef{}, fmt.Errorf("unexpected column type: %T", in)
+		return fieldRef{sql: sql, params: params}, nil
 	}
 
-	ref := fieldRef{name: raw, sql: quoteColumnNameFor(s.provider, raw)}
+	ref := fieldRef{name: raw, sql: s.quoteColumn(raw)}
 	// A dotted name is JSONB nested access; the base field is not the column.
 	if !strings.Contains(raw, ".") {
 		if info, exists := s.fields[raw]; exists {
@@ -586,155 +570,13 @@ func (s *SQLDriver) resolveField(in any) (fieldRef, error) {
 	return ref, nil
 }
 
-// arrayElemCast returns the Postgres cast suffix needed so a text-bound
-// parameter is compared against a non-text array.
-//
-// Parameters are always serialized as Go strings (serializeValue stringifies
-// via fmt.Sprintf), so `int[] @> ARRAY[$1]` fails with
-// "operator does not exist: integer[] @> text[]" without an explicit cast.
-//
-// The cast must name the column's ACTUAL element type. `@>` requires exactly
-// matching array types and neither narrowing nor widening rescues a mismatch:
-// `bigint[] @> ARRAY['9999999999']::int[]` errors with "value out of range for
-// type integer", `int[] @> ARRAY['5']::bigint[]` errors with "no operator
-// matches", and `smallint[] @> ARRAY['1']::int[]` errors the same way. Likewise
-// numeric[] does not satisfy a float8[] column.
-//
-// So each Go element kind maps to the natural Postgres array type for that kind
-// — the width that round-trips it exactly — not to a convenient superset. Each
-// signed width picks the smallest Postgres integer that holds it; unsigned kinds
-// need one more bit and so step up a width.
-//
-// reflect.Uint8 is deliberately absent: isArrayField excludes any slice or
-// array of bytes as a scalar blob, so a uint8 element cannot reach this layer.
-// Listing it would imply a byte-array code path that does not exist.
-func arrayElemCast(t reflect.Type) string {
-	if t == nil {
-		return ""
-	}
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
-		return ""
-	}
-	switch t.Elem().Kind() {
-	case reflect.String:
-		return ""
-	case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint64, reflect.Uint32:
-		// Go int is 64-bit; uint32 needs 33 bits, so it too only fits bigint.
-		return "::bigint[]"
-	case reflect.Int8, reflect.Int16:
-		return "::smallint[]"
-	case reflect.Int32, reflect.Uint16:
-		return "::int[]"
-	case reflect.Float64:
-		return "::double precision[]"
-	case reflect.Float32:
-		return "::real[]"
-	case reflect.Bool:
-		return "::boolean[]"
-	default:
-		return ""
-	}
-}
-
-// arrayElemKind returns the element kind of a multi-valued field, or
-// reflect.Invalid when t is not a slice or array.
-func arrayElemKind(t reflect.Type) reflect.Kind {
-	if t == nil {
-		return reflect.Invalid
-	}
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
-		return reflect.Invalid
-	}
-	return t.Elem().Kind()
-}
-
-// isNonStringElem reports whether an array holds numeric or boolean elements,
-// i.e. values that must not be bound as strings.
-func isNonStringElem(k reflect.Kind) bool {
-	switch k {
-	case reflect.Bool,
-		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64:
-		return true
-	default:
-		return false
-	}
-}
-
-// elemBitSize is the strconv bit size for a numeric element kind.
-func elemBitSize(k reflect.Kind) int {
-	switch k {
-	case reflect.Int8, reflect.Uint8:
-		return 8
-	case reflect.Int16, reflect.Uint16:
-		return 16
-	case reflect.Int32, reflect.Uint32, reflect.Float32:
-		return 32
-	default:
-		return 64
-	}
-}
-
-// normalizeArrayElemValue validates a containment value against the array's
-// element type and returns it as the canonical JSON scalar literal every
-// provider accepts ("5", "1.5", "true").
-//
-// Values reach this layer already stringified, so without this check a
-// non-numeric value on an integer column reaches the database and fails there —
-// a 500 for what is really a malformed filter, which is the whole class of bug
-// array support exists to remove.
-func normalizeArrayElemValue(fieldName string, t reflect.Type, raw string) (string, error) {
-	k := arrayElemKind(t)
-	bits := elemBitSize(k)
-
-	switch k {
-	case reflect.Bool:
-		b, err := strconv.ParseBool(raw)
-		if err != nil {
-			return "", fmt.Errorf("invalid value %q for boolean array field '%s'", raw, fieldName)
-		}
-		return strconv.FormatBool(b), nil
-
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		n, err := strconv.ParseInt(raw, 10, bits)
-		if err != nil {
-			return "", fmt.Errorf("invalid value %q for integer array field '%s'", raw, fieldName)
-		}
-		return strconv.FormatInt(n, 10), nil
-
-	case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		n, err := strconv.ParseUint(raw, 10, bits)
-		if err != nil {
-			return "", fmt.Errorf("invalid value %q for unsigned integer array field '%s'", raw, fieldName)
-		}
-		return strconv.FormatUint(n, 10), nil
-
-	case reflect.Float32, reflect.Float64:
-		f, err := strconv.ParseFloat(raw, bits)
-		if err != nil {
-			return "", fmt.Errorf("invalid value %q for float array field '%s'", raw, fieldName)
-		}
-		return strconv.FormatFloat(f, 'g', -1, bits), nil
-
-	default:
-		return raw, nil
-	}
-}
-
 // renderArrayContains renders "does this array column contain the bound value",
 // with one ? placeholder.
 //
 // Wrapped in COALESCE(..., false) so NOT field:value matches rows whose column
 // is NULL. Without it, NOT(NULL) is NULL and those rows vanish silently.
 func (s *SQLDriver) renderArrayContains(f fieldRef) (string, error) {
-	typed := isNonStringElem(arrayElemKind(f.info.Type))
+	typed := isNumericArray(f.info.Type)
 
 	switch s.provider {
 	case "postgresql":

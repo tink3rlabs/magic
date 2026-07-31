@@ -2,6 +2,7 @@ package lucene
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -79,7 +80,7 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 		return sql, params, err
 	}
 
-	name, isArray := d.arrayFieldName(e.Left)
+	name, elemType, isArray := d.arrayFieldName(e.Left)
 
 	switch e.Op {
 	case expr.Equals:
@@ -88,13 +89,17 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 			// so the right side may be a whole sub-tree. Expand it against this
 			// field rather than stringifying it into a single bound value.
 			if group, ok := e.Right.(*expr.Expression); ok && (group.Op == expr.Or || group.Op == expr.And) {
-				return d.renderGroupedArrayExpr(name, group)
+				return d.renderGroupedArrayExpr(name, elemType, group)
 			}
 			safe, err := escapePartiQLIdentifier(name)
 			if err != nil {
 				return "", nil, fmt.Errorf("invalid field name: %w", err)
 			}
-			return fmt.Sprintf("contains(%s, ?)", safe), []any{extractLiteralValue(e.Right)}, nil
+			val, err := normalizeArrayElemValue(name, elemType, extractLiteralValue(e.Right))
+			if err != nil {
+				return "", nil, err
+			}
+			return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(elemType, val)}, nil
 		}
 	case expr.Wild, expr.Like:
 		if isArray {
@@ -128,8 +133,8 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 //
 // The leaves carry go-lucene's default field rather than the outer one, so the
 // field name comes from the caller and each leaf contributes only its value.
-func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, e *expr.Expression) (string, []any, error) {
-	leftStr, leftParams, err := d.renderGroupedArrayLeaf(name, e.Left)
+func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, elemType reflect.Type, e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := d.renderGroupedArrayLeaf(name, elemType, e.Left)
 	if err != nil {
 		return "", nil, err
 	}
@@ -138,7 +143,7 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, e *expr.Expr
 		return leftStr, leftParams, nil
 	}
 
-	rightStr, rightParams, err := d.renderGroupedArrayLeaf(name, e.Right)
+	rightStr, rightParams, err := d.renderGroupedArrayLeaf(name, elemType, e.Right)
 	if err != nil {
 		return "", nil, err
 	}
@@ -150,7 +155,7 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayExpr(name string, e *expr.Expr
 	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
 }
 
-func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, v any) (string, []any, error) {
+func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, elemType reflect.Type, v any) (string, []any, error) {
 	safe, err := escapePartiQLIdentifier(name)
 	if err != nil {
 		return "", nil, fmt.Errorf("invalid field name: %w", err)
@@ -159,11 +164,11 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, v any) (stri
 	if e, ok := v.(*expr.Expression); ok {
 		switch e.Op {
 		case expr.Or, expr.And:
-			return d.renderGroupedArrayExpr(name, e)
+			return d.renderGroupedArrayExpr(name, elemType, e)
 		case expr.Equals:
 			// A leaf's own field is the parser's default field, not the outer
 			// one; only its value matters here.
-			return d.renderGroupedArrayLeaf(name, e.Right)
+			return d.renderGroupedArrayLeaf(name, elemType, e.Right)
 		case expr.Wild, expr.Like:
 			return "", nil, fmt.Errorf(
 				"wildcard matching is not supported on array field '%s' in DynamoDB; PartiQL contains() tests element membership, not substrings — use %s:value for containment",
@@ -176,12 +181,34 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, v any) (stri
 		return fmt.Sprintf("%s IS NULL", safe), nil, nil
 	}
 
-	return fmt.Sprintf("contains(%s, ?)", safe), []any{extractLiteralValue(v)}, nil
+	val, err := normalizeArrayElemValue(name, elemType, extractLiteralValue(v))
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(elemType, val)}, nil
+}
+
+// arrayContainsParam converts a normalized containment value into a typed
+// AttributeValue, so a numeric or boolean array is compared against a number
+// or a boolean rather than a string that can never match.
+//
+// raw has already been through normalizeArrayElemValue, so the numeric literal
+// is well-formed and the boolean is exactly "true" or "false".
+func arrayContainsParam(t reflect.Type, raw string) types.AttributeValue {
+	k := arrayElemKind(t)
+	switch {
+	case k == reflect.Bool:
+		return &types.AttributeValueMemberBOOL{Value: raw == "true"}
+	case isNonStringElem(k):
+		return &types.AttributeValueMemberN{Value: raw}
+	default:
+		return &types.AttributeValueMemberS{Value: raw}
+	}
 }
 
 // arrayFieldName returns the model field name for a column reference and
 // whether that field is a multi-valued (array) attribute.
-func (d *DynamoDBPartiQLDriver) arrayFieldName(in any) (string, bool) {
+func (d *DynamoDBPartiQLDriver) arrayFieldName(in any) (string, reflect.Type, bool) {
 	var raw string
 	switch v := in.(type) {
 	case expr.Column:
@@ -196,10 +223,10 @@ func (d *DynamoDBPartiQLDriver) arrayFieldName(in any) (string, bool) {
 		}
 	}
 	if raw == "" {
-		return "", false
+		return "", nil, false
 	}
 	info, exists := d.fields[raw]
-	return raw, exists && isArrayField(info.Type)
+	return raw, info.Type, exists && isArrayField(info.Type)
 }
 
 // RenderPartiQL renders the expression to DynamoDB PartiQL with AttributeValue parameters.
@@ -210,9 +237,15 @@ func (d *DynamoDBPartiQLDriver) RenderPartiQL(e *expr.Expression) (string, []typ
 		return "", nil, err
 	}
 
-	// Convert params to DynamoDB AttributeValues
+	// Convert params to DynamoDB AttributeValues. Array containment binds an
+	// already-typed AttributeValue (number, boolean) so it survives this step;
+	// everything else is still a string attribute.
 	attrValues := make([]types.AttributeValue, len(params))
 	for i, param := range params {
+		if av, ok := param.(types.AttributeValue); ok {
+			attrValues[i] = av
+			continue
+		}
 		attrValues[i] = &types.AttributeValueMemberS{Value: fmt.Sprintf("%v", param)}
 	}
 

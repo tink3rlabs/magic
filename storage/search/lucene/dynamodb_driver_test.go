@@ -730,3 +730,79 @@ func TestDynamoDBDriver_ArrayOrderingAndRangeAreErrors(t *testing.T) {
 		})
 	}
 }
+
+// Containment values must reach DynamoDB as the attribute type they are
+// compared against. Binding every value as a string attribute makes numeric
+// and boolean array containment silently match nothing.
+func TestDynamoDBDriver_TypedArrayContainmentAttributeTypes(t *testing.T) {
+	fields := []FieldInfo{
+		{Name: "nums", Type: reflect.TypeOf([]int{})},
+		{Name: "flags", Type: reflect.TypeOf([]bool{})},
+		{Name: "tags", Type: reflect.TypeOf([]string{})},
+	}
+	d, err := NewDynamoDBDriver(fields)
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		field string
+		value string
+		check func(types.AttributeValue) bool
+		want  string
+	}{
+		{"int array binds N", "nums", "5", func(v types.AttributeValue) bool {
+			n, ok := v.(*types.AttributeValueMemberN)
+			return ok && n.Value == "5"
+		}, "N=5"},
+		{"bool array binds BOOL", "flags", "true", func(v types.AttributeValue) bool {
+			b, ok := v.(*types.AttributeValueMemberBOOL)
+			return ok && b.Value
+		}, "BOOL=true"},
+		{"string array still binds S", "tags", "golang", func(v types.AttributeValue) bool {
+			s, ok := v.(*types.AttributeValueMemberS)
+			return ok && s.Value == "golang"
+		}, "S=golang"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &expr.Expression{
+				Op:    expr.Equals,
+				Left:  expr.Column(tt.field),
+				Right: &expr.Expression{Op: expr.Literal, Left: tt.value},
+			}
+			sql, params, err := d.RenderPartiQL(e)
+			if err != nil {
+				t.Fatalf("RenderPartiQL: %v", err)
+			}
+			if !strings.Contains(sql, "contains("+tt.field+", ?)") {
+				t.Errorf("sql %q is not a containment test", sql)
+			}
+			if len(params) != 1 {
+				t.Fatalf("expected 1 param, got %d", len(params))
+			}
+			if !tt.check(params[0]) {
+				t.Errorf("param %#v is not %s", params[0], tt.want)
+			}
+		})
+	}
+}
+
+// A value that cannot be an element of the field's type is a malformed filter.
+func TestDynamoDBDriver_TypedArrayRejectsMistypedValue(t *testing.T) {
+	d, err := NewDynamoDBDriver([]FieldInfo{{Name: "nums", Type: reflect.TypeOf([]int{})}})
+	if err != nil {
+		t.Fatalf("NewDynamoDBDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Equals,
+		Left:  expr.Column("nums"),
+		Right: &expr.Expression{Op: expr.Literal, Left: "abc"},
+	}
+	if _, _, err := d.RenderPartiQL(e); err == nil {
+		t.Error("RenderPartiQL returned no error for a non-numeric value on an int array")
+	}
+}

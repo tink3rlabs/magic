@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/grindlemire/go-lucene/pkg/driver"
@@ -186,20 +187,29 @@ func (s *SQLDriver) renderArrayWildcard(ref fieldRef, bare bool, params []any) (
 		return fmt.Sprintf("%s IS NOT NULL", ref.sql), nil, nil
 	}
 
+	// A wildcard is substring matching, which only means something for string
+	// elements. On a numeric or boolean array every provider either errors
+	// (Postgres: "operator does not exist: integer ~~* unknown") or silently
+	// matches nothing (MySQL JSON_SEARCH only searches string scalars), so
+	// reject it here and return a filter error rather than a database one.
+	if isNonStringElem(arrayElemKind(ref.info.Type)) {
+		return "", nil, fmt.Errorf(
+			"wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)",
+			ref.name, ref.name,
+		)
+	}
+
 	switch s.provider {
 	case "postgresql":
 		return fmt.Sprintf("EXISTS (SELECT 1 FROM unnest(%s) AS elem WHERE elem ILIKE ?)", ref.sql), params, nil
 	case "mysql":
-		// KNOWN LIMITATION (accepted, unverified fix needed): JSON_SEARCH compares
-		// JSON string scalars under the utf8mb4_bin collation regardless of the
-		// column's or session's collation, so this match is case-sensitive —
-		// tags:*Go* will not match ["golang"] on MySQL, unlike the Postgres ILIKE
-		// and SQLite LIKE branches above (both case-insensitive), and unlike this
-		// same provider's own scalar wildcard branch, which wraps in LOWER(...) to
-		// force case-folding. Any fix (LOWER(CAST(...)), a collation clause, etc.)
-		// needs verification against a live MySQL instance, which is not available
-		// in this environment — left as-is rather than shipping an unverified change.
-		return fmt.Sprintf("JSON_SEARCH(%s, 'one', ?) IS NOT NULL", ref.sql), params, nil
+		// JSON_SEARCH compares JSON string scalars under the utf8mb4_bin
+		// collation regardless of the column's or session's collation, so an
+		// unfolded match here is case-sensitive — tags:*Go* would not match
+		// ["golang"]. Folding both the document and the pattern keeps this
+		// branch consistent with the case-insensitive Postgres ILIKE and SQLite
+		// LIKE branches, and with this provider's own scalar wildcard branch.
+		return fmt.Sprintf("JSON_SEARCH(LOWER(CAST(%s AS CHAR)), 'one', LOWER(?)) IS NOT NULL", ref.sql), params, nil
 	case "sqlite":
 		return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value LIKE ?)", ref.sql), params, nil
 	default:
@@ -292,11 +302,15 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 	}
 
 	if ref.isArray() && e.Op == expr.Equals {
+		val, err := normalizeArrayElemValue(ref.name, ref.info.Type, extractLiteralValue(e.Right))
+		if err != nil {
+			return "", nil, err
+		}
 		sqlStr, err := s.renderArrayContains(ref)
 		if err != nil {
 			return "", nil, err
 		}
-		return sqlStr, append(leftParams, extractLiteralValue(e.Right)), nil
+		return sqlStr, append(leftParams, val), nil
 	}
 
 	if ref.isArray() {
@@ -381,11 +395,15 @@ func (s *SQLDriver) renderGroupedFieldLeaf(ref fieldRef, v any) (string, []any, 
 	}
 
 	if ref.isArray() {
+		val, err := normalizeArrayElemValue(ref.name, ref.info.Type, extractLiteralValue(v))
+		if err != nil {
+			return "", nil, err
+		}
 		sqlStr, err := s.renderArrayContains(ref)
 		if err != nil {
 			return "", nil, err
 		}
-		return sqlStr, []any{extractLiteralValue(v)}, nil
+		return sqlStr, []any{val}, nil
 	}
 
 	valStr, valParams, err := s.serializeValue(v)
@@ -620,19 +638,122 @@ func arrayElemCast(t reflect.Type) string {
 	}
 }
 
+// arrayElemKind returns the element kind of a multi-valued field, or
+// reflect.Invalid when t is not a slice or array.
+func arrayElemKind(t reflect.Type) reflect.Kind {
+	if t == nil {
+		return reflect.Invalid
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
+		return reflect.Invalid
+	}
+	return t.Elem().Kind()
+}
+
+// isNonStringElem reports whether an array holds numeric or boolean elements,
+// i.e. values that must not be bound as strings.
+func isNonStringElem(k reflect.Kind) bool {
+	switch k {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
+// elemBitSize is the strconv bit size for a numeric element kind.
+func elemBitSize(k reflect.Kind) int {
+	switch k {
+	case reflect.Int8, reflect.Uint8:
+		return 8
+	case reflect.Int16, reflect.Uint16:
+		return 16
+	case reflect.Int32, reflect.Uint32, reflect.Float32:
+		return 32
+	default:
+		return 64
+	}
+}
+
+// normalizeArrayElemValue validates a containment value against the array's
+// element type and returns it as the canonical JSON scalar literal every
+// provider accepts ("5", "1.5", "true").
+//
+// Values reach this layer already stringified, so without this check a
+// non-numeric value on an integer column reaches the database and fails there —
+// a 500 for what is really a malformed filter, which is the whole class of bug
+// array support exists to remove.
+func normalizeArrayElemValue(fieldName string, t reflect.Type, raw string) (string, error) {
+	k := arrayElemKind(t)
+	bits := elemBitSize(k)
+
+	switch k {
+	case reflect.Bool:
+		b, err := strconv.ParseBool(raw)
+		if err != nil {
+			return "", fmt.Errorf("invalid value %q for boolean array field '%s'", raw, fieldName)
+		}
+		return strconv.FormatBool(b), nil
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n, err := strconv.ParseInt(raw, 10, bits)
+		if err != nil {
+			return "", fmt.Errorf("invalid value %q for integer array field '%s'", raw, fieldName)
+		}
+		return strconv.FormatInt(n, 10), nil
+
+	case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n, err := strconv.ParseUint(raw, 10, bits)
+		if err != nil {
+			return "", fmt.Errorf("invalid value %q for unsigned integer array field '%s'", raw, fieldName)
+		}
+		return strconv.FormatUint(n, 10), nil
+
+	case reflect.Float32, reflect.Float64:
+		f, err := strconv.ParseFloat(raw, bits)
+		if err != nil {
+			return "", fmt.Errorf("invalid value %q for float array field '%s'", raw, fieldName)
+		}
+		return strconv.FormatFloat(f, 'g', -1, bits), nil
+
+	default:
+		return raw, nil
+	}
+}
+
 // renderArrayContains renders "does this array column contain the bound value",
 // with one ? placeholder.
 //
 // Wrapped in COALESCE(..., false) so NOT field:value matches rows whose column
 // is NULL. Without it, NOT(NULL) is NULL and those rows vanish silently.
 func (s *SQLDriver) renderArrayContains(f fieldRef) (string, error) {
+	typed := isNonStringElem(arrayElemKind(f.info.Type))
+
 	switch s.provider {
 	case "postgresql":
 		cast := arrayElemCast(f.info.Type)
 		return fmt.Sprintf("COALESCE(%s @> ARRAY[?]%s, false)", f.sql, cast), nil
 	case "mysql":
+		// JSON_QUOTE builds a JSON *string*, which never equals a numeric or
+		// boolean element. CAST(? AS JSON) parses the canonical literal that
+		// normalizeArrayElemValue produced into the matching JSON scalar.
+		if typed {
+			return fmt.Sprintf("COALESCE(JSON_CONTAINS(%s, CAST(? AS JSON)), false)", f.sql), nil
+		}
 		return fmt.Sprintf("COALESCE(JSON_CONTAINS(%s, JSON_QUOTE(?)), false)", f.sql), nil
 	case "sqlite":
+		// json_each yields numbers as numbers and booleans as 1/0, none of which
+		// equal a bound string. json_extract(json(?), '$') re-parses the literal
+		// into that same representation.
+		if typed {
+			return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value = json_extract(json(?), '$'))", f.sql), nil
+		}
 		return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value = ?)", f.sql), nil
 	default:
 		return "", fmt.Errorf("unsupported SQL provider: %s", s.provider)

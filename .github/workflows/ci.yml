@@ -84,6 +84,11 @@ jobs:
           go-version: '1.25.3'
           cache: true
       - name: Run tests
+        # The executed-SQL tests use github.com/mattn/go-sqlite3, which is cgo.
+        # Runners default to CGO_ENABLED=1, but pinning it keeps those tests
+        # from silently failing to build if that default ever changes.
+        env:
+          CGO_ENABLED: '1'
         run: go test -v -cover ./...
         # env:
         #   CASSANDRA_HOSTS: "localhost"

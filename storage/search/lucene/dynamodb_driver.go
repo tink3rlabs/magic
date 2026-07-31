@@ -50,6 +50,72 @@ func NewDynamoDBDriver(fields []FieldInfo) (*DynamoDBPartiQLDriver, error) {
 	}, nil
 }
 
+// RenderParam renders the expression, intercepting array fields before
+// delegating to the base driver.
+//
+// The traversal is ours rather than the base driver's because
+// go-lucene's Base.RenderParam recurses through its own serializeParams and
+// never calls back into an override — so a top-level override alone would miss
+// an Equals nested inside AND/OR.
+func (d *DynamoDBPartiQLDriver) RenderParam(e *expr.Expression) (string, []any, error) {
+	return d.renderNode(e)
+}
+
+func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, error) {
+	if e == nil {
+		return "", nil, nil
+	}
+
+	if sql, params, ok, err := renderLogicalOps(e, d.renderNode, d.Base.RenderParam); ok {
+		return sql, params, err
+	}
+
+	name, isArray := d.arrayFieldName(e.Left)
+
+	switch e.Op {
+	case expr.Equals:
+		if isArray && !isNullValue(e.Right) {
+			safe, err := escapePartiQLIdentifier(name)
+			if err != nil {
+				return "", nil, fmt.Errorf("invalid field name: %w", err)
+			}
+			return fmt.Sprintf("contains(%s, ?)", safe), []any{extractLiteralValue(e.Right)}, nil
+		}
+	case expr.Wild, expr.Like:
+		if isArray {
+			return "", nil, fmt.Errorf(
+				"wildcard matching is not supported on array field '%s' in DynamoDB; PartiQL contains() tests element membership, not substrings — use %s:value for containment",
+				name, name,
+			)
+		}
+	}
+
+	return d.Base.RenderParam(e)
+}
+
+// arrayFieldName returns the model field name for a column reference and
+// whether that field is a multi-valued (array) attribute.
+func (d *DynamoDBPartiQLDriver) arrayFieldName(in any) (string, bool) {
+	var raw string
+	switch v := in.(type) {
+	case expr.Column:
+		raw = string(v)
+	case string:
+		raw = v
+	case *expr.Expression:
+		if v.Op == expr.Literal && v.Left != nil {
+			if col, ok := v.Left.(expr.Column); ok {
+				raw = string(col)
+			}
+		}
+	}
+	if raw == "" {
+		return "", false
+	}
+	info, exists := d.fields[raw]
+	return raw, exists && isArrayField(info.Type)
+}
+
 // RenderPartiQL renders the expression to DynamoDB PartiQL with AttributeValue parameters.
 func (d *DynamoDBPartiQLDriver) RenderPartiQL(e *expr.Expression) (string, []types.AttributeValue, error) {
 	// Use base rendering with ? placeholders

@@ -180,6 +180,15 @@ func (s *SQLDriver) renderArrayWildcard(ref fieldRef, e *expr.Expression, params
 	case "postgresql":
 		return fmt.Sprintf("EXISTS (SELECT 1 FROM unnest(%s) AS elem WHERE elem ILIKE ?)", ref.sql), params, nil
 	case "mysql":
+		// KNOWN LIMITATION (accepted, unverified fix needed): JSON_SEARCH compares
+		// JSON string scalars under the utf8mb4_bin collation regardless of the
+		// column's or session's collation, so this match is case-sensitive —
+		// tags:*Go* will not match ["golang"] on MySQL, unlike the Postgres ILIKE
+		// and SQLite LIKE branches above (both case-insensitive), and unlike this
+		// same provider's own scalar wildcard branch, which wraps in LOWER(...) to
+		// force case-folding. Any fix (LOWER(CAST(...)), a collation clause, etc.)
+		// needs verification against a live MySQL instance, which is not available
+		// in this environment — left as-is rather than shipping an unverified change.
 		return fmt.Sprintf("JSON_SEARCH(%s, 'one', ?) IS NOT NULL", ref.sql), params, nil
 	case "sqlite":
 		return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value LIKE ?)", ref.sql), params, nil

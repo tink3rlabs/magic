@@ -298,71 +298,17 @@ func (s *SQLDriver) renderGroupedFieldLeaf(fieldSQL string, v any) (string, []an
 	return fmt.Sprintf("%s = %s", fieldSQL, valStr), valParams, nil
 }
 
-// renderBinary handles binary and unary logical operators recursively.
+// renderBinary handles binary and unary logical operators via the shared walker.
 // Note: Must and MustNot are unary (only Left operand), while And and Or are binary.
 func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
-	switch e.Op {
-	case expr.Must, expr.MustNot:
-		if e.Left == nil {
-			return "", nil, fmt.Errorf("%s operator requires a left operand", e.Op)
-		}
-
-		var leftStr string
-		var leftParams []any
-		var err error
-
-		if leftExpr, ok := e.Left.(*expr.Expression); ok {
-			leftStr, leftParams, err = s.renderParamInternal(leftExpr)
-			if err != nil {
-				return "", nil, err
-			}
-		} else {
-			leftStr, leftParams, err = s.serializeColumn(e.Left)
-			if err != nil {
-				leftStr, leftParams, err = s.serializeValue(e.Left)
-				if err != nil {
-					return s.Base.RenderParam(e)
-				}
-			}
-		}
-
-		if e.Op == expr.Must {
-			return leftStr, leftParams, nil
-		}
-		return fmt.Sprintf("NOT (%s)", leftStr), leftParams, nil
-
-	case expr.And, expr.Or:
-		if e.Left == nil || e.Right == nil {
-			return "", nil, fmt.Errorf("%s operator requires both left and right operands", e.Op)
-		}
-
-		leftExpr, leftIsExpr := e.Left.(*expr.Expression)
-		rightExpr, rightIsExpr := e.Right.(*expr.Expression)
-
-		if !leftIsExpr || !rightIsExpr {
-			return s.Base.RenderParam(e)
-		}
-
-		leftStr, leftParams, err := s.renderParamInternal(leftExpr)
-		if err != nil {
-			return "", nil, err
-		}
-
-		rightStr, rightParams, err := s.renderParamInternal(rightExpr)
-		if err != nil {
-			return "", nil, err
-		}
-
-		params := append(leftParams, rightParams...)
-
-		if e.Op == expr.And {
-			return fmt.Sprintf("(%s) AND (%s)", leftStr, rightStr), params, nil
-		}
-		return fmt.Sprintf("(%s) OR (%s)", leftStr, rightStr), params, nil
-
-	default:
+	sql, params, ok, err := renderLogicalOps(e, s.renderParamInternal, s.Base.RenderParam)
+	if err != nil {
+		return "", nil, err
+	}
+	if !ok {
 		return "", nil, fmt.Errorf("unsupported operator: %v", e.Op)
 	}
+	return sql, params, nil
 }
 
 // quoteColumnName quotes a column name if it's not already JSON syntax.

@@ -445,6 +445,16 @@ func (s *SQLDriver) resolveField(in any) (fieldRef, error) {
 // Parameters are always serialized as Go strings (serializeValue stringifies
 // via fmt.Sprintf), so `int[] @> ARRAY[$1]` fails with
 // "operator does not exist: integer[] @> text[]" without an explicit cast.
+//
+// The cast must name the column's ACTUAL element type. `@>` requires exactly
+// matching array types and neither narrowing nor widening rescues a mismatch:
+// `bigint[] @> ARRAY['9999999999']::int[]` errors with "value out of range for
+// type integer", and `int[] @> ARRAY['5']::bigint[]` errors with "no operator
+// matches". Likewise numeric[] does not satisfy a float8[] column. So each Go
+// element kind maps to the Postgres type GORM would have created for it, not to
+// a convenient superset.
+//
+// reflect.Uint8 never reaches here — isArrayField excludes []byte as a scalar blob.
 func arrayElemCast(t reflect.Type) string {
 	if t == nil {
 		return ""
@@ -458,11 +468,15 @@ func arrayElemCast(t reflect.Type) string {
 	switch t.Elem().Kind() {
 	case reflect.String:
 		return ""
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	case reflect.Int, reflect.Int64, reflect.Uint, reflect.Uint64:
+		// Go int is 64-bit and GORM maps it to bigint on Postgres.
+		return "::bigint[]"
+	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Uint16, reflect.Uint32:
 		return "::int[]"
-	case reflect.Float32, reflect.Float64:
-		return "::numeric[]"
+	case reflect.Float64:
+		return "::double precision[]"
+	case reflect.Float32:
+		return "::real[]"
 	case reflect.Bool:
 		return "::boolean[]"
 	default:

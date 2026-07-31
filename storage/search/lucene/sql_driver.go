@@ -337,24 +337,33 @@ func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
 	return sql, params, nil
 }
 
-// quoteColumnName quotes a column name if it's not already JSON syntax.
-func quoteColumnName(colStr string) string {
+// quoteColumnNameFor quotes a column name using the provider's identifier
+// syntax, unless the string is already provider-specific JSON access syntax.
+//
+// MySQL's default sql_mode does not include ANSI_QUOTES, so a double-quoted
+// "col" there is a string LITERAL, not an identifier — the comparison would
+// silently run against the constant text instead of the column. MySQL uses
+// backticks; Postgres and SQLite use double quotes.
+func quoteColumnNameFor(provider, colStr string) string {
 	if isJSONSyntax(colStr) {
 		return colStr
 	}
-	return fmt.Sprintf(`"%s"`, colStr)
+	if provider == "mysql" {
+		return fmt.Sprintf("`%s`", strings.ReplaceAll(colStr, "`", "``"))
+	}
+	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(colStr, `"`, `""`))
 }
 
 func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
 	switch v := in.(type) {
 	case expr.Column:
-		return quoteColumnName(string(v)), nil, nil
+		return quoteColumnNameFor(s.provider, string(v)), nil, nil
 	case string:
-		return quoteColumnName(v), nil, nil
+		return quoteColumnNameFor(s.provider, v), nil, nil
 	case *expr.Expression:
 		if v.Op == expr.Literal && v.Left != nil {
 			if col, ok := v.Left.(expr.Column); ok {
-				return quoteColumnName(string(col)), nil, nil
+				return quoteColumnNameFor(s.provider, string(col)), nil, nil
 			}
 		}
 		return s.renderParamInternal(v)

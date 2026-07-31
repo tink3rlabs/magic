@@ -143,7 +143,7 @@ func TestSQLDriver_RenderParam(t *testing.T) {
 				Left:  expr.Column("name"),
 				Right: &expr.Expression{Op: expr.Literal, Left: "john"},
 			},
-			wantSQL:   []string{`"name"`, "="},
+			wantSQL:   []string{"NAME_QUOTED", "="},
 			wantCount: 1,
 			wantErr:   false,
 		},
@@ -197,7 +197,17 @@ func TestSQLDriver_RenderParam(t *testing.T) {
 					}
 					return
 				}
+				// "NAME_QUOTED" is a per-provider sentinel: MySQL quotes
+				// identifiers with backticks (double quotes there are string
+				// literals), Postgres/SQLite use double quotes.
+				nameQuoted := `"name"`
+				if provider == "mysql" {
+					nameQuoted = "`name`"
+				}
 				for _, want := range tt.wantSQL {
+					if want == "NAME_QUOTED" {
+						want = nameQuoted
+					}
 					if !strings.Contains(sql, want) {
 						t.Errorf("RenderParam() sql = %v, want to contain %v", sql, want)
 					}
@@ -574,11 +584,19 @@ func TestSQLDriver_GroupedFieldOR(t *testing.T) {
 			if err != nil {
 				t.Fatalf("RenderParam() error = %v", err)
 			}
+			// MySQL quotes identifiers with backticks (double quotes there are
+			// string literals, not identifiers); Postgres/SQLite use double quotes.
+			quoteIdentifier := func(name string) string {
+				if provider == "mysql" {
+					return "`" + name + "`"
+				}
+				return `"` + name + `"`
+			}
 			// Must use tenant_id, not id
-			if strings.Contains(sql, `"id"`) {
+			if strings.Contains(sql, quoteIdentifier("id")) {
 				t.Errorf("RenderParam() sql = %v — uses wrong field 'id', want 'tenant_id'", sql)
 			}
-			if !strings.Contains(sql, `"tenant_id"`) {
+			if !strings.Contains(sql, quoteIdentifier("tenant_id")) {
 				t.Errorf("RenderParam() sql = %v — missing 'tenant_id'", sql)
 			}
 			if !strings.Contains(sql, "IS NULL") {
@@ -1653,5 +1671,55 @@ func TestSQLDriver_ProviderSpecific(t *testing.T) {
 				tt.checkFunc(t, sql, params)
 			}
 		})
+	}
+}
+
+func TestQuoteColumnNameFor(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		col      string
+		want     string
+	}{
+		{"postgres double quotes", "postgresql", "tags", `"tags"`},
+		{"sqlite double quotes", "sqlite", "tags", `"tags"`},
+		{"mysql backticks", "mysql", "tags", "`tags`"},
+		{"postgres json syntax untouched", "postgresql", "metadata->>'k'", "metadata->>'k'"},
+		{"mysql json syntax untouched", "mysql", "JSON_EXTRACT(metadata, '$.k')", "JSON_EXTRACT(metadata, '$.k')"},
+		{"mysql escapes embedded backtick", "mysql", "we`ird", "`we``ird`"},
+		{"postgres escapes embedded quote", "postgresql", `we"ird`, `"we""ird"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := quoteColumnNameFor(tt.provider, tt.col); got != tt.want {
+				t.Errorf("quoteColumnNameFor(%q, %q) = %q, want %q", tt.provider, tt.col, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSQLDriver_MySQLUsesBackticks(t *testing.T) {
+	fields := []FieldInfo{{Name: "name", Type: reflect.TypeOf("")}}
+	d, err := NewSQLDriver(fields, "mysql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	e := &expr.Expression{
+		Op:    expr.Equals,
+		Left:  expr.Column("name"),
+		Right: &expr.Expression{Op: expr.Literal, Left: "john"},
+	}
+
+	sql, _, err := d.RenderParam(e)
+	if err != nil {
+		t.Fatalf("RenderParam: %v", err)
+	}
+	if !strings.Contains(sql, "`name`") {
+		t.Errorf("expected backtick-quoted identifier for mysql, got %q", sql)
+	}
+	if strings.Contains(sql, `"name"`) {
+		t.Errorf("mysql must not use double quotes (they are string literals), got %q", sql)
 	}
 }

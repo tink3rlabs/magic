@@ -29,7 +29,7 @@ func newExecDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.Exec(`CREATE TABLE articles (id TEXT, title TEXT, tags TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)

@@ -145,8 +145,11 @@ excluded — it's treated as a scalar blob (bytea), not a collection.
 tags:golang        # rows whose tags contain "golang"
 tags:*go*          # rows where any single element matches *go*
 tags:(a OR b)      # contains a, or contains b
+tags:(a* OR b)     # any element matches a*, or contains b
 tags:*             # tags column is not null
 NOT tags:golang    # does not contain golang (including rows with no tags)
+-tags:golang       # same — both spellings of negation behave identically
+NOT tags:null      # tags column is not null (identical to tags:*)
 ```
 
 | Operator | Postgres | MySQL | SQLite |
@@ -291,6 +294,8 @@ partiql, attrs, err := parser.ParseToDynamoDBPartiQL("status:received AND amount
 ```
 
 The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL does not support fuzzy search, case-insensitive matching, or JSON path access the same way. Wildcards (rendered as PartiQL `begins_with`/`contains`) and equality are supported. See `storage/search/lucene/dynamodb_driver.go` for the exact mapping.
+
+[Array fields](#array-multi-valued-fields) render as `contains(tags, ?)`, one per value, so `tags:(a OR b)` becomes `(contains(tags, ?) OR contains(tags, ?))` and `NOT tags:a` becomes `NOT (contains(tags, ?))`. Wildcards, ordering operators (`>`, `<`, `>=`, `<=`) and ranges on an array field are rejected with a parse error naming the field: PartiQL's `contains()` tests element membership rather than substrings, and a list attribute has no ordering.
 
 ## Full operator reference
 

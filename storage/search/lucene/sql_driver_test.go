@@ -1959,7 +1959,7 @@ func TestSQLDriver_ArrayWildcard(t *testing.T) {
 			provider: "mysql",
 			pattern:  "*go*",
 			wantSQL:  []string{"JSON_SEARCH", "`tags`", "'one'", "IS NOT NULL"},
-			notSQL:   []string{},
+			notSQL:   []string{"LOWER(", "LIKE LOWER"},
 		},
 		{
 			name:     "sqlite per-element wildcard",

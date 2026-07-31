@@ -187,6 +187,36 @@ func canUseNestedAccess(t reflect.Type) bool {
 	return false
 }
 
+// isArrayField reports whether t is a multi-valued (array) column — a Postgres
+// text[]/int[] or a JSON array — for which field:value means containment
+// rather than scalar equality.
+//
+// It is the sibling of canUseNestedAccess: a type is either reachable with
+// nested field.subfield access (JSONB, map, struct) or it is a flat
+// multi-valued column, never both. []byte is excluded because it is a scalar
+// blob (bytea), not a collection.
+func isArrayField(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	// JSONB-like types, maps and structs use ->> nested access, not containment.
+	if canUseNestedAccess(t) {
+		return false
+	}
+
+	if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
+		return false
+	}
+
+	// []byte is a scalar blob, not a collection of values.
+	return t.Elem().Kind() != reflect.Uint8
+}
+
 // Precompiled regex for performance - matches Lucene operators and special syntax
 var (
 	// Matches field:value pattern (including JSONB like labels.category:value)

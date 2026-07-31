@@ -2126,3 +2126,76 @@ func TestSQLDriver_ArrayFuzzyStillWorks(t *testing.T) {
 		t.Errorf("expected similarity(), got %q", sql)
 	}
 }
+
+func TestSQLDriver_ArrayGroupedValues(t *testing.T) {
+	d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	// tags:(golang OR rust) — go-lucene shape: EQUALS(tags, OR(EQUALS(_,golang), EQUALS(_,rust)))
+	e := &expr.Expression{
+		Op:   expr.Equals,
+		Left: expr.Column("tags"),
+		Right: &expr.Expression{
+			Op: expr.Or,
+			Left: &expr.Expression{
+				Op:    expr.Equals,
+				Left:  expr.Column("tags"),
+				Right: &expr.Expression{Op: expr.Literal, Left: "golang"},
+			},
+			Right: &expr.Expression{
+				Op:    expr.Equals,
+				Left:  expr.Column("tags"),
+				Right: &expr.Expression{Op: expr.Literal, Left: "rust"},
+			},
+		},
+	}
+
+	sql, params, err := d.RenderParam(e)
+	if err != nil {
+		t.Fatalf("RenderParam: %v", err)
+	}
+	if strings.Contains(sql, `"tags" = ?`) {
+		t.Errorf("grouped values on an array field must not render scalar equality, got %q", sql)
+	}
+	if strings.Count(sql, "@>") != 2 {
+		t.Errorf("expected two containment checks, got %q", sql)
+	}
+	if len(params) != 2 {
+		t.Errorf("expected 2 params, got %d: %#v", len(params), params)
+	}
+}
+
+func TestSQLDriver_ArrayGroupedWithNull(t *testing.T) {
+	d, err := NewSQLDriver(arrayTestFields(), "postgresql")
+	if err != nil {
+		t.Fatalf("NewSQLDriver: %v", err)
+	}
+
+	// tags:(golang OR null)
+	e := &expr.Expression{
+		Op:   expr.Equals,
+		Left: expr.Column("tags"),
+		Right: &expr.Expression{
+			Op: expr.Or,
+			Left: &expr.Expression{
+				Op:    expr.Equals,
+				Left:  expr.Column("tags"),
+				Right: &expr.Expression{Op: expr.Literal, Left: "golang"},
+			},
+			Right: &expr.Expression{Op: expr.Null},
+		},
+	}
+
+	sql, _, err := d.RenderParam(e)
+	if err != nil {
+		t.Fatalf("RenderParam: %v", err)
+	}
+	if !strings.Contains(sql, "@>") {
+		t.Errorf("expected containment for the value branch, got %q", sql)
+	}
+	if !strings.Contains(sql, "IS NULL") {
+		t.Errorf("expected IS NULL for the null branch, got %q", sql)
+	}
+}

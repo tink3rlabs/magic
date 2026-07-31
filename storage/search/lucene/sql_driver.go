@@ -2,6 +2,7 @@ package lucene
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -198,10 +199,12 @@ func (s *SQLDriver) renderFuzzy(e *expr.Expression) (string, []any, error) {
 
 // renderComparison handles comparison operators with IS NULL support for null values.
 func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) {
-	leftStr, leftParams, err := s.serializeColumn(e.Left)
+	ref, err := s.resolveField(e.Left)
 	if err != nil {
 		return "", nil, err
 	}
+	leftStr := ref.sql
+	leftParams := ref.params
 
 	if isNullValue(e.Right) {
 		if e.Op == expr.Equals {
@@ -213,17 +216,25 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 	// When go-lucene parses grouped OR/AND expressions like field:(a OR b OR null) with a
 	// default field set, it produces EQUALS(outer_field, OR(EQUALS(default_field, a), EQUALS(default_field, null))).
 	// The inner leaves use the default field, not the outer field. We must re-render each leaf
-	// using leftStr (the correct outer field) to avoid producing wrong SQL like
+	// using ref (the correct outer field) to avoid producing wrong SQL like
 	// ("id" = ?) OR ("id" IS NULL) when the query was tenant_id:(abc123 OR null).
 	if rightExpr, ok := e.Right.(*expr.Expression); ok && e.Op == expr.Equals {
 		switch rightExpr.Op {
 		case expr.Or, expr.And:
-			groupStr, groupParams, err := s.renderGroupedFieldExpr(leftStr, rightExpr)
+			groupStr, groupParams, err := s.renderGroupedFieldExpr(ref, rightExpr)
 			if err != nil {
 				return "", nil, err
 			}
 			return groupStr, append(leftParams, groupParams...), nil
 		}
+	}
+
+	if ref.isArray() && e.Op == expr.Equals {
+		sqlStr, err := s.renderArrayContains(ref)
+		if err != nil {
+			return "", nil, err
+		}
+		return sqlStr, append(leftParams, extractLiteralValue(e.Right)), nil
 	}
 
 	rightStr, rightParams, err := s.serializeValue(e.Right)
@@ -251,11 +262,11 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 }
 
 // renderGroupedFieldExpr renders an OR/AND expression tree where each leaf comparison
-// should use the given fieldSQL column instead of whatever field the leaf has internally.
+// should use the given field reference instead of whatever field the leaf has internally.
 // This handles go-lucene's behavior of wrapping grouped field expressions as
 // EQUALS(outer_field, OR(EQUALS(default_field, v1), EQUALS(default_field, v2))).
-func (s *SQLDriver) renderGroupedFieldExpr(fieldSQL string, e *expr.Expression) (string, []any, error) {
-	leftStr, leftParams, err := s.renderGroupedFieldLeaf(fieldSQL, e.Left)
+func (s *SQLDriver) renderGroupedFieldExpr(ref fieldRef, e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := s.renderGroupedFieldLeaf(ref, e.Left)
 	if err != nil {
 		return "", nil, err
 	}
@@ -264,7 +275,7 @@ func (s *SQLDriver) renderGroupedFieldExpr(fieldSQL string, e *expr.Expression) 
 		return leftStr, leftParams, nil
 	}
 
-	rightStr, rightParams, err := s.renderGroupedFieldLeaf(fieldSQL, e.Right)
+	rightStr, rightParams, err := s.renderGroupedFieldLeaf(ref, e.Right)
 	if err != nil {
 		return "", nil, err
 	}
@@ -277,25 +288,25 @@ func (s *SQLDriver) renderGroupedFieldExpr(fieldSQL string, e *expr.Expression) 
 }
 
 // renderGroupedFieldLeaf renders a single node (leaf or sub-tree) in a grouped field expression,
-// always using fieldSQL as the column name regardless of what the node's own field is.
-func (s *SQLDriver) renderGroupedFieldLeaf(fieldSQL string, v any) (string, []any, error) {
+// always using ref's column regardless of what the node's own field is.
+func (s *SQLDriver) renderGroupedFieldLeaf(ref fieldRef, v any) (string, []any, error) {
 	if e, ok := v.(*expr.Expression); ok {
 		if e.Op == expr.Or || e.Op == expr.And {
-			return s.renderGroupedFieldExpr(fieldSQL, e)
+			return s.renderGroupedFieldExpr(ref, e)
 		}
 		if e.Op == expr.Equals {
 			// Use the value from this leaf but with the outer field
-			return s.renderGroupedFieldLeaf(fieldSQL, e.Right)
+			return s.renderGroupedFieldLeaf(ref, e.Right)
 		}
 	}
 	if isNullValue(v) {
-		return fmt.Sprintf("%s IS NULL", fieldSQL), nil, nil
+		return fmt.Sprintf("%s IS NULL", ref.sql), nil, nil
 	}
 	valStr, valParams, err := s.serializeValue(v)
 	if err != nil {
 		return "", nil, err
 	}
-	return fmt.Sprintf("%s = %s", fieldSQL, valStr), valParams, nil
+	return fmt.Sprintf("%s = %s", ref.sql, valStr), valParams, nil
 }
 
 // renderBinary handles binary and unary logical operators via the shared walker.
@@ -369,6 +380,112 @@ func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
 		return s.renderParamInternal(v)
 	default:
 		return "", nil, fmt.Errorf("unexpected column type: %T", v)
+	}
+}
+
+// fieldRef is a column reference resolved back to its model metadata.
+//
+// Resolution must happen BEFORE quoting: by the time a column has been through
+// quoteColumnNameFor it is `"tags"` or `metadata->>'k'`, and the original model
+// field name — the key into s.fields — is no longer recoverable.
+type fieldRef struct {
+	name   string    // original model field name ("" when unresolvable)
+	sql    string    // provider-quoted column SQL
+	info   FieldInfo // zero value when known is false
+	known  bool
+	params []any // placeholders bound by sql itself (only for rendered sub-expressions)
+}
+
+// isArray reports whether this reference is a multi-valued column.
+func (f fieldRef) isArray() bool {
+	return f.known && isArrayField(f.info.Type)
+}
+
+// resolveField turns an expression's left-hand side into a fieldRef, looking up
+// the model metadata before the name is quoted away.
+func (s *SQLDriver) resolveField(in any) (fieldRef, error) {
+	var raw string
+
+	switch v := in.(type) {
+	case expr.Column:
+		raw = string(v)
+	case string:
+		raw = v
+	case *expr.Expression:
+		if v.Op == expr.Literal && v.Left != nil {
+			if col, ok := v.Left.(expr.Column); ok {
+				raw = string(col)
+			}
+		}
+		if raw == "" {
+			sql, params, err := s.renderParamInternal(v)
+			if err != nil {
+				return fieldRef{}, err
+			}
+			return fieldRef{sql: sql, params: params}, nil
+		}
+	default:
+		return fieldRef{}, fmt.Errorf("unexpected column type: %T", in)
+	}
+
+	ref := fieldRef{name: raw, sql: quoteColumnNameFor(s.provider, raw)}
+	// A dotted name is JSONB nested access; the base field is not the column.
+	if !strings.Contains(raw, ".") {
+		if info, exists := s.fields[raw]; exists {
+			ref.info = info
+			ref.known = true
+		}
+	}
+	return ref, nil
+}
+
+// arrayElemCast returns the Postgres cast suffix needed so a text-bound
+// parameter is compared against a non-text array.
+//
+// Parameters are always serialized as Go strings (serializeValue stringifies
+// via fmt.Sprintf), so `int[] @> ARRAY[$1]` fails with
+// "operator does not exist: integer[] @> text[]" without an explicit cast.
+func arrayElemCast(t reflect.Type) string {
+	if t == nil {
+		return ""
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
+		return ""
+	}
+	switch t.Elem().Kind() {
+	case reflect.String:
+		return ""
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "::int[]"
+	case reflect.Float32, reflect.Float64:
+		return "::numeric[]"
+	case reflect.Bool:
+		return "::boolean[]"
+	default:
+		return ""
+	}
+}
+
+// renderArrayContains renders "does this array column contain the bound value",
+// with one ? placeholder.
+//
+// Wrapped in COALESCE(..., false) so NOT field:value matches rows whose column
+// is NULL. Without it, NOT(NULL) is NULL and those rows vanish silently.
+func (s *SQLDriver) renderArrayContains(f fieldRef) (string, error) {
+	switch s.provider {
+	case "postgresql":
+		cast := arrayElemCast(f.info.Type)
+		return fmt.Sprintf("COALESCE(%s @> ARRAY[?]%s, false)", f.sql, cast), nil
+	case "mysql":
+		return fmt.Sprintf("COALESCE(JSON_CONTAINS(%s, JSON_QUOTE(?)), false)", f.sql), nil
+	case "sqlite":
+		return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value = ?)", f.sql), nil
+	default:
+		return "", fmt.Errorf("unsupported SQL provider: %s", s.provider)
 	}
 }
 

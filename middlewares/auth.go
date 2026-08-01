@@ -491,6 +491,26 @@ func GetTenantFromContext(ctx context.Context) string {
 	return ""
 }
 
+// GetClaimFromContext retrieves an arbitrary claim of the JWT from the request context
+// It returns nil if claims were not registered via middleware or if the requested claim doesn't exist
+func GetClaimFromContext(ctx context.Context, claimKey string) any {
+	vClaims := getValidatedClaims(ctx)
+	if vClaims == nil {
+		return nil
+	}
+
+	cc := vClaims.CustomClaims
+	if cc == nil {
+		return nil
+	}
+
+	if val, exists := cc.Claims[claimKey]; exists {
+		return val
+	}
+
+	return nil
+}
+
 // Unexported helpers
 
 func getValidatedClaims(ctx context.Context) *validatedClaims {

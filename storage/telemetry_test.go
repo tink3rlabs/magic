@@ -144,7 +144,7 @@ func TestContextualOperationsEmitSpansAndMetrics(t *testing.T) {
 		}
 		attrs := map[string]string{}
 		for _, kv := range s.Attributes() {
-			attrs[string(kv.Key)] = kv.Value.Emit()
+			attrs[string(kv.Key)] = kv.Value.String()
 		}
 		if attrs["magic.storage.provider"] != "sqlite" {
 			t.Fatalf("span %q missing provider attribute: %v", s.Name(), attrs)

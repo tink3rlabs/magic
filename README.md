@@ -369,6 +369,59 @@ logger.Fatal("Critical error occurred")
 - Global logger configuration
 - Fatal logging with automatic exit
 
+### Observability
+
+The observability package wires up OpenTelemetry traces and metrics with a single `Init` call. HTTP requests, storage operations, and pub/sub publishes are instrumented automatically; Go runtime and process metrics come for free. You add custom metrics and spans where they matter.
+
+```go
+import (
+  "context"
+  "log"
+
+  "github.com/go-chi/chi/v5"
+  "github.com/tink3rlabs/magic/middlewares"
+  "github.com/tink3rlabs/magic/observability"
+  "github.com/tink3rlabs/magic/telemetry"
+)
+
+// Initialize once at startup.
+cfg := observability.DefaultConfig()
+cfg.ServiceName = "orders-svc"
+cfg.MetricsMode = observability.MetricsModePrometheus // or MetricsModeOTLP to push
+
+obs, err := observability.Init(context.Background(), cfg)
+if err != nil {
+  log.Fatal(err)
+}
+defer obs.Shutdown(context.Background())
+
+// Auto-instrument every request and expose the scrape endpoint.
+r := chi.NewRouter()
+r.Use(middlewares.Observability(obs))
+r.Handle("/metrics", obs.MetricsHandler())
+
+// Register custom metrics once, then record against them.
+ordersCreated, _ := obs.Counter(telemetry.MetricDefinition{
+  Name:   "orders_created_total",
+  Help:   "Orders created, by channel and result.",
+  Kind:   telemetry.KindCounter,
+  Labels: []string{"channel", "result"},
+})
+ordersCreated.Add(1, telemetry.Labels("channel", "api", "result", "ok")...)
+```
+
+**Features:**
+
+- One-call OpenTelemetry setup for traces and metrics
+- Automatic spans and metrics for HTTP, storage, and pub/sub
+- Prometheus scrape mode or OTLP push mode (`MetricsMode`)
+- Go runtime and process metrics out of the box
+- Custom counters, histograms, and spans via the `Observer` and `telemetry` packages
+- `trace_id` / `span_id` injected into `slog.*Context` log lines
+- OTLP endpoints configurable via `OTEL_EXPORTER_OTLP_*` environment variables
+
+See the [Observability guide](https://tink3rlabs.github.io/magic/observability/) for the full configuration surface.
+
 ### Middlewares
 
 The middlewares package provides HTTP middleware components for common web service needs.

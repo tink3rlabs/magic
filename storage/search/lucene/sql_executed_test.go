@@ -200,6 +200,13 @@ type TypedDoc struct {
 	Flags []bool    `json:"flags"`
 }
 
+// Separate from TypedDoc because the signed-bigint ceiling only applies to the
+// unsigned kinds.
+type BigDoc struct {
+	Id  string   `json:"id"`
+	Big []uint64 `json:"big"`
+}
+
 // newTypedDB seeds arrays of numbers and booleans.
 //
 //	id | nums    | rates      | flags
@@ -280,10 +287,42 @@ func TestExecuted_TypedArrayRejectsMistypedValue(t *testing.T) {
 		t.Fatalf("NewParser: %v", err)
 	}
 
-	for _, filter := range []string{"nums:abc", "rates:abc", "flags:maybe", "nums:(5 OR abc)"} {
+	for _, filter := range []string{
+		"nums:abc", "rates:abc", "flags:maybe", "nums:(5 OR abc)",
+		// Not JSON numbers: MySQL fails these with ERROR 3141 and DynamoDB
+		// rejects them as an N attribute.
+		"rates:NaN", "rates:Inf", "rates:-Inf",
+	} {
 		t.Run(filter, func(t *testing.T) {
 			if _, _, err := p.ParseToSQL(filter, "sqlite"); err == nil {
 				t.Errorf("ParseToSQL(%q) returned no error; a mistyped value must be rejected at parse time", filter)
+			}
+		})
+	}
+}
+
+// A uint above math.MaxInt64 has no representation in the signed bigint[]
+// column a []uint64 maps to, so Postgres fails the cast outright.
+//
+// Only the QUOTED form reaches the element validator with its digits intact:
+// unquoted, go-lucene parses the literal as a float and hands over
+// "9.223372036854776e+18", which is rejected earlier for being unparseable.
+// Quoting is therefore the route that would otherwise reach the database, and
+// the one worth pinning.
+func TestExecuted_TypedArrayRejectsOutOfRangeUint(t *testing.T) {
+	p, err := NewParser(BigDoc{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	if _, _, err := p.ParseToSQL(`big:"9223372036854775807"`, "postgresql"); err != nil {
+		t.Fatalf(`ParseToSQL(big:"MaxInt64"): %v — the largest storable value must be accepted`, err)
+	}
+
+	for _, filter := range []string{`big:"9223372036854775808"`, `big:"18446744073709551615"`} {
+		t.Run(filter, func(t *testing.T) {
+			if _, _, err := p.ParseToSQL(filter, "postgresql"); err == nil {
+				t.Errorf("ParseToSQL(%q) returned no error; Postgres rejects the bigint cast with \"value is out of range\"", filter)
 			}
 		})
 	}

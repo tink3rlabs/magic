@@ -2,6 +2,7 @@ package lucene
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 
@@ -46,6 +47,11 @@ type elemSpec struct {
 
 	// bits is the strconv bit size used to range-check the value. 0 for
 	// non-numeric kinds, which have no width.
+	//
+	// It is the width of the NARROWEST backing store, not of the Go kind: a
+	// value that cannot round-trip every provider is rejected here rather
+	// than by whichever database happens to be configured. That is why the
+	// 64-bit unsigned kinds carry 63 — see below.
 	bits int
 
 	// numeric marks kinds that must NOT be bound as a string: a JSON string
@@ -66,10 +72,19 @@ var arrayElemSpecs = map[reflect.Kind]elemSpec{
 	reflect.Bool:   {pgCast: "::boolean[]", numeric: true},
 
 	// Go int is 64-bit; uint32 needs 33 bits, so it too only fits bigint.
+	//
+	// Postgres bigint is SIGNED, so a uint above math.MaxInt64 has no
+	// representation in a bigint[] column — it cannot be stored there, so a
+	// filter for one cannot match, and Postgres rejects the cast outright
+	// ("value ... is out of range for type bigint"). 63 bits is exactly that
+	// ceiling. MySQL and SQLite hold the full uint64 range in JSON, so this
+	// narrows those two by one bit; that is the deliberate price of validating
+	// once, dialect-neutrally, instead of deferring to whichever database is
+	// configured.
 	reflect.Int:    {pgCast: "::bigint[]", bits: 64, numeric: true},
 	reflect.Int64:  {pgCast: "::bigint[]", bits: 64, numeric: true},
-	reflect.Uint:   {pgCast: "::bigint[]", bits: 64, numeric: true},
-	reflect.Uint64: {pgCast: "::bigint[]", bits: 64, numeric: true},
+	reflect.Uint:   {pgCast: "::bigint[]", bits: 63, numeric: true},
+	reflect.Uint64: {pgCast: "::bigint[]", bits: 63, numeric: true},
 	reflect.Uint32: {pgCast: "::bigint[]", bits: 32, numeric: true},
 
 	reflect.Int8:  {pgCast: "::smallint[]", bits: 8, numeric: true},
@@ -155,6 +170,14 @@ func normalizeArrayElemValue(fieldName string, fieldType reflect.Type, raw strin
 	case reflect.Float32, reflect.Float64:
 		f, err := strconv.ParseFloat(raw, bits)
 		if err != nil {
+			return "", fmt.Errorf("invalid value %q for float array field '%s'", raw, fieldName)
+		}
+		// ParseFloat accepts "NaN", "Inf" and "Infinity", which format back as
+		// "NaN"/"+Inf"/"-Inf" — none of them JSON numbers. MySQL rejects the
+		// containment outright (ERROR 3141, "Invalid JSON text ... cast_as_json")
+		// and DynamoDB will not accept them as an N attribute, so a filter that
+		// can never match becomes a 500 on two of the four providers.
+		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return "", fmt.Errorf("invalid value %q for float array field '%s'", raw, fieldName)
 		}
 		return strconv.FormatFloat(f, 'g', -1, bits), nil

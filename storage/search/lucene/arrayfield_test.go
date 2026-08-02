@@ -104,6 +104,28 @@ func TestNormalizeArrayElemValue(t *testing.T) {
 		{"int8 rejects overflow", reflect.TypeOf([]int8{}), "200", "", true},
 		{"int8 accepts in range", reflect.TypeOf([]int8{}), "127", "127", false},
 		{"uint16 rejects overflow", reflect.TypeOf([]uint16{}), "70000", "", true},
+
+		// Postgres bigint is signed, so MaxInt64 is the last uint that a
+		// bigint[] column can hold — one past it, Postgres fails the cast with
+		// "value ... is out of range for type bigint".
+		{"uint64 accepts MaxInt64", reflect.TypeOf([]uint64{}), "9223372036854775807", "9223372036854775807", false},
+		{"uint64 rejects MaxInt64+1", reflect.TypeOf([]uint64{}), "9223372036854775808", "", true},
+		{"uint64 rejects MaxUint64", reflect.TypeOf([]uint64{}), "18446744073709551615", "", true},
+		{"uint accepts MaxInt64", reflect.TypeOf([]uint{}), "9223372036854775807", "9223372036854775807", false},
+		{"uint rejects MaxInt64+1", reflect.TypeOf([]uint{}), "9223372036854775808", "", true},
+		// uint32 stays a full 32 bits — it fits in a signed bigint with room.
+		{"uint32 accepts MaxUint32", reflect.TypeOf([]uint32{}), "4294967295", "4294967295", false},
+
+		// strconv.ParseFloat accepts these, but they are not JSON numbers:
+		// MySQL fails the containment with ERROR 3141 and DynamoDB rejects
+		// them as an N attribute.
+		{"float64 rejects NaN", reflect.TypeOf([]float64{}), "NaN", "", true},
+		{"float64 rejects Inf", reflect.TypeOf([]float64{}), "Inf", "", true},
+		{"float64 rejects +Inf", reflect.TypeOf([]float64{}), "+Inf", "", true},
+		{"float64 rejects -Inf", reflect.TypeOf([]float64{}), "-Inf", "", true},
+		{"float64 rejects Infinity", reflect.TypeOf([]float64{}), "Infinity", "", true},
+		{"float32 rejects NaN", reflect.TypeOf([]float32{}), "NaN", "", true},
+		{"float32 rejects -Inf", reflect.TypeOf([]float32{}), "-Inf", "", true},
 	}
 
 	for _, tt := range tests {

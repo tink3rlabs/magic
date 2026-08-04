@@ -1759,20 +1759,20 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 		notSQL   []string
 	}{
 		{
-			name:     "postgres containment, []string gets no cast at all",
+			name:     "postgres containment binds a quoted array literal",
 			provider: "postgresql",
 			field:    "tags",
 			value:    "golang",
-			wantSQL:  []string{`"tags" @> ARRAY[?]`, "COALESCE"},
-			notSQL:   []string{`"tags" = ?`, "::"},
+			wantSQL:  []string{`"tags" @> ?`, "COALESCE"},
+			notSQL:   []string{`"tags" = ?`, "::", "ARRAY["},
 		},
 		{
-			name:     "mysql containment",
+			name:     "mysql containment binds JSON scalar text",
 			provider: "mysql",
 			field:    "tags",
 			value:    "golang",
-			wantSQL:  []string{"JSON_CONTAINS", "`tags`", "JSON_QUOTE(?)"},
-			notSQL:   []string{"`tags` = ?"},
+			wantSQL:  []string{"JSON_CONTAINS", "`tags`", "COALESCE"},
+			notSQL:   []string{"`tags` = ?", "JSON_QUOTE", "CAST("},
 		},
 		{
 			name:     "sqlite containment",
@@ -1780,73 +1780,73 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			field:    "tags",
 			value:    "golang",
 			wantSQL:  []string{"EXISTS", "json_each", `"tags"`, "value = ?"},
-			notSQL:   []string{`"tags" = ?`},
+			notSQL:   []string{`"tags" = ?`, "json_extract(json("},
 		},
-		// The @> operator requires exactly matching array types — neither
-		// narrowing nor widening rescues a mismatch — so each Go element kind
-		// must render the cast for the natural Postgres array type of that kind.
+		// Every element kind renders the SAME cast-free SQL. These used to
+		// pin a ::type[] cast each, because ARRAY[?] resolves to text[] at
+		// parse time and so had to name the column's exact element type.
 		{
-			name:     "postgres []int casts to bigint (Go int is 64-bit)",
+			name:     "postgres []int containment",
 			provider: "postgresql",
 			field:    "nums",
 			value:    "42",
-			wantSQL:  []string{`"nums" @> ARRAY[?]::bigint[]`},
-			notSQL:   []string{"::int[]"},
+			wantSQL:  []string{`"nums" @> ?`},
+			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []int64 casts to bigint",
+			name:     "postgres []int64 containment",
 			provider: "postgresql",
 			field:    "bigs",
 			value:    "9999999999",
-			wantSQL:  []string{`"bigs" @> ARRAY[?]::bigint[]`},
-			notSQL:   []string{"::int[]"},
+			wantSQL:  []string{`"bigs" @> ?`},
+			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []int32 casts to int",
+			name:     "postgres []int32 containment",
 			provider: "postgresql",
 			field:    "smalls",
 			value:    "42",
-			wantSQL:  []string{`"smalls" @> ARRAY[?]::int[]`},
-			notSQL:   []string{"::bigint[]", "::smallint[]"},
+			wantSQL:  []string{`"smalls" @> ?`},
+			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []int16 casts to smallint",
+			name:     "postgres []int16 containment",
 			provider: "postgresql",
 			field:    "tinies",
 			value:    "3",
-			wantSQL:  []string{`"tinies" @> ARRAY[?]::smallint[]`},
-			notSQL:   []string{`ARRAY[?]::int[]`, "::bigint[]"},
+			wantSQL:  []string{`"tinies" @> ?`},
+			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []uint32 needs 33 bits so casts to bigint",
+			name:     "postgres []uint32 containment",
 			provider: "postgresql",
 			field:    "counts",
 			value:    "4000000000",
-			wantSQL:  []string{`"counts" @> ARRAY[?]::bigint[]`},
-			notSQL:   []string{`ARRAY[?]::int[]`, "::smallint[]"},
+			wantSQL:  []string{`"counts" @> ?`},
+			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []float64 casts to double precision",
+			name:     "postgres []float64 containment",
 			provider: "postgresql",
 			field:    "ratios",
 			value:    "1.5",
-			wantSQL:  []string{`"ratios" @> ARRAY[?]::double precision[]`},
-			notSQL:   []string{"::numeric[]"},
+			wantSQL:  []string{`"ratios" @> ?`},
+			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []float32 casts to real",
+			name:     "postgres []float32 containment",
 			provider: "postgresql",
 			field:    "singles",
 			value:    "1.5",
-			wantSQL:  []string{`"singles" @> ARRAY[?]::real[]`},
-			notSQL:   []string{"::numeric[]", "::double precision[]"},
+			wantSQL:  []string{`"singles" @> ?`},
+			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []bool casts to boolean",
+			name:     "postgres []bool containment",
 			provider: "postgresql",
 			field:    "flags",
 			value:    "true",
-			wantSQL:  []string{`"flags" @> ARRAY[?]::boolean[]`},
+			wantSQL:  []string{`"flags" @> ?`},
 			notSQL:   []string{},
 		},
 		{
@@ -1897,9 +1897,9 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			if len(params) != 1 {
 				t.Errorf("want 1 param, got %d: %#v", len(params), params)
 			}
-			if len(params) == 1 && params[0] != tt.value {
-				t.Errorf("param = %#v, want %q", params[0], tt.value)
-			}
+			// The parameter's ENCODING is per-dialect and is asserted by
+			// TestPGArrayLiteralEscaping, TestMySQLEncodesJSONText and
+			// TestSQLiteEncodesNativeValue. This test owns the SQL shape.
 		})
 	}
 }
@@ -1920,7 +1920,7 @@ func TestSQLDriver_ArrayEqualityDoesNotConvertWildcards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderParam: %v", err)
 	}
-	if len(params) != 1 || params[0] != "what?" {
+	if len(params) != 1 || params[0] != (pgArrayLiteral{"what?"}) {
 		t.Errorf("equality param must keep literal punctuation, got %#v", params)
 	}
 }
@@ -2228,7 +2228,7 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "postgres containment",
 			provider: "postgresql",
 			filter:   "NOT tags:golang",
-			wantSQL:  []string{"NOT (", "COALESCE", `"tags" @> ARRAY[?]`},
+			wantSQL:  []string{"NOT (", "COALESCE", `"tags" @> ?`},
 			notSQL:   []string{`"tags" = ?`},
 		},
 		{
@@ -2368,7 +2368,7 @@ func TestSQLDriver_GroupedWildcardLeaf(t *testing.T) {
 				t.Errorf("raw lucene pattern must not be bound as a value, got %#v", params)
 			}
 		}
-		if len(params) != 2 || params[0] != "golang%" || params[1] != "rust" {
+		if len(params) != 2 || params[0] != "golang%" || params[1] != (pgArrayLiteral{"rust"}) {
 			t.Errorf("unexpected params %#v", params)
 		}
 	})
@@ -2427,43 +2427,40 @@ func TestSQLDriver_WildcardRejectedOnNonStringArray(t *testing.T) {
 	}
 }
 
-func TestSQLDriver_NonNumericStructArrayUsesTextPath(t *testing.T) {
+func TestSQLDriver_NonNumericStructArrayBindsAsText(t *testing.T) {
 	fields := []FieldInfo{
 		{Name: "events", Type: reflect.TypeOf([]time.Time{})},
 	}
 	eq := expr.Eq(expr.Column("events"), &expr.Expression{Op: expr.Literal, Left: "2024-01-01T00:00:00Z"})
 
-	t.Run("mysql", func(t *testing.T) {
-		driver, err := NewSQLDriver(fields, "mysql")
-		if err != nil {
-			t.Fatalf("NewSQLDriver: %v", err)
-		}
-		sql, _, err := driver.RenderParam(eq)
-		if err != nil {
-			t.Fatalf("RenderParam: %v", err)
-		}
-		if !strings.Contains(sql, "JSON_QUOTE(?)") {
-			t.Errorf("[]time.Time on mysql must take the text path (JSON_QUOTE), got %q", sql)
-		}
-		if strings.Contains(sql, "CAST(? AS JSON)") {
-			t.Errorf("[]time.Time on mysql must NOT take the typed path (CAST AS JSON), got %q", sql)
-		}
-	})
-
-	t.Run("sqlite", func(t *testing.T) {
-		driver, err := NewSQLDriver(fields, "sqlite")
-		if err != nil {
-			t.Fatalf("NewSQLDriver: %v", err)
-		}
-		sql, _, err := driver.RenderParam(eq)
-		if err != nil {
-			t.Fatalf("RenderParam: %v", err)
-		}
-		if !strings.Contains(sql, "value = ?") {
-			t.Errorf("[]time.Time on sqlite must take the text path (value = ?), got %q", sql)
-		}
-		if strings.Contains(sql, "json_extract(json(?)") {
-			t.Errorf("[]time.Time on sqlite must NOT take the typed path (json_extract), got %q", sql)
-		}
-	})
+	// Each dialect has ONE containment form now, so the text-versus-typed
+	// choice that used to show up in the SQL lives entirely in the bound
+	// parameter. Binding this as a bare JSON number, or as an unquoted array
+	// element, would fail at the database.
+	tests := []struct {
+		provider  string
+		wantParam any
+	}{
+		{"mysql", `"2024-01-01T00:00:00Z"`},                    // JSON string
+		{"sqlite", "2024-01-01T00:00:00Z"},                     // native Go string
+		{"postgresql", pgArrayLiteral{"2024-01-01T00:00:00Z"}}, // quoted array literal
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			d, err := NewSQLDriver(fields, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver: %v", err)
+			}
+			_, params, err := d.RenderParam(eq)
+			if err != nil {
+				t.Fatalf("RenderParam: %v", err)
+			}
+			if len(params) != 1 {
+				t.Fatalf("got %d params, want 1", len(params))
+			}
+			if params[0] != tt.wantParam {
+				t.Errorf("param = %#v (%T), want %#v (%T)", params[0], params[0], tt.wantParam, tt.wantParam)
+			}
+		})
+	}
 }

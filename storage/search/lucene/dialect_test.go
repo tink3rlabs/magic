@@ -1,6 +1,8 @@
 package lucene
 
 import (
+	"database/sql/driver"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -114,6 +116,143 @@ func TestDialectJSONExtract(t *testing.T) {
 		base := d.QuoteIdent("labels")
 		if got := d.JSONExtract(base, "category"); got != tt.want {
 			t.Errorf("%s.JSONExtract = %q, want %q", tt.provider, got, tt.want)
+		}
+	}
+}
+
+// The generated Postgres SQL must carry no cast at all.
+//
+// Binding the whole array as ONE parameter lets Postgres infer the element
+// type from the column. The older ARRAY[?] form could not: Postgres resolves
+// the array constructor to text[] at parse time, before it knows the
+// parameter's type, which is why that form needed an explicit ::type[] cast
+// naming the column's exact element type.
+func TestPostgresArrayContainsHasNoCast(t *testing.T) {
+	p, err := NewParser(TypedDoc{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	for _, filter := range []string{"nums:5", "rates:1.5", "flags:true"} {
+		where, params, err := p.ParseToSQL(filter, "postgresql")
+		if err != nil {
+			t.Fatalf("ParseToSQL(%q): %v", filter, err)
+		}
+		if strings.Contains(where, "::") {
+			t.Errorf("ParseToSQL(%q) = %q; must not contain a cast", filter, where)
+		}
+		if strings.Contains(where, "ARRAY[") {
+			t.Errorf("ParseToSQL(%q) = %q; ARRAY[?] cannot infer and must not be used", filter, where)
+		}
+		if len(params) != 1 {
+			t.Fatalf("ParseToSQL(%q) produced %d params, want 1", filter, len(params))
+		}
+		if _, ok := params[0].(driver.Valuer); !ok {
+			t.Errorf("param is %T; must be a driver.Valuer so GORM does not expand it as a slice", params[0])
+		}
+		if reflect.TypeOf(params[0]).Kind() == reflect.Slice {
+			t.Errorf("param is a bare %T; GORM would expand it into multiple placeholders", params[0])
+		}
+	}
+}
+
+// The array literal must survive values that array syntax treats specially.
+// An unquoted NULL becomes SQL NULL, an unescaped comma splits one element
+// into two, and an unescaped brace or quote is a syntax error.
+func TestPGArrayLiteralEscaping(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"golang", `{"golang"}`},
+		{"two words", `{"two words"}`},
+		{"a,b", `{"a,b"}`},
+		{"{brace}", `{"{brace}"}`},
+		{`has"quote`, `{"has\"quote"}`},
+		{`back\slash`, `{"back\\slash"}`},
+		{"NULL", `{"NULL"}`},
+		{"", `{""}`},
+	}
+	for _, tt := range tests {
+		got, err := pgArrayLiteral{tt.in}.Value()
+		if err != nil {
+			t.Fatalf("Value(%q): %v", tt.in, err)
+		}
+		if got != tt.want {
+			t.Errorf("pgArrayLiteral{%q}.Value() = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+
+	// Non-strings format bare — quoting them would make them JSON strings.
+	for _, tt := range []struct {
+		in   any
+		want string
+	}{
+		{int64(5), "{5}"},
+		{int64(-5), "{-5}"},
+		{1.5, "{1.5}"},
+		{true, "{true}"},
+		{false, "{false}"},
+	} {
+		got, err := pgArrayLiteral{tt.in}.Value()
+		if err != nil {
+			t.Fatalf("Value(%v): %v", tt.in, err)
+		}
+		if got != tt.want {
+			t.Errorf("pgArrayLiteral{%v}.Value() = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// MySQL binds JSON scalar TEXT. Binding a Go bool would be silently WRONG:
+// the driver sends true as 1, CAST('1' AS JSON) is the JSON number 1, and
+// JSON 1 does not equal JSON true, so a matching row would not match.
+func TestMySQLEncodesJSONText(t *testing.T) {
+	d, err := lookupDialect("mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		val  ElemValue
+		want string
+	}{
+		{ElemValue{Kind: reflect.Int, Val: int64(5)}, "5"},
+		{ElemValue{Kind: reflect.Float64, Val: 1.5}, "1.5"},
+		{ElemValue{Kind: reflect.Bool, Val: true}, "true"},
+		{ElemValue{Kind: reflect.Bool, Val: false}, "false"},
+		{ElemValue{Kind: reflect.String, Val: "golang"}, `"golang"`},
+		{ElemValue{Kind: reflect.String, Val: `has"quote`}, `"has\"quote"`},
+	}
+	for _, tt := range tests {
+		got, err := d.EncodeElement(tt.val)
+		if err != nil {
+			t.Fatalf("EncodeElement(%#v): %v", tt.val, err)
+		}
+		if got != tt.want {
+			t.Errorf("EncodeElement(%#v) = %#v, want %q", tt.val, got, tt.want)
+		}
+	}
+}
+
+// SQLite compares json_each.value against a natively-bound parameter, so the
+// value must arrive with its Go type intact rather than as a string.
+func TestSQLiteEncodesNativeValue(t *testing.T) {
+	d, err := lookupDialect("sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		val  ElemValue
+		want any
+	}{
+		{ElemValue{Kind: reflect.Int, Val: int64(5)}, int64(5)},
+		{ElemValue{Kind: reflect.Float64, Val: 1.5}, 1.5},
+		{ElemValue{Kind: reflect.Bool, Val: true}, true},
+		{ElemValue{Kind: reflect.String, Val: "golang"}, "golang"},
+	}
+	for _, tt := range tests {
+		got, err := d.EncodeElement(tt.val)
+		if err != nil {
+			t.Fatalf("EncodeElement(%#v): %v", tt.val, err)
+		}
+		if got != tt.want {
+			t.Errorf("EncodeElement(%#v) = %#v (%T), want %#v (%T)", tt.val, got, got, tt.want, tt.want)
 		}
 	}
 }

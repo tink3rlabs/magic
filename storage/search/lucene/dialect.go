@@ -40,6 +40,19 @@ type Dialect interface {
 	// element of a multi-valued column. Only called for string arrays.
 	ArrayWildcard(col string) string
 
+	// ArrayContains renders an exact-match containment test against a
+	// multi-valued column, binding one parameter produced by EncodeElement.
+	//
+	// A NULL column must compare false rather than NULL, so that NOT over this
+	// expression is a true complement instead of silently dropping those rows.
+	ArrayContains(col string) string
+
+	// EncodeElement converts a validated element into the bound parameter this
+	// database needs for ArrayContains. The three implementations differ
+	// completely: Postgres needs a driver.Valuer array literal, MySQL needs
+	// JSON scalar text, SQLite needs the native Go value.
+	EncodeElement(v ElemValue) (any, error)
+
 	// Fuzzy renders approximate matching, or returns an error naming the
 	// limitation when the database has no equivalent.
 	Fuzzy(col, term string) (string, error)

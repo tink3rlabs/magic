@@ -1,6 +1,7 @@
 package lucene
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -40,4 +41,24 @@ func (mysqlDialect) Fuzzy(col, term string) (string, error) {
 	// SOUNDEX is phonetic rather than edit-distance, and is the closest
 	// built-in MySQL offers.
 	return fmt.Sprintf("SOUNDEX(%s) = SOUNDEX(%s)", col, term), nil
+}
+
+// ArrayContains binds JSON scalar text, which is one SQL form for every
+// element type. The older code needed two branches — CAST(? AS JSON) for
+// numerics and JSON_QUOTE(?) for strings — because it bound a bare literal.
+func (mysqlDialect) ArrayContains(col string) string {
+	return fmt.Sprintf("COALESCE(JSON_CONTAINS(%s, ?), false)", col)
+}
+
+// EncodeElement produces JSON scalar text: 5, 1.5, true, "golang".
+//
+// Binding a Go bool here would be silently WRONG: the driver sends true as 1,
+// and the JSON number 1 does not equal JSON true, so a matching row would not
+// match. json.Marshal produces the correct scalar for every Val type.
+func (mysqlDialect) EncodeElement(v ElemValue) (any, error) {
+	b, err := json.Marshal(v.Val)
+	if err != nil {
+		return nil, fmt.Errorf("cannot encode array element %v: %w", v.Val, err)
+	}
+	return string(b), nil
 }

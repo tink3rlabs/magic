@@ -3,6 +3,7 @@ package lucene
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
 )
@@ -135,6 +136,43 @@ func TestIsStringArray(t *testing.T) {
 	} {
 		if isStringArray(tp) {
 			t.Errorf("isStringArray(%v) = true, want false", tp)
+		}
+	}
+}
+
+// isNumericArray must match the OLD elemSpec-based semantics exactly: true
+// for Bool and every kind in arrayElemBits, false for everything else —
+// including a kind with no row in arrayElemBits at all, such as []time.Time.
+// A field of an unlisted kind must take the TEXT path in every driver, not
+// the typed/numeric one.
+func TestIsNumericArray(t *testing.T) {
+	if !isNumericArray(reflect.TypeOf([]bool{})) {
+		t.Error("isNumericArray([]bool) = false, want true")
+	}
+
+	// Every kind present in arrayElemBits must be numeric.
+	numericKinds := []reflect.Type{
+		reflect.TypeOf([]int{}), reflect.TypeOf([]int8{}), reflect.TypeOf([]int16{}),
+		reflect.TypeOf([]int32{}), reflect.TypeOf([]int64{}), reflect.TypeOf([]uint{}),
+		reflect.TypeOf([]uint16{}), reflect.TypeOf([]uint32{}), reflect.TypeOf([]uint64{}),
+		reflect.TypeOf([]float32{}), reflect.TypeOf([]float64{}),
+	}
+	for _, tp := range numericKinds {
+		if !isNumericArray(tp) {
+			t.Errorf("isNumericArray(%s) = false, want true", tp)
+		}
+	}
+
+	notNumeric := []reflect.Type{
+		reflect.TypeOf([]string{}),
+		reflect.TypeOf([]byte{}),
+		reflect.TypeOf([]time.Time{}),
+		reflect.TypeOf([]struct{}{}),
+		nil,
+	}
+	for _, tp := range notNumeric {
+		if isNumericArray(tp) {
+			t.Errorf("isNumericArray(%v) = true, want false", tp)
 		}
 	}
 }

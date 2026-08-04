@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
 )
@@ -2377,6 +2378,54 @@ func TestSQLDriver_GroupedWildcardLeaf(t *testing.T) {
 		}
 		if len(params) != 2 || params[0] != "hello%" {
 			t.Errorf("unexpected params %#v", params)
+		}
+	})
+}
+
+// Regression guard for the Critical review finding on task 1: a field whose
+// element kind is neither Bool nor a kind in arrayElemBits — such as
+// []time.Time — must still render the TEXT containment path (JSON_QUOTE on
+// MySQL, a plain value comparison on SQLite), not the typed/numeric path.
+// A substitution of isNumericArray with !isStringArray briefly shipped here
+// and would have sent this field through CAST(? AS JSON) / json_extract,
+// which is not valid for a Go time.Time's RFC3339 string representation.
+func TestSQLDriver_NonNumericStructArrayUsesTextPath(t *testing.T) {
+	fields := []FieldInfo{
+		{Name: "events", Type: reflect.TypeOf([]time.Time{})},
+	}
+	eq := expr.Eq(expr.Column("events"), &expr.Expression{Op: expr.Literal, Left: "2024-01-01T00:00:00Z"})
+
+	t.Run("mysql", func(t *testing.T) {
+		driver, err := NewSQLDriver(fields, "mysql")
+		if err != nil {
+			t.Fatalf("NewSQLDriver: %v", err)
+		}
+		sql, _, err := driver.RenderParam(eq)
+		if err != nil {
+			t.Fatalf("RenderParam: %v", err)
+		}
+		if !strings.Contains(sql, "JSON_QUOTE(?)") {
+			t.Errorf("[]time.Time on mysql must take the text path (JSON_QUOTE), got %q", sql)
+		}
+		if strings.Contains(sql, "CAST(? AS JSON)") {
+			t.Errorf("[]time.Time on mysql must NOT take the typed path (CAST AS JSON), got %q", sql)
+		}
+	})
+
+	t.Run("sqlite", func(t *testing.T) {
+		driver, err := NewSQLDriver(fields, "sqlite")
+		if err != nil {
+			t.Fatalf("NewSQLDriver: %v", err)
+		}
+		sql, _, err := driver.RenderParam(eq)
+		if err != nil {
+			t.Fatalf("RenderParam: %v", err)
+		}
+		if !strings.Contains(sql, "value = ?") {
+			t.Errorf("[]time.Time on sqlite must take the text path (value = ?), got %q", sql)
+		}
+		if strings.Contains(sql, "json_extract(json(?)") {
+			t.Errorf("[]time.Time on sqlite must NOT take the typed path (json_extract), got %q", sql)
 		}
 	})
 }

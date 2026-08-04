@@ -194,7 +194,7 @@ func (s *SQLDriver) renderArrayWildcard(ref fieldRef, bare bool, params []any) (
 	// (Postgres: "operator does not exist: integer ~~* unknown") or silently
 	// matches nothing (MySQL JSON_SEARCH only searches string scalars), so
 	// reject it here and return a filter error rather than a database one.
-	if !isStringArray(ref.info.Type) {
+	if isNumericArray(ref.info.Type) {
 		return "", nil, fmt.Errorf(
 			"wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)",
 			ref.name, ref.name,
@@ -617,7 +617,7 @@ var pgArrayCast = map[reflect.Kind]string{
 // Wrapped in COALESCE(..., false) so NOT field:value matches rows whose column
 // is NULL. Without it, NOT(NULL) is NULL and those rows vanish silently.
 func (s *SQLDriver) renderArrayContains(f fieldRef) (string, error) {
-	typed := !isStringArray(f.info.Type)
+	typed := isNumericArray(f.info.Type)
 
 	switch s.provider {
 	case "postgresql":

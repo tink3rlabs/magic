@@ -202,7 +202,7 @@ func arrayContainsParam(fieldType reflect.Type, raw string) types.AttributeValue
 	switch {
 	case arrayElemKind(fieldType) == reflect.Bool:
 		return &types.AttributeValueMemberBOOL{Value: raw == "true"}
-	case !isStringArray(fieldType):
+	case isNumericArray(fieldType):
 		return &types.AttributeValueMemberN{Value: raw}
 	default:
 		return &types.AttributeValueMemberS{Value: raw}

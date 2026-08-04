@@ -101,6 +101,15 @@ func isStringArray(fieldType reflect.Type) bool {
 	return arrayElemKind(fieldType) == reflect.String
 }
 
+// isNumericArray reports whether a field's elements are numeric or boolean,
+// i.e. values that must not be bound as strings. Any other element kind —
+// including kinds with no entry in arrayElemBits, such as a []time.Time — is
+// bound as text, which is what those databases expect for it.
+func isNumericArray(fieldType reflect.Type) bool {
+	k := arrayElemKind(fieldType)
+	return k == reflect.Bool || arrayElemBits[k] > 0
+}
+
 // normalizeArrayElemValue validates a containment value against the array's
 // element type.
 //

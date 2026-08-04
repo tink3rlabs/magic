@@ -95,11 +95,11 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 			if err != nil {
 				return "", nil, fmt.Errorf("invalid field name: %w", err)
 			}
-			val, err := normalizeArrayElemValue(name, fieldType, extractLiteralValue(e.Right))
+			elem, err := normalizeArrayElemValue(name, fieldType, extractLiteralValue(e.Right))
 			if err != nil {
 				return "", nil, err
 			}
-			return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, val)}, nil
+			return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, elem.String())}, nil
 		}
 	case expr.Wild, expr.Like:
 		if isArray {
@@ -185,11 +185,11 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, fieldType re
 		return fmt.Sprintf("%s IS NULL", safe), nil, nil
 	}
 
-	val, err := normalizeArrayElemValue(name, fieldType, extractLiteralValue(v))
+	elem, err := normalizeArrayElemValue(name, fieldType, extractLiteralValue(v))
 	if err != nil {
 		return "", nil, err
 	}
-	return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, val)}, nil
+	return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, elem.String())}, nil
 }
 
 // arrayContainsParam converts a normalized containment value into a typed
@@ -202,7 +202,7 @@ func arrayContainsParam(fieldType reflect.Type, raw string) types.AttributeValue
 	switch {
 	case arrayElemKind(fieldType) == reflect.Bool:
 		return &types.AttributeValueMemberBOOL{Value: raw == "true"}
-	case isNumericArray(fieldType):
+	case !isStringArray(fieldType):
 		return &types.AttributeValueMemberN{Value: raw}
 	default:
 		return &types.AttributeValueMemberS{Value: raw}

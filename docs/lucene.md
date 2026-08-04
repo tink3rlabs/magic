@@ -154,7 +154,7 @@ NOT tags:null      # tags column is not null (identical to tags:*)
 
 | Operator | Postgres | MySQL | SQLite |
 |---|---|---|---|
-| Containment | `COALESCE("tags" @> ARRAY[?], false)` | `` COALESCE(JSON_CONTAINS(`tags`, JSON_QUOTE(?)), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
+| Containment | `COALESCE("tags" @> ?, false)` | `` COALESCE(JSON_CONTAINS(`tags`, ?), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
 | Wildcard | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(LOWER(CAST(`tags` AS CHAR)), 'one', LOWER(?)) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
 | Has value | `"tags" IS NOT NULL` | `` `tags` IS NOT NULL `` | `"tags" IS NOT NULL` |
 
@@ -191,7 +191,7 @@ array. This is a deliberate, documented divergence from Elasticsearch's
   as an array.
 - `Tags []string` tagged `gorm:"serializer:json"` is stored as JSON but is
   still detected as a native array by its Go type, so Postgres receives
-  `@> ARRAY[?]` against a JSON column and errors. If you want a JSON-backed
+  `@>` against a JSON column and errors. If you want a JSON-backed
   array, use an explicitly JSON-named type instead.
 #### Non-string elements
 
@@ -206,19 +206,31 @@ nums:abc      # parse error — not a valid element of an int array
 nums:*5*      # parse error — see below
 ```
 
-| Provider | Non-string containment |
-|---|---|
-| Postgres | `COALESCE("nums" @> ARRAY[?]::bigint[], false)` — the cast makes the bound text match the column's element type, which `@>` requires exactly |
-| MySQL | `` COALESCE(JSON_CONTAINS(`nums`, CAST(? AS JSON)), false) `` — `JSON_QUOTE` would build a JSON *string*, which never equals a JSON number |
-| SQLite | `EXISTS (SELECT 1 FROM json_each("nums") WHERE value = json_extract(json(?), '$'))` — `json_each` yields numbers as numbers and booleans as `1`/`0` |
-| DynamoDB | `contains(nums, ?)` bound as an `N` (or `BOOL`) attribute rather than `S` |
+Each provider renders one form for every element type, and the difference
+lives entirely in how the parameter is bound:
 
-Postgres casts by Go element type: `int`/`int64`/`uint`/`uint64`/`uint32` →
-`::bigint[]`, `int8`/`int16` → `::smallint[]`, `int32`/`uint16` → `::int[]`,
-`float64` → `::double precision[]`, `float32` → `::real[]`, `bool` →
-`::boolean[]`. The Go element type can't always determine the column's actual
-element type (e.g. a narrower or wider Postgres column than the cast assumes),
-so a mismatch will error rather than silently coerce.
+| Provider | SQL | Bound parameter |
+|---|---|---|
+| Postgres | `COALESCE("nums" @> ?, false)` | single-element array literal (a `driver.Valuer`) |
+| MySQL | `` COALESCE(JSON_CONTAINS(`nums`, ?), false) `` | JSON scalar text: `5`, `1.5`, `true`, `"golang"` |
+| SQLite | `EXISTS (SELECT 1 FROM json_each("nums") WHERE value = ?)` | the native Go value |
+| DynamoDB | `contains(nums, ?)` | an `N`, `BOOL` or `S` attribute |
+
+**No provider needs a type cast.** Postgres infers the array type from the
+column because the whole array arrives as a single bound parameter. The
+earlier `ARRAY[?]` form could not: Postgres resolves an array constructor to
+`text[]` at parse time, before it knows the parameter's type, so that form had
+to carry an explicit `::type[]` cast naming the column's exact element type —
+`@>` requires exactly matching array types, and neither narrowing nor widening
+rescues a mismatch.
+
+**The parameter is a `driver.Valuer`, not a Go slice, and that is
+deliberate.** GORM expands slice arguments for `IN (?)` clauses, which would
+rewrite `col @> ?` into `col @> ($1)` and then fail to encode. GORM checks
+`driver.Valuer` before that expansion, so a Valuer survives as one parameter.
+
+`COALESCE(..., false)` makes a NULL column compare false rather than NULL, so
+`NOT field:value` is a true complement instead of silently dropping those rows.
 
 **Values are validated against the element type before rendering.** A filter
 like `nums:abc` or `flags:maybe` returns a parse error instead of reaching the
@@ -332,8 +344,38 @@ The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL do
 | Null                  | `field:null`                     | `"field" IS NULL`                          | same                                                  | same                                  |
 | Has value (scalar)    | `field:*`                        | `"field"::text ILIKE ?` (param `%`)        | `` LOWER(`field`) LIKE LOWER(?) ``                    | `"field" LIKE ?`                      |
 | JSON sub-field        | `metadata.tier:gold`             | `metadata->>'tier' = ?`                    | `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?`  | `JSON_EXTRACT(metadata, '$.tier') = ?` |
-| Array containment     | `tags:golang`                    | `COALESCE("tags" @> ARRAY[?], false)`      | `` COALESCE(JSON_CONTAINS(`tags`, JSON_QUOTE(?)), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
+| Array containment     | `tags:golang`                    | `COALESCE("tags" @> ?, false)`             | `` COALESCE(JSON_CONTAINS(`tags`, ?), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
 | Array wildcard        | `tags:*go*`                      | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(LOWER(CAST(`tags` AS CHAR)), 'one', LOWER(?)) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
 | Array has value       | `tags:*`                         | `"tags" IS NOT NULL`                       | same                                                  | same                                  |
 | Grouped field         | `tenant_id:(a OR null)`          | `("tenant_id" = ? OR "tenant_id" IS NULL)` | same                                                  | same                                  |
 | Implicit (unfielded)  | `foo`                            | OR across all `ImplicitSearch=true` fields | same                                                  | same                                  |
+
+## Adding a database
+
+Every per-database difference lives behind the `Dialect` interface in
+`storage/search/lucene/dialect.go`. Adding a database is three steps:
+
+1. Create `dialect_<name>.go` with a type implementing `Dialect`.
+2. Register it from that file's `init`:
+   `func init() { registerDialect(myDialect{}) }`
+3. Add the provider to the executed-test matrix in `sql_executed_test.go`.
+
+There is no separate allowlist to update — the registry is the only place a
+provider name is enumerated, so a name that resolves is a name that is fully
+implemented.
+
+The eight operations are the provider name, identifier quoting, JSON subfield
+extraction, scalar `LIKE`, array wildcard, array containment, element
+encoding, and fuzzy matching. The compiler names any you leave out, and
+`TestEveryDialectImplementsEveryOperation` fails if an implementation returns
+something that ignores its argument.
+
+`Fuzzy` may return an error when the database has no equivalent; SQLite does
+exactly that.
+
+This structure replaced seventeen `switch provider` statements scattered
+through the renderer. Two of them fell through *silently* rather than
+erroring — identifier quoting defaulted to double quotes for any non-MySQL
+provider, and JSON subfield extraction returned the bare column name — so a
+half-added provider produced queries that ran and returned wrong rows. Both
+are compile errors now.

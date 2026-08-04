@@ -1693,7 +1693,12 @@ func TestQuoteColumnNameFor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &SQLDriver{provider: tt.provider}
+			// Construct through NewSQLDriver: a zero-value SQLDriver has no
+			// dialect, and quoting is now the dialect's job.
+			d, err := NewSQLDriver(nil, tt.provider)
+			if err != nil {
+				t.Fatalf("NewSQLDriver(%s): %v", tt.provider, err)
+			}
 			if got := d.quoteColumn(tt.col); got != tt.want {
 				t.Errorf("quoteColumn(%q) on %s = %q, want %q", tt.col, tt.provider, got, tt.want)
 			}
@@ -2389,6 +2394,39 @@ func TestSQLDriver_GroupedWildcardLeaf(t *testing.T) {
 // A substitution of isNumericArray with !isStringArray briefly shipped here
 // and would have sent this field through CAST(? AS JSON) / json_extract,
 // which is not valid for a Go time.Time's RFC3339 string representation.
+// A wildcard is only meaningful on string elements, and the guard now says so
+// for every non-string element kind rather than only the numeric ones.
+//
+// Before, a []time.Time wildcard passed the guard and reached Postgres, which
+// failed the query outright:
+//
+//	ERROR: operator does not exist: timestamp with time zone ~~* unknown
+//
+// That is a 500 for what is really a malformed filter. Rejecting it here makes
+// it a 400, consistent with how the numeric and boolean kinds already behaved.
+func TestSQLDriver_WildcardRejectedOnNonStringArray(t *testing.T) {
+	for _, provider := range []string{"postgresql", "mysql", "sqlite"} {
+		p, err := NewParser(struct {
+			Events []time.Time `json:"events"`
+			Nums   []int       `json:"nums"`
+			Flags  []bool      `json:"flags"`
+			Tags   []string    `json:"tags"`
+		}{})
+		if err != nil {
+			t.Fatalf("NewParser: %v", err)
+		}
+		for _, field := range []string{"events", "nums", "flags"} {
+			if _, _, err := p.ParseToSQL(field+":*2024*", provider); err == nil {
+				t.Errorf("ParseToSQL(%s:*2024*, %s) returned no error; a wildcard on a non-string array must be rejected at parse time", field, provider)
+			}
+		}
+		// The string array is the one case that must still work.
+		if _, _, err := p.ParseToSQL("tags:*go*", provider); err != nil {
+			t.Errorf("ParseToSQL(tags:*go*, %s): %v — string arrays must still accept wildcards", provider, err)
+		}
+	}
+}
+
 func TestSQLDriver_NonNumericStructArrayUsesTextPath(t *testing.T) {
 	fields := []FieldInfo{
 		{Name: "events", Type: reflect.TypeOf([]time.Time{})},

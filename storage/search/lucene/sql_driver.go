@@ -15,24 +15,16 @@ import (
 type SQLDriver struct {
 	driver.Base
 	fields   map[string]FieldInfo // Map of field names to their metadata
-	provider string               // SQL provider: "postgresql", "mysql", or "sqlite"
-}
-
-// validateProvider validates that the provider is one of the supported SQL providers.
-func validateProvider(provider string) error {
-	switch provider {
-	case "postgresql", "mysql", "sqlite":
-		return nil
-	default:
-		return fmt.Errorf("unsupported SQL provider: %s (supported: postgresql, mysql, sqlite)", provider)
-	}
+	provider string               // SQL provider name, as given by the caller
+	dialect  Dialect              // Per-database rendering, resolved from provider
 }
 
 // NewSQLDriver creates a new SQL driver for the specified provider.
-// Provider should be one of: "postgresql", "mysql", "sqlite"
-// Returns an error if duplicate field names are found or provider is invalid.
+// The provider must be a registered dialect; see dialect.go.
+// Returns an error if duplicate field names are found or the provider is unknown.
 func NewSQLDriver(fields []FieldInfo, provider string) (*SQLDriver, error) {
-	if err := validateProvider(provider); err != nil {
+	dialect, err := lookupDialect(provider)
+	if err != nil {
 		return nil, err
 	}
 
@@ -69,6 +61,7 @@ func NewSQLDriver(fields []FieldInfo, provider string) (*SQLDriver, error) {
 		},
 		fields:   fieldMap,
 		provider: provider,
+		dialect:  dialect,
 	}, nil
 }
 
@@ -146,25 +139,7 @@ func (s *SQLDriver) renderLikeOrWild(e *expr.Expression) (string, []any, error) 
 // renderScalarLike renders provider-specific case-insensitive pattern matching
 // for a single-valued column.
 func (s *SQLDriver) renderScalarLike(leftStr, rightStr string) (string, error) {
-	switch s.provider {
-	case "postgresql":
-		// PostgreSQL: ILIKE for case-insensitive matching
-		if isJSONSyntax(leftStr) {
-			return fmt.Sprintf("%s ILIKE %s", leftStr, rightStr), nil
-		}
-		return fmt.Sprintf("%s::text ILIKE %s", leftStr, rightStr), nil
-
-	case "mysql":
-		// MySQL: Use LOWER() for case-insensitive matching
-		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", leftStr, rightStr), nil
-
-	case "sqlite":
-		// SQLite: LIKE is already case-insensitive for ASCII by default
-		return fmt.Sprintf("%s LIKE %s", leftStr, rightStr), nil
-
-	default:
-		return "", fmt.Errorf("unsupported SQL provider: %s", s.provider)
-	}
+	return s.dialect.ScalarLike(leftStr, rightStr), nil
 }
 
 // renderArrayWildcard renders a wildcard match against a multi-valued column.
@@ -194,29 +169,14 @@ func (s *SQLDriver) renderArrayWildcard(ref fieldRef, bare bool, params []any) (
 	// (Postgres: "operator does not exist: integer ~~* unknown") or silently
 	// matches nothing (MySQL JSON_SEARCH only searches string scalars), so
 	// reject it here and return a filter error rather than a database one.
-	if isNumericArray(ref.info.Type) {
+	if !isStringArray(ref.info.Type) {
 		return "", nil, fmt.Errorf(
 			"wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)",
 			ref.name, ref.name,
 		)
 	}
 
-	switch s.provider {
-	case "postgresql":
-		return fmt.Sprintf("EXISTS (SELECT 1 FROM unnest(%s) AS elem WHERE elem ILIKE ?)", ref.sql), params, nil
-	case "mysql":
-		// JSON_SEARCH compares JSON string scalars under the utf8mb4_bin
-		// collation regardless of the column's or session's collation, so an
-		// unfolded match here is case-sensitive — tags:*Go* would not match
-		// ["golang"]. Folding both the document and the pattern keeps this
-		// branch consistent with the case-insensitive Postgres ILIKE and SQLite
-		// LIKE branches, and with this provider's own scalar wildcard branch.
-		return fmt.Sprintf("JSON_SEARCH(LOWER(CAST(%s AS CHAR)), 'one', LOWER(?)) IS NOT NULL", ref.sql), params, nil
-	case "sqlite":
-		return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value LIKE ?)", ref.sql), params, nil
-	default:
-		return "", nil, fmt.Errorf("unsupported SQL provider: %s", s.provider)
-	}
+	return s.dialect.ArrayWildcard(ref.sql), params, nil
 }
 
 // isBareWildcard reports whether a value is exactly "*" — the documented
@@ -248,27 +208,11 @@ func (s *SQLDriver) renderFuzzy(e *expr.Expression) (string, []any, error) {
 
 	params := append(colParams, termParams...)
 
-	switch s.provider {
-	case "postgresql":
-		// PostgreSQL: Use similarity() function from pg_trgm extension
-		// Threshold 0.3 (lower = more matches, higher = stricter)
-		threshold := 0.3
-		if isJSONSyntax(colStr) {
-			return fmt.Sprintf("similarity(%s, %s) > %f", colStr, termStr, threshold), params, nil
-		}
-		return fmt.Sprintf("similarity(%s::text, %s) > %f", colStr, termStr, threshold), params, nil
-
-	case "mysql":
-		// MySQL: Use SOUNDEX for phonetic matching (limited fuzzy support)
-		return fmt.Sprintf("SOUNDEX(%s) = SOUNDEX(%s)", colStr, termStr), params, nil
-
-	case "sqlite":
-		// SQLite: No built-in fuzzy search support
-		return "", nil, fmt.Errorf("fuzzy search (field:term~N) is not supported with SQLite; use wildcards instead (e.g., field:term*)")
-
-	default:
-		return "", nil, fmt.Errorf("unsupported SQL provider: %s", s.provider)
+	sqlStr, err := s.dialect.Fuzzy(colStr, termStr)
+	if err != nil {
+		return "", nil, err
 	}
+	return sqlStr, params, nil
 }
 
 // renderComparison handles comparison operators with IS NULL support for null values.
@@ -510,10 +454,7 @@ func (s *SQLDriver) quoteColumn(colStr string) string {
 	if isJSONSyntax(colStr) {
 		return colStr
 	}
-	if s.provider == "mysql" {
-		return fmt.Sprintf("`%s`", strings.ReplaceAll(colStr, "`", "``"))
-	}
-	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(colStr, `"`, `""`))
+	return s.dialect.QuoteIdent(colStr)
 }
 
 func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
@@ -748,30 +689,7 @@ func (s *SQLDriver) formatFieldName(fieldName string) expr.Column {
 		}
 
 		if field, exists := s.fields[baseField]; exists && canUseNestedAccess(field.Type) {
-			// Escape subfield name for safe interpolation
-			// PostgreSQL uses ->>'key' syntax where key is in quotes, so we need to escape quotes
-			escapedSubField := escapeJSONPathSegment(subField)
-
-			switch s.provider {
-			case "postgresql":
-				// PostgreSQL: JSONB operator ->>
-				// Key is in single quotes, so we escape single quotes
-				return expr.Column(fmt.Sprintf("%s->>'%s'", baseField, escapedSubField))
-
-			case "mysql":
-				// MySQL 5.7+: JSON_UNQUOTE(JSON_EXTRACT(column, '$.field'))
-				// Path is '$.field' - field name is not separately quoted, but validation ensures it's safe
-				return expr.Column(fmt.Sprintf("JSON_UNQUOTE(JSON_EXTRACT(%s, '$.%s'))", baseField, subField))
-
-			case "sqlite":
-				// SQLite: JSON_EXTRACT(column, '$.field')
-				// Path is '$.field' - field name is not separately quoted, but validation ensures it's safe
-				return expr.Column(fmt.Sprintf("JSON_EXTRACT(%s, '$.%s')", baseField, subField))
-
-			default:
-				// Should never happen due to validateProvider, but defensive programming
-				return expr.Column(fieldName)
-			}
+			return expr.Column(s.dialect.JSONExtract(baseField, subField))
 		}
 	}
 	return expr.Column(fieldName)

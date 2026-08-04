@@ -806,3 +806,42 @@ func TestDynamoDBDriver_TypedArrayRejectsMistypedValue(t *testing.T) {
 		t.Error("RenderPartiQL returned no error for a non-numeric value on an int array")
 	}
 }
+
+// DynamoDB distinguishes N, S and BOOL attributes, and a value stored as N
+// never equals one bound as S. Deriving the attribute type by re-parsing a
+// canonical string was a second source of truth that could disagree with the
+// validation that produced it; ElemValue carries the type directly.
+func TestArrayContainsParamFromElemValue(t *testing.T) {
+	tests := []struct {
+		name string
+		val  ElemValue
+		want types.AttributeValue
+	}{
+		{"int", ElemValue{Kind: reflect.Int, Val: int64(5)}, &types.AttributeValueMemberN{Value: "5"}},
+		{"negative", ElemValue{Kind: reflect.Int64, Val: int64(-5)}, &types.AttributeValueMemberN{Value: "-5"}},
+		{"uint carried as int64", ElemValue{Kind: reflect.Uint64, Val: int64(9223372036854775807)}, &types.AttributeValueMemberN{Value: "9223372036854775807"}},
+		{"float", ElemValue{Kind: reflect.Float64, Val: 1.5}, &types.AttributeValueMemberN{Value: "1.5"}},
+		{"float32 width", ElemValue{Kind: reflect.Float32, Val: 2.5}, &types.AttributeValueMemberN{Value: "2.5"}},
+		{"bool true", ElemValue{Kind: reflect.Bool, Val: true}, &types.AttributeValueMemberBOOL{Value: true}},
+		{"bool false", ElemValue{Kind: reflect.Bool, Val: false}, &types.AttributeValueMemberBOOL{Value: false}},
+		{"string", ElemValue{Kind: reflect.String, Val: "golang"}, &types.AttributeValueMemberS{Value: "golang"}},
+		// An unlisted element kind stays a string and must bind as S, not N.
+		{"unlisted kind", ElemValue{Kind: reflect.Struct, Val: "2024-01-01T00:00:00Z"}, &types.AttributeValueMemberS{Value: "2024-01-01T00:00:00Z"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := arrayContainsParam(tt.val)
+			if err != nil {
+				t.Fatalf("arrayContainsParam(%#v): %v", tt.val, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("arrayContainsParam(%#v) = %#v, want %#v", tt.val, got, tt.want)
+			}
+		})
+	}
+
+	// A Val outside the closed set is a programming error, not a filter error.
+	if _, err := arrayContainsParam(ElemValue{Kind: reflect.Complex64, Val: complex64(1)}); err == nil {
+		t.Error("arrayContainsParam with an unsupported Val returned no error")
+	}
+}

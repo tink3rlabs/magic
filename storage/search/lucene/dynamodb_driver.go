@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -99,7 +100,11 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 			if err != nil {
 				return "", nil, err
 			}
-			return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, elem.String())}, nil
+			param, err := arrayContainsParam(elem)
+			if err != nil {
+				return "", nil, err
+			}
+			return fmt.Sprintf("contains(%s, ?)", safe), []any{param}, nil
 		}
 	case expr.Wild, expr.Like:
 		if isArray {
@@ -189,23 +194,37 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, fieldType re
 	if err != nil {
 		return "", nil, err
 	}
-	return fmt.Sprintf("contains(%s, ?)", safe), []any{arrayContainsParam(fieldType, elem.String())}, nil
+	param, err := arrayContainsParam(elem)
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("contains(%s, ?)", safe), []any{param}, nil
 }
 
-// arrayContainsParam converts a normalized containment value into a typed
-// AttributeValue, so a numeric or boolean array is compared against a number
-// or a boolean rather than a string that can never match.
+// arrayContainsParam converts a validated element into the typed
+// AttributeValue that matches how it is stored, so a numeric or boolean array
+// is compared against a number or a boolean rather than a string that can
+// never match.
 //
-// raw has already been through normalizeArrayElemValue, so the numeric literal
-// is well-formed and the boolean is exactly "true" or "false".
-func arrayContainsParam(fieldType reflect.Type, raw string) types.AttributeValue {
-	switch {
-	case arrayElemKind(fieldType) == reflect.Bool:
-		return &types.AttributeValueMemberBOOL{Value: raw == "true"}
-	case isNumericArray(fieldType):
-		return &types.AttributeValueMemberN{Value: raw}
+// It switches on the value itself rather than re-deriving the type from the
+// field's reflect.Kind. Re-deriving was a second source of truth that could
+// disagree with the validation that produced the value.
+func arrayContainsParam(v ElemValue) (types.AttributeValue, error) {
+	switch t := v.Val.(type) {
+	case bool:
+		return &types.AttributeValueMemberBOOL{Value: t}, nil
+	case int64:
+		return &types.AttributeValueMemberN{Value: strconv.FormatInt(t, 10)}, nil
+	case float64:
+		bits := 64
+		if v.Kind == reflect.Float32 {
+			bits = 32
+		}
+		return &types.AttributeValueMemberN{Value: strconv.FormatFloat(t, 'g', -1, bits)}, nil
+	case string:
+		return &types.AttributeValueMemberS{Value: t}, nil
 	default:
-		return &types.AttributeValueMemberS{Value: raw}
+		return nil, fmt.Errorf("unsupported array element type %T", v.Val)
 	}
 }
 

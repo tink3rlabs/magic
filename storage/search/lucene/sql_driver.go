@@ -2,7 +2,6 @@ package lucene
 
 import (
 	"fmt"
-	"reflect"
 	"regexp"
 	"strings"
 
@@ -252,12 +251,11 @@ func (s *SQLDriver) renderComparison(e *expr.Expression) (string, []any, error) 
 		if err != nil {
 			return "", nil, err
 		}
-		val := elem.String()
-		sqlStr, err := s.renderArrayContains(ref)
+		param, err := s.dialect.EncodeElement(elem)
 		if err != nil {
 			return "", nil, err
 		}
-		return sqlStr, append(leftParams, val), nil
+		return s.dialect.ArrayContains(ref.sql), append(leftParams, param), nil
 	}
 
 	if ref.isArray() {
@@ -346,12 +344,11 @@ func (s *SQLDriver) renderGroupedFieldLeaf(ref fieldRef, v any) (string, []any, 
 		if err != nil {
 			return "", nil, err
 		}
-		val := elem.String()
-		sqlStr, err := s.renderArrayContains(ref)
+		param, err := s.dialect.EncodeElement(elem)
 		if err != nil {
 			return "", nil, err
 		}
-		return sqlStr, []any{val}, nil
+		return s.dialect.ArrayContains(ref.sql), []any{param}, nil
 	}
 
 	valStr, valParams, err := s.serializeValue(v)
@@ -512,77 +509,6 @@ func (s *SQLDriver) resolveField(in any) (fieldRef, error) {
 		}
 	}
 	return ref, nil
-}
-
-// pgArrayCast maps an array element kind to the Postgres array cast suffix
-// used by renderArrayContains; "" when the element is text.
-//
-// Parameters are always serialized as Go strings (serializeValue stringifies
-// via fmt.Sprintf), so `int[] @> ARRAY[$1]` fails with "operator does not
-// exist: integer[] @> text[]" without an explicit cast.
-//
-// The cast must name the column's ACTUAL element type. `@>` requires exactly
-// matching array types and neither narrowing nor widening rescues a mismatch:
-// `bigint[] @> ARRAY['9999999999']::int[]` errors with "value out of range
-// for type integer", `int[] @> ARRAY['5']::bigint[]` errors with "no operator
-// matches", and `smallint[] @> ARRAY['1']::int[]` errors the same way.
-// Likewise numeric[] does not satisfy a float8[] column.
-//
-// So each kind maps to the natural Postgres array type for that kind — the
-// width that round-trips it exactly, not a convenient superset. Each signed
-// width picks the smallest Postgres integer that holds it; unsigned kinds
-// need one more bit and so step up a width — see arrayElemBits for why the
-// 64-bit unsigned kinds only need 63.
-var pgArrayCast = map[reflect.Kind]string{
-	reflect.Bool: "::boolean[]",
-
-	reflect.Int:    "::bigint[]",
-	reflect.Int64:  "::bigint[]",
-	reflect.Uint:   "::bigint[]",
-	reflect.Uint64: "::bigint[]",
-	reflect.Uint32: "::bigint[]",
-
-	reflect.Int8:  "::smallint[]",
-	reflect.Int16: "::smallint[]",
-
-	reflect.Int32:  "::int[]",
-	reflect.Uint16: "::int[]",
-
-	reflect.Float64: "::double precision[]",
-	reflect.Float32: "::real[]",
-}
-
-// renderArrayContains renders "does this array column contain the bound value",
-// with one ? placeholder.
-//
-// Wrapped in COALESCE(..., false) so NOT field:value matches rows whose column
-// is NULL. Without it, NOT(NULL) is NULL and those rows vanish silently.
-func (s *SQLDriver) renderArrayContains(f fieldRef) (string, error) {
-	typed := isNumericArray(f.info.Type)
-
-	switch s.provider {
-	case "postgresql":
-		cast := pgArrayCast[arrayElemKind(f.info.Type)]
-		return fmt.Sprintf("COALESCE(%s @> ARRAY[?]%s, false)", f.sql, cast), nil
-	case "mysql":
-		// JSON_QUOTE builds a JSON *string*, which never equals a numeric or
-		// boolean element. CAST(? AS JSON) parses the canonical literal that
-		// normalizeArrayElemValue produced into the matching JSON scalar.
-		if typed {
-			return fmt.Sprintf("COALESCE(JSON_CONTAINS(%s, CAST(? AS JSON)), false)", f.sql), nil
-		}
-		return fmt.Sprintf("COALESCE(JSON_CONTAINS(%s, JSON_QUOTE(?)), false)", f.sql), nil
-	case "sqlite":
-		// json_each yields numbers as numbers and booleans as 1/0, none of which
-		// equal a bound string. json_extract(json(?), '$') re-parses the literal
-		// into that same representation.
-		if typed {
-			return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value = json_extract(json(?), '$'))", f.sql), nil
-		}
-		return fmt.Sprintf("EXISTS (SELECT 1 FROM json_each(%s) WHERE value = ?)", f.sql), nil
-	default:
-		return "", fmt.Errorf("unsupported SQL provider: %s", s.provider)
-	}
 }
 
 // extractLiteralString extracts a string value from an expression for wildcard conversion.

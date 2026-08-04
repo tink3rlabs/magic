@@ -7,71 +7,134 @@ import (
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
 )
 
-// The Postgres cast must name the column's exact element type — `@>` rejects
-// both narrowing and widening — so this pins every row of arrayElemSpecs.
-// Without it, a wrong cast is invisible until a query fails against a real
-// database.
-func TestArrayElemCast(t *testing.T) {
+// The codec needs a real Go value, not a string: MySQL must distinguish JSON
+// true from JSON 1, and SQLite binds the value natively.
+func TestNormalizeArrayElemValueTypes(t *testing.T) {
 	tests := []struct {
-		typ  reflect.Type
-		want string
+		name     string
+		typ      reflect.Type
+		raw      string
+		wantVal  any
+		wantKind reflect.Kind
 	}{
-		{reflect.TypeOf([]string{}), ""},
-		{reflect.TypeOf([]int{}), "::bigint[]"},
-		{reflect.TypeOf([]int64{}), "::bigint[]"},
-		{reflect.TypeOf([]uint{}), "::bigint[]"},
-		{reflect.TypeOf([]uint64{}), "::bigint[]"},
-		{reflect.TypeOf([]uint32{}), "::bigint[]"},
-		{reflect.TypeOf([]int8{}), "::smallint[]"},
-		{reflect.TypeOf([]int16{}), "::smallint[]"},
-		{reflect.TypeOf([]int32{}), "::int[]"},
-		{reflect.TypeOf([]uint16{}), "::int[]"},
-		{reflect.TypeOf([]float64{}), "::double precision[]"},
-		{reflect.TypeOf([]float32{}), "::real[]"},
-		{reflect.TypeOf([]bool{}), "::boolean[]"},
-
-		// Not arrays, or excluded from array handling entirely.
-		{nil, ""},
-		{reflect.TypeOf(""), ""},
-		{reflect.TypeOf(0), ""},
-		{reflect.TypeOf([]byte{}), ""},
-
-		// A pointer to a slice is still that slice.
-		{reflect.TypeOf(&[]int{}), "::bigint[]"},
+		{"int64", reflect.TypeOf([]int{}), "5", int64(5), reflect.Int},
+		{"negative", reflect.TypeOf([]int64{}), "-5", int64(-5), reflect.Int64},
+		{"uint stays int64", reflect.TypeOf([]uint64{}), "5", int64(5), reflect.Uint64},
+		{"uint at MaxInt64", reflect.TypeOf([]uint64{}), "9223372036854775807", int64(9223372036854775807), reflect.Uint64},
+		{"float", reflect.TypeOf([]float64{}), "1.5", 1.5, reflect.Float64},
+		{"float32", reflect.TypeOf([]float32{}), "2.5", 2.5, reflect.Float32},
+		{"bool true", reflect.TypeOf([]bool{}), "1", true, reflect.Bool},
+		{"bool false", reflect.TypeOf([]bool{}), "FALSE", false, reflect.Bool},
+		{"string", reflect.TypeOf([]string{}), "golang", "golang", reflect.String},
 	}
-
 	for _, tt := range tests {
-		name := "nil"
-		if tt.typ != nil {
-			name = tt.typ.String()
-		}
-		t.Run(name, func(t *testing.T) {
-			if got := arrayElemCast(tt.typ); got != tt.want {
-				t.Errorf("arrayElemCast(%s) = %q, want %q", name, got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeArrayElemValue("f", tt.typ, tt.raw)
+			if err != nil {
+				t.Fatalf("normalizeArrayElemValue(%q): %v", tt.raw, err)
+			}
+			if got.Val != tt.wantVal {
+				t.Errorf("Val = %#v (%T), want %#v (%T)", got.Val, got.Val, tt.wantVal, tt.wantVal)
+			}
+			if got.Kind != tt.wantKind {
+				t.Errorf("Kind = %v, want %v", got.Kind, tt.wantKind)
 			}
 		})
 	}
 }
 
-// isNumericArray decides whether a value may be bound as a string, so a wrong
-// answer means silently matching nothing rather than an error.
-func TestIsNumericArray(t *testing.T) {
-	numeric := []reflect.Type{
+// Val is restricted to four types so every dialect can switch exhaustively.
+func TestElemValueValIsClosedSet(t *testing.T) {
+	types := []reflect.Type{
 		reflect.TypeOf([]int{}), reflect.TypeOf([]int8{}), reflect.TypeOf([]int16{}),
 		reflect.TypeOf([]int32{}), reflect.TypeOf([]int64{}), reflect.TypeOf([]uint{}),
 		reflect.TypeOf([]uint16{}), reflect.TypeOf([]uint32{}), reflect.TypeOf([]uint64{}),
 		reflect.TypeOf([]float32{}), reflect.TypeOf([]float64{}), reflect.TypeOf([]bool{}),
+		reflect.TypeOf([]string{}),
 	}
-	for _, tp := range numeric {
-		if !isNumericArray(tp) {
-			t.Errorf("isNumericArray(%s) = false, want true", tp)
+	raws := map[reflect.Kind]string{reflect.Bool: "true", reflect.String: "x"}
+	for _, tp := range types {
+		raw, ok := raws[arrayElemKind(tp)]
+		if !ok {
+			raw = "1"
+		}
+		got, err := normalizeArrayElemValue("f", tp, raw)
+		if err != nil {
+			t.Fatalf("%s: %v", tp, err)
+		}
+		switch got.Val.(type) {
+		case int64, float64, bool, string:
+		default:
+			t.Errorf("%s produced Val of type %T; must be int64, float64, bool or string", tp, got.Val)
 		}
 	}
+}
 
-	// Strings bind as-is; []byte is a scalar blob, never an array.
-	for _, tp := range []reflect.Type{reflect.TypeOf([]string{}), reflect.TypeOf([]byte{}), nil} {
-		if isNumericArray(tp) {
-			t.Errorf("isNumericArray(%v) = true, want false", tp)
+// String() is the canonical JSON scalar literal, kept so the DynamoDB driver
+// and today's SQL rendering keep working while the codec lands.
+func TestElemValueString(t *testing.T) {
+	tests := []struct {
+		typ  reflect.Type
+		raw  string
+		want string
+	}{
+		{reflect.TypeOf([]int{}), "5", "5"},
+		{reflect.TypeOf([]float64{}), "3.0", "3"},
+		{reflect.TypeOf([]float64{}), "1.5", "1.5"},
+		{reflect.TypeOf([]bool{}), "1", "true"},
+		{reflect.TypeOf([]string{}), "golang", "golang"},
+	}
+	for _, tt := range tests {
+		got, err := normalizeArrayElemValue("f", tt.typ, tt.raw)
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		if got.String() != tt.want {
+			t.Errorf("String() = %q, want %q", got.String(), tt.want)
+		}
+	}
+}
+
+// The width is what the table still governs, and a wrong width means a value
+// that cannot round-trip the column's element type reaches the database.
+func TestArrayElemBits(t *testing.T) {
+	tests := []struct {
+		typ  reflect.Type
+		want int
+	}{
+		{reflect.TypeOf([]int{}), 64},
+		{reflect.TypeOf([]int64{}), 64},
+		{reflect.TypeOf([]uint{}), 63},
+		{reflect.TypeOf([]uint64{}), 63},
+		{reflect.TypeOf([]uint32{}), 32},
+		{reflect.TypeOf([]int8{}), 8},
+		{reflect.TypeOf([]int16{}), 16},
+		{reflect.TypeOf([]int32{}), 32},
+		{reflect.TypeOf([]uint16{}), 16},
+		{reflect.TypeOf([]float64{}), 64},
+		{reflect.TypeOf([]float32{}), 32},
+		{reflect.TypeOf([]string{}), 0},
+		{reflect.TypeOf([]bool{}), 0},
+		{reflect.TypeOf([]byte{}), 0},
+		{nil, 0},
+	}
+	for _, tt := range tests {
+		if got := arrayElemBits[arrayElemKind(tt.typ)]; got != tt.want {
+			t.Errorf("arrayElemBits[%v] = %d, want %d", tt.typ, got, tt.want)
+		}
+	}
+}
+
+func TestIsStringArray(t *testing.T) {
+	if !isStringArray(reflect.TypeOf([]string{})) {
+		t.Error("[]string should be a string array")
+	}
+	for _, tp := range []reflect.Type{
+		reflect.TypeOf([]int{}), reflect.TypeOf([]bool{}),
+		reflect.TypeOf([]float64{}), reflect.TypeOf([]byte{}), nil,
+	} {
+		if isStringArray(tp) {
+			t.Errorf("isStringArray(%v) = true, want false", tp)
 		}
 	}
 }
@@ -133,15 +196,15 @@ func TestNormalizeArrayElemValue(t *testing.T) {
 			got, err := normalizeArrayElemValue("field", tt.typ, tt.raw)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("normalizeArrayElemValue(%q) = %q, want an error", tt.raw, got)
+					t.Fatalf("normalizeArrayElemValue(%q) = %q, want an error", tt.raw, got.String())
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("normalizeArrayElemValue(%q): %v", tt.raw, err)
 			}
-			if got != tt.want {
-				t.Errorf("normalizeArrayElemValue(%q) = %q, want %q", tt.raw, got, tt.want)
+			if got.String() != tt.want {
+				t.Errorf("normalizeArrayElemValue(%q) = %q, want %q", tt.raw, got.String(), tt.want)
 			}
 		})
 	}

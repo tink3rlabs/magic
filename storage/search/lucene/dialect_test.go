@@ -2,6 +2,7 @@ package lucene
 
 import (
 	"database/sql/driver"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -65,6 +66,41 @@ func TestEveryDialectImplementsEveryOperation(t *testing.T) {
 			}
 			if got := d.ArrayWildcard("col"); !strings.Contains(got, "?") || !strings.Contains(got, "col") {
 				t.Errorf("ArrayWildcard(col) = %q; must reference the column and the parameter", got)
+			}
+			if got := d.ArrayContains("col"); !strings.Contains(got, "?") || !strings.Contains(got, "col") {
+				t.Errorf("ArrayContains(col) = %q; must reference the column and the parameter", got)
+			}
+			// EncodeElement must produce something derived from the value for
+			// each type in ElemValue's closed set. A dialect that discarded
+			// the value would otherwise pass this guard.
+			for _, v := range []ElemValue{
+				{Kind: reflect.String, Val: "golang"},
+				{Kind: reflect.Int, Val: int64(5)},
+				{Kind: reflect.Float64, Val: 1.5},
+				{Kind: reflect.Bool, Val: true},
+			} {
+				got, err := d.EncodeElement(v)
+				if err != nil {
+					t.Errorf("EncodeElement(%#v): %v", v, err)
+					continue
+				}
+				if got == nil {
+					t.Errorf("EncodeElement(%#v) returned nil", v)
+					continue
+				}
+				// Whatever the shape, the value must survive into it.
+				rendered := fmt.Sprintf("%v", got)
+				if valuer, ok := got.(driver.Valuer); ok {
+					dv, err := valuer.Value()
+					if err != nil {
+						t.Errorf("EncodeElement(%#v).Value(): %v", v, err)
+						continue
+					}
+					rendered = fmt.Sprintf("%v", dv)
+				}
+				if !strings.Contains(rendered, fmt.Sprintf("%v", v.Val)) {
+					t.Errorf("EncodeElement(%#v) = %q, which does not carry the value", v, rendered)
+				}
 			}
 			// Fuzzy may legitimately be unsupported, but it must say so rather
 			// than silently returning something that ignores the term.
@@ -253,6 +289,71 @@ func TestSQLiteEncodesNativeValue(t *testing.T) {
 		}
 		if got != tt.want {
 			t.Errorf("EncodeElement(%#v) = %#v (%T), want %#v (%T)", tt.val, got, got, tt.want, tt.want)
+		}
+	}
+}
+
+// The JSON base column must be quoted at the point of extraction.
+//
+// It cannot be quoted later: the rendered expression contains ->> or
+// JSON_EXTRACT, so quoteColumn sees isJSONSyntax and passes it through
+// untouched. Left bare, a mixed-case column folds on Postgres —
+//
+//	SELECT Mixed->>'category' FROM t
+//	ERROR: column "mixed" does not exist
+//
+// — and a reserved word is a syntax error on MySQL.
+func TestJSONExtractQuotesBaseColumn(t *testing.T) {
+	type doc struct {
+		Id    string            `json:"id"`
+		Mixed map[string]string `json:"Mixed"`
+		Order map[string]string `json:"order"` // reserved word in MySQL
+	}
+	p, err := NewParser(doc{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	tests := []struct {
+		provider string
+		filter   string
+		want     string
+	}{
+		{"postgresql", "Mixed.category:x", `"Mixed"->>'category'`},
+		{"postgresql", "order.category:x", `"order"->>'category'`},
+		{"mysql", "Mixed.category:x", "JSON_UNQUOTE(JSON_EXTRACT(`Mixed`, '$.category'))"},
+		{"mysql", "order.category:x", "JSON_UNQUOTE(JSON_EXTRACT(`order`, '$.category'))"},
+		{"sqlite", "Mixed.category:x", `JSON_EXTRACT("Mixed", '$.category')`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider+" "+tt.filter, func(t *testing.T) {
+			where, _, err := p.ParseToSQL(tt.filter, tt.provider)
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q, %s): %v", tt.filter, tt.provider, err)
+			}
+			if !strings.Contains(where, tt.want) {
+				t.Errorf("ParseToSQL(%q, %s) = %q, want it to contain %q", tt.filter, tt.provider, where, tt.want)
+			}
+		})
+	}
+}
+
+// Quoting the base must not cause double-quoting: quoteColumn short-circuits
+// on isJSONSyntax, which keys off ->> / JSON_EXTRACT / JSON_UNQUOTE and is
+// unaffected by the quotes around the base.
+func TestJSONExtractIsNotDoubleQuoted(t *testing.T) {
+	type doc struct {
+		Id     string            `json:"id"`
+		Labels map[string]string `json:"labels"`
+	}
+	p, _ := NewParser(doc{})
+	for _, prov := range []string{"postgresql", "mysql", "sqlite"} {
+		where, _, err := p.ParseToSQL("labels.category:x", prov)
+		if err != nil {
+			t.Fatalf("%s: %v", prov, err)
+		}
+		if strings.Contains(where, `""`) || strings.Contains(where, "``") {
+			t.Errorf("%s produced a doubled quote: %q", prov, where)
 		}
 	}
 }

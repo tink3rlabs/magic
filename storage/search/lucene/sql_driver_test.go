@@ -1100,19 +1100,19 @@ func TestSQLDriver_FormatFieldName(t *testing.T) {
 			name:     "postgresql JSON field",
 			provider: "postgresql",
 			field:    "metadata.key",
-			want:     "metadata->>'key'",
+			want:     "\"metadata\"->>'key'",
 		},
 		{
 			name:     "mysql JSON field",
 			provider: "mysql",
 			field:    "metadata.key",
-			want:     "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.key'))",
+			want:     "JSON_UNQUOTE(JSON_EXTRACT(`metadata`, '$.key'))",
 		},
 		{
 			name:     "sqlite JSON field",
 			provider: "sqlite",
 			field:    "metadata.key",
-			want:     "JSON_EXTRACT(metadata, '$.key')",
+			want:     "JSON_EXTRACT(\"metadata\", '$.key')",
 		},
 		{
 			name:     "simple field (no dot)",
@@ -1620,7 +1620,7 @@ func TestSQLDriver_ProviderSpecific(t *testing.T) {
 				Left:  expr.Column("metadata.key"),
 				Right: &expr.Expression{Op: expr.Literal, Left: "value"},
 			},
-			wantSQL:   []string{"metadata->>'key'"},
+			wantSQL:   []string{"\"metadata\"->>'key'"},
 			wantCount: 1,
 			checkFunc: nil,
 		},
@@ -1757,6 +1757,8 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 		value    string
 		wantSQL  []string
 		notSQL   []string
+		// wantParam is optional: set it where the end-to-end binding matters.
+		wantParam any
 	}{
 		{
 			name:     "postgres containment binds a quoted array literal",
@@ -1786,12 +1788,13 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 		// pin a ::type[] cast each, because ARRAY[?] resolves to text[] at
 		// parse time and so had to name the column's exact element type.
 		{
-			name:     "postgres []int containment",
-			provider: "postgresql",
-			field:    "nums",
-			value:    "42",
-			wantSQL:  []string{`"nums" @> ?`},
-			notSQL:   []string{"::", "ARRAY["},
+			name:      "postgres []int containment",
+			provider:  "postgresql",
+			field:     "nums",
+			value:     "42",
+			wantParam: pgArrayLiteral{int64(42)},
+			wantSQL:   []string{`"nums" @> ?`},
+			notSQL:    []string{"::", "ARRAY["},
 		},
 		{
 			name:     "postgres []int64 containment",
@@ -1826,12 +1829,13 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []float64 containment",
-			provider: "postgresql",
-			field:    "ratios",
-			value:    "1.5",
-			wantSQL:  []string{`"ratios" @> ?`},
-			notSQL:   []string{"::", "ARRAY["},
+			name:      "postgres []float64 containment",
+			provider:  "postgresql",
+			field:     "ratios",
+			value:     "1.5",
+			wantParam: pgArrayLiteral{1.5},
+			wantSQL:   []string{`"ratios" @> ?`},
+			notSQL:    []string{"::", "ARRAY["},
 		},
 		{
 			name:     "postgres []float32 containment",
@@ -1842,12 +1846,13 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			notSQL:   []string{"::", "ARRAY["},
 		},
 		{
-			name:     "postgres []bool containment",
-			provider: "postgresql",
-			field:    "flags",
-			value:    "true",
-			wantSQL:  []string{`"flags" @> ?`},
-			notSQL:   []string{},
+			name:      "postgres []bool containment",
+			provider:  "postgresql",
+			field:     "flags",
+			value:     "true",
+			wantParam: pgArrayLiteral{true},
+			wantSQL:   []string{`"flags" @> ?`},
+			notSQL:    []string{},
 		},
 		{
 			name:     "scalar field unchanged",
@@ -1897,9 +1902,14 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			if len(params) != 1 {
 				t.Errorf("want 1 param, got %d: %#v", len(params), params)
 			}
-			// The parameter's ENCODING is per-dialect and is asserted by
-			// TestPGArrayLiteralEscaping, TestMySQLEncodesJSONText and
-			// TestSQLiteEncodesNativeValue. This test owns the SQL shape.
+			// This test owns the SQL shape; the per-dialect ENCODING is
+			// asserted by TestPGArrayLiteralEscaping, TestMySQLEncodesJSONText
+			// and TestSQLiteEncodesNativeValue. wantParam covers the seam
+			// between them: that the driver actually hands the normalized
+			// element to the dialect, which neither side proves alone.
+			if tt.wantParam != nil && len(params) == 1 && params[0] != tt.wantParam {
+				t.Errorf("param = %#v (%T), want %#v (%T)", params[0], params[0], tt.wantParam, tt.wantParam)
+			}
 		})
 	}
 }

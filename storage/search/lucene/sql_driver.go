@@ -615,7 +615,12 @@ func (s *SQLDriver) formatFieldName(fieldName string) expr.Column {
 		}
 
 		if field, exists := s.fields[baseField]; exists && canUseNestedAccess(field.Type) {
-			return expr.Column(s.dialect.JSONExtract(baseField, subField))
+			// Quote the base here: the returned expression contains ->> or
+			// JSON_EXTRACT, so quoteColumn sees isJSONSyntax and passes it
+			// through untouched — this is the only chance to quote it. Left
+			// bare, a mixed-case column folds on Postgres ("column \"mixed\"
+			// does not exist") and a reserved word is a syntax error on MySQL.
+			return expr.Column(s.dialect.JSONExtract(s.dialect.QuoteIdent(baseField), subField))
 		}
 	}
 	return expr.Column(fieldName)

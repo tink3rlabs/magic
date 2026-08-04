@@ -568,12 +568,12 @@ func TestJSONBFields(t *testing.T) {
 		{
 			name:    "JSONB field access",
 			query:   "metadata.key:value",
-			wantSQL: []string{`metadata->>'key'`},
+			wantSQL: []string{`"metadata"->>'key'`},
 		},
 		{
 			name:    "JSONB with wildcard",
 			query:   "metadata.tags:prod*",
-			wantSQL: []string{`metadata->>'tags'`, "ILIKE"},
+			wantSQL: []string{`"metadata"->>'tags'`, "ILIKE"},
 		},
 	}
 

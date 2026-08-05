@@ -154,7 +154,7 @@ NOT tags:null      # tags column is not null (identical to tags:*)
 
 | Operator | Postgres | MySQL | SQLite |
 |---|---|---|---|
-| Containment | `COALESCE("tags" @> ?, false)` | `` COALESCE(JSON_CONTAINS(`tags`, ?), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
+| Containment | `"tags" @> ?` | `` JSON_CONTAINS(`tags`, ?) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
 | Wildcard | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(LOWER(CAST(`tags` AS CHAR)), 'one', LOWER(?)) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
 | Has value | `"tags" IS NOT NULL` | `` `tags` IS NOT NULL `` | `"tags" IS NOT NULL` |
 
@@ -211,8 +211,8 @@ lives entirely in how the parameter is bound:
 
 | Provider | SQL | Bound parameter |
 |---|---|---|
-| Postgres | `COALESCE("nums" @> ?, false)` | single-element array literal (a `driver.Valuer`) |
-| MySQL | `` COALESCE(JSON_CONTAINS(`nums`, ?), false) `` | JSON scalar text: `5`, `1.5`, `true`, `"golang"` |
+| Postgres | `"nums" @> ?` | single-element array literal (a `driver.Valuer`) |
+| MySQL | `` JSON_CONTAINS(`nums`, ?) `` | JSON scalar text: `5`, `1.5`, `true`, `"golang"` |
 | SQLite | `EXISTS (SELECT 1 FROM json_each("nums") WHERE value = ?)` | the native Go value |
 | DynamoDB | `contains(nums, ?)` | an `N`, `BOOL` or `S` attribute |
 
@@ -229,8 +229,17 @@ deliberate.** GORM expands slice arguments for `IN (?)` clauses, which would
 rewrite `col @> ?` into `col @> ($1)` and then fail to encode. GORM checks
 `driver.Valuer` before that expansion, so a Valuer survives as one parameter.
 
-`COALESCE(..., false)` makes a NULL column compare false rather than NULL, so
-`NOT field:value` is a true complement instead of silently dropping those rows.
+**Negation is null-inclusive.** Containment yields NULL for a NULL column, so
+a plain `NOT` would drop those rows rather than complement them. `NOT
+tags:golang` therefore renders as `("tags" @> ?) IS NOT TRUE`, which maps both
+NULL and false to true.
+
+The wrapper sits on the negation, not on the leaf, and that is deliberate: an
+earlier `COALESCE(tags @> ?, false)` on the leaf was opaque to the Postgres
+planner and cost the GIN index. Measured on 300k rows, the wrapped form was a
+sequential scan at 13.8ms against a bitmap index scan at 0.036ms for identical
+rows. Keeping the positive path bare keeps it indexable; a negation cannot use
+the index either way.
 
 **Values are validated against the element type before rendering.** A filter
 like `nums:abc` or `flags:maybe` returns a parse error instead of reaching the
@@ -344,7 +353,7 @@ The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL do
 | Null                  | `field:null`                     | `"field" IS NULL`                          | same                                                  | same                                  |
 | Has value (scalar)    | `field:*`                        | `"field"::text ILIKE ?` (param `%`)        | `` LOWER(`field`) LIKE LOWER(?) ``                    | `"field" LIKE ?`                      |
 | JSON sub-field        | `metadata.tier:gold`             | `metadata->>'tier' = ?`                    | `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?`  | `JSON_EXTRACT(metadata, '$.tier') = ?` |
-| Array containment     | `tags:golang`                    | `COALESCE("tags" @> ?, false)`             | `` COALESCE(JSON_CONTAINS(`tags`, ?), false) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
+| Array containment     | `tags:golang`                    | `"tags" @> ?`                              | `` JSON_CONTAINS(`tags`, ?) `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)` |
 | Array wildcard        | `tags:*go*`                      | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(LOWER(CAST(`tags` AS CHAR)), 'one', LOWER(?)) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
 | Array has value       | `tags:*`                         | `"tags" IS NOT NULL`                       | same                                                  | same                                  |
 | Grouped field         | `tenant_id:(a OR null)`          | `("tenant_id" = ? OR "tenant_id" IS NULL)` | same                                                  | same                                  |

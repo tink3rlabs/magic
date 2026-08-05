@@ -46,8 +46,12 @@ func (mysqlDialect) Fuzzy(col, term string) (string, error) {
 // ArrayContains binds JSON scalar text, which is one SQL form for every
 // element type. The older code needed two branches — CAST(? AS JSON) for
 // numerics and JSON_QUOTE(?) for strings — because it bound a bare literal.
+// Not wrapped in COALESCE(..., false): a NULL column yields NULL, which is
+// already correct for a positive match, and renderBinary supplies the
+// null-inclusive form under negation. Postgres additionally loses its GIN
+// index to that wrapper, so both dialects drop it for consistency.
 func (mysqlDialect) ArrayContains(col string) string {
-	return fmt.Sprintf("COALESCE(JSON_CONTAINS(%s, ?), false)", col)
+	return fmt.Sprintf("JSON_CONTAINS(%s, ?)", col)
 }
 
 // EncodeElement produces JSON scalar text: 5, 1.5, true, "golang".
@@ -55,7 +59,7 @@ func (mysqlDialect) ArrayContains(col string) string {
 // Binding a Go bool here would be silently WRONG: the driver sends true as 1,
 // and the JSON number 1 does not equal JSON true, so a matching row would not
 // match. json.Marshal produces the correct scalar for every Val type.
-func (mysqlDialect) EncodeElement(v ElemValue) (any, error) {
+func (mysqlDialect) EncodeElement(v elemValue) (any, error) {
 	b, err := json.Marshal(v.Val)
 	if err != nil {
 		return nil, fmt.Errorf("cannot encode array element %v: %w", v.Val, err)

@@ -209,7 +209,7 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, fieldType re
 // It switches on the value itself rather than re-deriving the type from the
 // field's reflect.Kind. Re-deriving was a second source of truth that could
 // disagree with the validation that produced the value.
-func arrayContainsParam(v ElemValue) (types.AttributeValue, error) {
+func arrayContainsParam(v elemValue) (types.AttributeValue, error) {
 	switch t := v.Val.(type) {
 	case bool:
 		return &types.AttributeValueMemberBOOL{Value: t}, nil

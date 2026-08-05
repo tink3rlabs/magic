@@ -53,13 +53,20 @@ func (postgresDialect) Fuzzy(col, term string) (string, error) {
 // requires exactly matching array types and neither narrowing nor widening
 // rescues a mismatch, so that cast had to be maintained per element kind.
 //
-// COALESCE keeps a NULL column comparing false rather than NULL, so NOT over
-// this expression is a true complement instead of silently dropping the row.
+// The result is deliberately NOT wrapped in COALESCE(..., false). That wrapper
+// makes the expression opaque to the planner and costs the GIN index: measured
+// on 300k rows, COALESCE(tags @> ?, false) is a sequential scan at 13.8ms while
+// the bare form is a bitmap index scan at 0.036ms, for identical rows.
+//
+// A NULL column yields NULL here rather than false, which is already correct
+// for a positive match (NULL is not true, so the row is excluded). Negation is
+// where the difference would matter, and renderBinary handles it by wrapping
+// the whole negated subtree in IS NOT TRUE — see subtreeHasArrayContainment.
 func (postgresDialect) ArrayContains(col string) string {
-	return fmt.Sprintf("COALESCE(%s @> ?, false)", col)
+	return fmt.Sprintf("%s @> ?", col)
 }
 
-func (postgresDialect) EncodeElement(v ElemValue) (any, error) {
+func (postgresDialect) EncodeElement(v elemValue) (any, error) {
 	return pgArrayLiteral{v.Val}, nil
 }
 

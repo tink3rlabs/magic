@@ -1765,7 +1765,7 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			provider: "postgresql",
 			field:    "tags",
 			value:    "golang",
-			wantSQL:  []string{`"tags" @> ?`, "COALESCE"},
+			wantSQL:  []string{`"tags" @> ?`},
 			notSQL:   []string{`"tags" = ?`, "::", "ARRAY["},
 		},
 		{
@@ -1773,7 +1773,7 @@ func TestSQLDriver_ArrayEquality(t *testing.T) {
 			provider: "mysql",
 			field:    "tags",
 			value:    "golang",
-			wantSQL:  []string{"JSON_CONTAINS", "`tags`", "COALESCE"},
+			wantSQL:  []string{"JSON_CONTAINS", "`tags`"},
 			notSQL:   []string{"`tags` = ?", "JSON_QUOTE", "CAST("},
 		},
 		{
@@ -2238,7 +2238,7 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "postgres containment",
 			provider: "postgresql",
 			filter:   "NOT tags:golang",
-			wantSQL:  []string{"NOT (", "COALESCE", `"tags" @> ?`},
+			wantSQL:  []string{"IS NOT TRUE", `"tags" @> ?`},
 			notSQL:   []string{`"tags" = ?`},
 		},
 		{
@@ -2252,7 +2252,7 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "mysql containment",
 			provider: "mysql",
 			filter:   "NOT tags:golang",
-			wantSQL:  []string{"NOT (", "JSON_CONTAINS", "`tags`"},
+			wantSQL:  []string{"IS NOT TRUE", "JSON_CONTAINS", "`tags`"},
 			notSQL:   []string{"`tags` = ?", `"tags"`},
 		},
 		{
@@ -2266,7 +2266,7 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "sqlite containment",
 			provider: "sqlite",
 			filter:   "NOT tags:golang",
-			wantSQL:  []string{"NOT (", "json_each", "value = ?"},
+			wantSQL:  []string{"IS NOT TRUE", "json_each", "value = ?"},
 			notSQL:   []string{`"tags" = ?`},
 		},
 		{
@@ -2280,14 +2280,14 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "inside a compound expression",
 			provider: "postgresql",
 			filter:   "title:hello AND NOT tags:golang",
-			wantSQL:  []string{`"title" = ?`, "NOT (", "COALESCE", "@>"},
+			wantSQL:  []string{`"title" = ?`, "IS NOT TRUE", "@>"},
 			notSQL:   []string{`"tags" = ?`},
 		},
 		{
 			name:     "negated group",
 			provider: "postgresql",
 			filter:   "NOT tags:(golang OR rust)",
-			wantSQL:  []string{"NOT (", "OR"},
+			wantSQL:  []string{"IS NOT TRUE", "OR"},
 			notSQL:   []string{`"tags" = ?`},
 		},
 	}

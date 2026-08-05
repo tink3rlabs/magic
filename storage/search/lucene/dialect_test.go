@@ -71,9 +71,9 @@ func TestEveryDialectImplementsEveryOperation(t *testing.T) {
 				t.Errorf("ArrayContains(col) = %q; must reference the column and the parameter", got)
 			}
 			// EncodeElement must produce something derived from the value for
-			// each type in ElemValue's closed set. A dialect that discarded
+			// each type in elemValue's closed set. A dialect that discarded
 			// the value would otherwise pass this guard.
-			for _, v := range []ElemValue{
+			for _, v := range []elemValue{
 				{Kind: reflect.String, Val: "golang"},
 				{Kind: reflect.Int, Val: int64(5)},
 				{Kind: reflect.Float64, Val: 1.5},
@@ -245,15 +245,15 @@ func TestMySQLEncodesJSONText(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := []struct {
-		val  ElemValue
+		val  elemValue
 		want string
 	}{
-		{ElemValue{Kind: reflect.Int, Val: int64(5)}, "5"},
-		{ElemValue{Kind: reflect.Float64, Val: 1.5}, "1.5"},
-		{ElemValue{Kind: reflect.Bool, Val: true}, "true"},
-		{ElemValue{Kind: reflect.Bool, Val: false}, "false"},
-		{ElemValue{Kind: reflect.String, Val: "golang"}, `"golang"`},
-		{ElemValue{Kind: reflect.String, Val: `has"quote`}, `"has\"quote"`},
+		{elemValue{Kind: reflect.Int, Val: int64(5)}, "5"},
+		{elemValue{Kind: reflect.Float64, Val: 1.5}, "1.5"},
+		{elemValue{Kind: reflect.Bool, Val: true}, "true"},
+		{elemValue{Kind: reflect.Bool, Val: false}, "false"},
+		{elemValue{Kind: reflect.String, Val: "golang"}, `"golang"`},
+		{elemValue{Kind: reflect.String, Val: `has"quote`}, `"has\"quote"`},
 	}
 	for _, tt := range tests {
 		got, err := d.EncodeElement(tt.val)
@@ -274,13 +274,13 @@ func TestSQLiteEncodesNativeValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := []struct {
-		val  ElemValue
+		val  elemValue
 		want any
 	}{
-		{ElemValue{Kind: reflect.Int, Val: int64(5)}, int64(5)},
-		{ElemValue{Kind: reflect.Float64, Val: 1.5}, 1.5},
-		{ElemValue{Kind: reflect.Bool, Val: true}, true},
-		{ElemValue{Kind: reflect.String, Val: "golang"}, "golang"},
+		{elemValue{Kind: reflect.Int, Val: int64(5)}, int64(5)},
+		{elemValue{Kind: reflect.Float64, Val: 1.5}, 1.5},
+		{elemValue{Kind: reflect.Bool, Val: true}, true},
+		{elemValue{Kind: reflect.String, Val: "golang"}, "golang"},
 	}
 	for _, tt := range tests {
 		got, err := d.EncodeElement(tt.val)

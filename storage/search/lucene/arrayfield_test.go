@@ -262,3 +262,42 @@ func TestColumnName(t *testing.T) {
 		})
 	}
 }
+
+// isArrayField accepts []*T, so the element type must be dereferenced too.
+//
+// Without it the element kind is reflect.Pointer, which matches no case in
+// normalizeArrayElemValue: validation is skipped and the value is bound as
+// text. nums:abc then returns no error, and nums:5 binds a JSON string that
+// never equals a JSON number on MySQL or SQLite — the silent-no-match this
+// package exists to prevent.
+func TestPointerElementsBehaveLikeValues(t *testing.T) {
+	pairs := []struct{ ptr, val reflect.Type }{
+		{reflect.TypeOf([]*int{}), reflect.TypeOf([]int{})},
+		{reflect.TypeOf([]*int64{}), reflect.TypeOf([]int64{})},
+		{reflect.TypeOf([]*float64{}), reflect.TypeOf([]float64{})},
+		{reflect.TypeOf([]*bool{}), reflect.TypeOf([]bool{})},
+		{reflect.TypeOf([]*string{}), reflect.TypeOf([]string{})},
+	}
+	for _, p := range pairs {
+		if got, want := arrayElemKind(p.ptr), arrayElemKind(p.val); got != want {
+			t.Errorf("arrayElemKind(%s) = %v, want %v (same as %s)", p.ptr, got, want, p.val)
+		}
+	}
+
+	// A string array of pointers must still accept wildcards.
+	if !isStringArray(reflect.TypeOf([]*string{})) {
+		t.Error("isStringArray([]*string) = false; wildcards would be wrongly rejected")
+	}
+
+	// Validation must apply, not be skipped.
+	if _, err := normalizeArrayElemValue("nums", reflect.TypeOf([]*int{}), "abc"); err == nil {
+		t.Error(`normalizeArrayElemValue([]*int, "abc") returned no error; validation was bypassed`)
+	}
+	got, err := normalizeArrayElemValue("nums", reflect.TypeOf([]*int{}), "5")
+	if err != nil {
+		t.Fatalf(`normalizeArrayElemValue([]*int, "5"): %v`, err)
+	}
+	if got.Val != int64(5) {
+		t.Errorf("Val = %#v (%T), want int64(5) — a bound string never equals a JSON number", got.Val, got.Val)
+	}
+}

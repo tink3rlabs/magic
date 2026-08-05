@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Dialect is the set of per-database differences in rendering a Lucene filter
+// sqlDialect is the set of per-database differences in rendering a Lucene filter
 // to SQL.
 //
 // These differences used to live in switch statements spread through the
@@ -20,7 +20,7 @@ import (
 //
 // Methods that return SQL emit `?` placeholders; the caller's driver
 // translates them (GORM rewrites `?` to `$N` for Postgres).
-type Dialect interface {
+type sqlDialect interface {
 	// Name is the provider string callers pass to NewSQLDriver.
 	Name() string
 
@@ -51,7 +51,7 @@ type Dialect interface {
 	// database needs for ArrayContains. The three implementations differ
 	// completely: Postgres needs a driver.Valuer array literal, MySQL needs
 	// JSON scalar text, SQLite needs the native Go value.
-	EncodeElement(v ElemValue) (any, error)
+	EncodeElement(v elemValue) (any, error)
 
 	// Fuzzy renders approximate matching, or returns an error naming the
 	// limitation when the database has no equivalent.
@@ -60,9 +60,9 @@ type Dialect interface {
 
 // dialects is the single enumeration of supported providers. Registration
 // happens in each dialect file's init, so adding a database is adding a file.
-var dialects = map[string]Dialect{}
+var dialects = map[string]sqlDialect{}
 
-func registerDialect(d Dialect) {
+func registerDialect(d sqlDialect) {
 	if _, dup := dialects[d.Name()]; dup {
 		panic(fmt.Sprintf("lucene: duplicate dialect registration for %q", d.Name()))
 	}
@@ -82,7 +82,7 @@ func dialectNames() []string {
 // lookupDialect resolves a provider name. It replaces the hardcoded allowlist
 // that used to sit in validateProvider, so the registry is the only place a
 // provider name appears.
-func lookupDialect(name string) (Dialect, error) {
+func lookupDialect(name string) (sqlDialect, error) {
 	d, ok := dialects[name]
 	if !ok {
 		return nil, fmt.Errorf("unsupported SQL provider: %s (supported: %s)",

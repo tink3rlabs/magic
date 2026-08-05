@@ -42,4 +42,4 @@ func (sqliteDialect) ArrayContains(col string) string {
 
 // EncodeElement passes the value through: int64, float64, bool and string are
 // all valid driver.Value types.
-func (sqliteDialect) EncodeElement(v ElemValue) (any, error) { return v.Val, nil }
+func (sqliteDialect) EncodeElement(v elemValue) (any, error) { return v.Val, nil }

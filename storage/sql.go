@@ -214,8 +214,7 @@ func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string
 	if len(filter) == 0 {
 		return errors.New("filtering is required when getting a resource")
 	}
-	query, bindings := s.buildQuery(filter)
-	result := s.dbWithCtx(ctx).Where(query, bindings).Find(dest)
+	result := s.applyFilter(s.dbWithCtx(ctx), filter).Find(dest)
 	if result.RowsAffected == 0 {
 		return ErrNotFound
 	}
@@ -230,8 +229,7 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
-	query, bindings := s.buildQuery(filter)
-	result := s.dbWithCtx(ctx).Where(query, bindings).Save(item)
+	result := s.applyFilter(s.dbWithCtx(ctx), filter).Save(item)
 	return result.Error
 }
 
@@ -243,8 +241,7 @@ func (s *SQLAdapter) DeleteContext(ctx context.Context, item any, filter map[str
 	if len(filter) == 0 {
 		return errors.New("filtering is required when deleting a resource")
 	}
-	query, bindings := s.buildQuery(filter)
-	result := s.dbWithCtx(ctx).Where(query, bindings).Delete(item)
+	result := s.applyFilter(s.dbWithCtx(ctx), filter).Delete(item)
 	return result.Error
 }
 
@@ -342,8 +339,7 @@ func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, 
 	}
 	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
-			query, bindings := s.buildQuery(filter)
-			return q.Where(query, bindings)
+			return s.applyFilter(q, filter)
 		}
 		return q
 	})
@@ -402,8 +398,7 @@ func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[stri
 	q := s.dbWithCtx(ctx).Model(dest)
 
 	if len(filter) > 0 {
-		query, bindings := s.buildQuery(filter)
-		q = q.Where(query, bindings)
+		q = s.applyFilter(q, filter)
 	}
 
 	var total int64
@@ -412,6 +407,21 @@ func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[stri
 		return 0, err
 	}
 	return total, nil
+}
+
+// applyFilter builds a WHERE clause from the filter map and attaches it to
+// the given gorm session. When the bindings map is empty (e.g. a filter like
+// {"deleted_at": nil} which produces only an "IS NULL" clause) we must NOT
+// forward an empty map[string]any{} as a parameter to GORM — pgx5 in
+// PreferSimpleProtocol mode cannot encode it and fails with
+// "unable to encode map[string]interface{}{} into text format for unknown
+// type (OID 0): cannot find encode plan". Pass the query alone instead.
+func (s *SQLAdapter) applyFilter(q *gorm.DB, filter map[string]any) *gorm.DB {
+	query, bindings := s.buildQuery(filter)
+	if len(bindings) == 0 {
+		return q.Where(query)
+	}
+	return q.Where(query, bindings)
 }
 
 func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {

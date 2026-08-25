@@ -247,18 +247,94 @@ func (p *Parser) parseList(key, op string) (Expr, error) {
 	if p.text != "[" {
 		return nil, fmt.Errorf("expected '[' for %s clause", op)
 	}
-	p.next()
-	values := []string{}
-	for p.text != "]" && p.tok != scanner.EOF {
-		values = append(values, strings.Trim(p.text, `"`))
+
+	// Read the list members straight from the input rather than from scanner
+	// tokens. The scanner mode does not treat "-", "@" or "." as part of an
+	// identifier, so token-per-member appended one member per token and shredded
+	// any unquoted UUID, date, email or semver string into its fragments
+	// (issue #233).
+	values, endIdx, err := p.parseListValues(p.pos.Offset)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-sync the scanner past the closing ']' so parsing can continue with the
+	// token that follows the list. Guard on forward progress: at EOF the scanner
+	// stops advancing its offset and the loop would never terminate.
+	for p.s.Pos().Offset <= endIdx {
+		prev := p.s.Pos().Offset
 		p.next()
-		if p.text == "," {
-			p.next()
+		if p.s.Pos().Offset == prev {
+			break
 		}
 	}
-	if p.text != "]" {
-		return nil, fmt.Errorf("expected ']' to close list")
-	}
 	p.next()
+
 	return &TermExpr{Key: key, Op: op, Value: values}, nil
+}
+
+// parseListValues reads comma-separated list members from p.input starting at
+// startPos, the scanner position just after the opening '['. Members may be
+// quoted, in which case the quotes are stripped and commas, brackets and
+// whitespace inside them are literal. It returns the members and the index of
+// the closing ']'.
+func (p *Parser) parseListValues(startPos int) ([]string, int, error) {
+	values := []string{}
+	i := startPos
+
+	for {
+		for i < len(p.input) && isListSpace(p.input[i]) {
+			i++
+		}
+		if i >= len(p.input) {
+			return nil, 0, fmt.Errorf("expected ']' to close list")
+		}
+		if p.input[i] == ']' {
+			return values, i, nil
+		}
+
+		var value string
+		if p.input[i] == '"' {
+			end := i + 1
+			for end < len(p.input) && p.input[end] != '"' {
+				if p.input[end] == '\\' && end+1 < len(p.input) {
+					end += 2
+				} else {
+					end++
+				}
+			}
+			if end >= len(p.input) {
+				return nil, 0, fmt.Errorf("unterminated quoted value in list")
+			}
+			value = p.input[i+1 : end]
+			i = end + 1
+			for i < len(p.input) && isListSpace(p.input[i]) {
+				i++
+			}
+		} else {
+			end := i
+			for end < len(p.input) && p.input[end] != ',' && p.input[end] != ']' {
+				end++
+			}
+			value = strings.TrimRight(p.input[i:end], " \t\n\r")
+			i = end
+		}
+		values = append(values, value)
+
+		if i >= len(p.input) {
+			return nil, 0, fmt.Errorf("expected ']' to close list")
+		}
+		switch p.input[i] {
+		case ',':
+			i++
+		case ']':
+			return values, i, nil
+		default:
+			return nil, 0, fmt.Errorf("expected ',' or ']' in list, got %q", p.input[i])
+		}
+	}
+}
+
+func isListSpace(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
 }

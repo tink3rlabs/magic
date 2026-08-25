@@ -176,3 +176,44 @@ func TestParseListRejectsQuoteInsideUnquotedValue(t *testing.T) {
 		}
 	}
 }
+
+// TestParseListRejectsMissingMember covers a leading or doubled comma. Treating
+// one as an empty unquoted member appends "" to the list, which then matches an
+// empty field value — a member nobody wrote. An explicitly quoted "" is still
+// accepted, since that is a deliberate request for the empty string, and a
+// trailing comma is tolerated because it produces no member at all.
+func TestParseListRejectsMissingMember(t *testing.T) {
+	rejected := []string{
+		`k IN [,alpha]`,
+		`k IN [alpha,,beta]`,
+		`k IN [,]`,
+		`k IN [alpha, , beta]`,
+		`k NOT IN [,alpha]`,
+	}
+	for _, input := range rejected {
+		if _, err := NewParser(input).Parse(); err == nil {
+			t.Errorf("Parse(%q) returned no error, want a parse error for the missing member", input)
+		}
+	}
+
+	accepted := []struct {
+		input string
+		want  []string
+	}{
+		{`k IN ["", alpha]`, []string{"", "alpha"}},
+		{`k IN [alpha, ""]`, []string{"alpha", ""}},
+		{`k IN [alpha,]`, []string{"alpha"}},
+		{`k IN []`, []string{}},
+	}
+	for _, tt := range accepted {
+		expr, err := NewParser(tt.input).Parse()
+		if err != nil {
+			t.Errorf("Parse(%q) returned error: %v", tt.input, err)
+			continue
+		}
+		got := expr.(*TermExpr).Value.([]string)
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("Parse(%q) value = %#v, want %#v", tt.input, got, tt.want)
+		}
+	}
+}

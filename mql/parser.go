@@ -298,7 +298,9 @@ func (p *Parser) parseListValues(startPos int) ([]string, int, error) {
 		}
 
 		var value string
+		quoted := false
 		if p.input[i] == '"' {
+			quoted = true
 			end := i + 1
 			for end < len(p.input) && p.input[end] != '"' {
 				if p.input[end] == '\\' && end+1 < len(p.input) {
@@ -329,6 +331,14 @@ func (p *Parser) parseListValues(startPos int) ([]string, int, error) {
 			}
 			value = strings.TrimRight(p.input[i:end], listSpace)
 			i = end
+		}
+		// A member that is empty without having been written as "" is a missing
+		// one: a leading or doubled comma. Accepting it silently appends "" to
+		// the list, which then matches an empty field value — a member nobody
+		// wrote. An explicit "" is left alone, since that is a deliberate way to
+		// ask for the empty string.
+		if !quoted && value == "" {
+			return nil, 0, fmt.Errorf(`missing value in list: write "" if an empty member is intended`)
 		}
 		values = append(values, value)
 

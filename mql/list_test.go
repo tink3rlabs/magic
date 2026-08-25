@@ -127,3 +127,52 @@ func TestEvalListDoesNotMatchFragments(t *testing.T) {
 		}
 	}
 }
+
+// TestParseListFollowedByMoreQuery exercises the scanner re-sync that runs after
+// a list is read from the raw input. If re-sync overshoots the closing "]", the
+// clause after the list is silently dropped and the filter matches more than it
+// should, so each case asserts the trailing clause still participates.
+func TestParseListFollowedByMoreQuery(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		data  map[string]interface{}
+		want  bool
+	}{
+		{"AND after list, both true", `k IN [a-b] AND x:1`, map[string]interface{}{"k": "a-b", "x": "1"}, true},
+		{"AND after list, trailing clause false", `k IN [a-b] AND x:1`, map[string]interface{}{"k": "a-b", "x": "2"}, false},
+		{"OR after list", `k IN [a-b] OR x:1`, map[string]interface{}{"k": "zz", "x": "1"}, true},
+		{"quoted member then AND", `k IN ["a-b", c] AND x:1`, map[string]interface{}{"k": "c", "x": "1"}, true},
+		{"grouped list then AND", `(k IN [a-b]) AND x:1`, map[string]interface{}{"k": "a-b", "x": "1"}, true},
+		{"NOT IN then AND", `k NOT IN [a-b] AND x:1`, map[string]interface{}{"k": "zz", "x": "1"}, true},
+		{"list as right operand", `x:1 AND k IN [a-b]`, map[string]interface{}{"k": "a-b", "x": "1"}, true},
+		{"hyphenated date then AND", `k IN [2026-08-25] AND x:1`, map[string]interface{}{"k": "2026-08-25", "x": "1"}, true},
+		{"empty list then AND", `k IN [] AND x:1`, map[string]interface{}{"k": "a", "x": "1"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expr, err := NewParser(tt.input).Parse()
+			if err != nil {
+				t.Fatalf("Parse(%q) returned error: %v", tt.input, err)
+			}
+			if _, isTerm := expr.(*TermExpr); isTerm {
+				t.Fatalf("Parse(%q) = *TermExpr, want a binary expression: the clause after the list was dropped", tt.input)
+			}
+			if got := expr.Eval(tt.data); got != tt.want {
+				t.Errorf("Parse(%q).Eval(%v) = %v, want %v", tt.input, tt.data, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseListRejectsQuoteInsideUnquotedValue pins the parse error for a value
+// that opens a quote mid-member. Accepting it would desync the scanner from the
+// input and silently truncate the query.
+func TestParseListRejectsQuoteInsideUnquotedValue(t *testing.T) {
+	for _, input := range []string{`k IN [a"b]`, `k IN [a"b] AND x:1`, `k IN [ok, a"b]`} {
+		if _, err := NewParser(input).Parse(); err == nil {
+			t.Errorf("Parse(%q) returned no error, want a parse error", input)
+		}
+	}
+}

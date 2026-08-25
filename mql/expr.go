@@ -63,29 +63,62 @@ func (e *TermExpr) Eval(input map[string]interface{}) bool {
 		if !ok {
 			return false
 		}
-		return listContains(e.Value.([]string), fmt.Sprintf("%v", val))
+		list, isList := e.Value.([]string)
+		if !isList {
+			return false
+		}
+		return listContains(list, fmt.Sprintf("%v", val))
 
 	case "NOT IN":
 		// If the label is missing, we treat it as not in the forbidden list
 		if !ok {
 			return true
 		}
-		return !listContains(e.Value.([]string), fmt.Sprintf("%v", val))
+		// A malformed expression must not grant anything, so an unusable list
+		// evaluates to false here rather than mirroring the IN case.
+		list, isList := e.Value.([]string)
+		if !isList {
+			return false
+		}
+		return !listContains(list, fmt.Sprintf("%v", val))
 	}
 	return false
 }
 
+// wildcardMatch reports whether value matches pattern, case-insensitively,
+// where "*" stands for any run of characters including an empty one. Every
+// literal segment of the pattern must be present, in order, and no two segments
+// may be satisfied by the same characters of value.
 func wildcardMatch(value, pattern string) bool {
 	pattern = strings.ToLower(pattern)
 	value = strings.ToLower(value)
 
-	if strings.Contains(pattern, "*") {
-		parts := strings.Split(pattern, "*")
-		starts := parts[0]
-		ends := parts[len(parts)-1]
-		return strings.HasPrefix(value, starts) && strings.HasSuffix(value, ends)
+	if !strings.Contains(pattern, "*") {
+		return value == pattern
 	}
-	return value == pattern
+
+	segments := strings.Split(pattern, "*")
+
+	// The segment before the first "*" is anchored to the start of value, and
+	// the one after the last "*" to its end. Consuming each match as we go is
+	// what stops two segments from overlapping the same characters: "a*a" must
+	// not match "a", and "ab*bc" must not match "abc".
+	prefix, suffix := segments[0], segments[len(segments)-1]
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	value = value[len(prefix):]
+
+	// Interior segments float, but must appear in the order they were written.
+	for _, segment := range segments[1 : len(segments)-1] {
+		idx := strings.Index(value, segment)
+		if idx < 0 {
+			return false
+		}
+		value = value[idx+len(segment):]
+	}
+
+	return strings.HasSuffix(value, suffix)
 }
 
 func listContains(list []string, val string) bool {

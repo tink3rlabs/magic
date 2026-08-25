@@ -583,12 +583,27 @@ if err != nil {
 // Supports AND, OR, NOT operators and grouping with parentheses
 ```
 
+**Syntax:**
+
+| Form | Meaning |
+|---|---|
+| `key:value` | Matches when `key` is present and equals `value`, case-insensitively. |
+| `key:va*ue` | Wildcard match. `*` stands for any run of characters, including none. Every literal segment must appear, in the order written, without two segments claiming the same characters. `key:*` matches any value, so it doubles as an existence check. |
+| `key IN [a, b]` | Matches when `key` is present and equals one of the members, case-insensitively. |
+| `key NOT IN [a, b]` | The dual of `IN`. A **missing** key counts as not in the list, so this is true when `key` is absent. Pair it with `key:"*"` when you want the strict reading. |
+| `AND`, `OR`, `NOT`, `( )` | Logical operators and grouping. |
+
+List members may be quoted or bare. Quote a member to keep commas, brackets and
+whitespace literal; a bare member runs to the next `,` or `]`, so hyphenated
+values such as UUIDs, dates and semver strings need no quoting. A member that
+opens a quote part-way through is a parse error — quote the whole value instead.
+
 **Features:**
 
 - Simple query language parser
 - Support for logical operators (AND, OR, NOT)
 - Grouping with parentheses
-- Key-value pair queries
+- Key-value pair queries, wildcards, and `IN` / `NOT IN` lists
 - Extensible expression tree structure
 
 ### Errors

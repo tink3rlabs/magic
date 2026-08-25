@@ -274,7 +274,11 @@ func (p *Parser) parseList(key, op string) (Expr, error) {
 }
 
 // parseListValues reads comma-separated list members from p.input starting at
-// startPos, the scanner position just after the opening '['. Members may be
+// startPos, the scanner position just after the opening '['. scanner.Position
+// Offset is a 0-based index of the character following the token, so startPos
+// indexes p.input directly and needs no adjustment (parseValueFromPos above
+// subtracts one and then skips the colon it lands on, which is the same thing
+// spelled differently). Members may be
 // quoted, in which case the quotes are stripped and commas, brackets and
 // whitespace inside them are literal. It returns the members and the index of
 // the closing ']'.
@@ -314,9 +318,16 @@ func (p *Parser) parseListValues(startPos int) ([]string, int, error) {
 		} else {
 			end := i
 			for end < len(p.input) && p.input[end] != ',' && p.input[end] != ']' {
+				// The scanner treats '"' as opening a string no matter where it
+				// appears. If we accepted one mid-value the re-sync loop below
+				// would run the scanner into an unterminated string, swallow the
+				// rest of the input and silently drop any trailing clause.
+				if p.input[end] == '"' {
+					return nil, 0, fmt.Errorf(`unexpected '"' in unquoted list value: quote the whole value`)
+				}
 				end++
 			}
-			value = strings.TrimRight(p.input[i:end], " \t\n\r")
+			value = strings.TrimRight(p.input[i:end], listSpace)
 			i = end
 		}
 		values = append(values, value)
@@ -335,6 +346,10 @@ func (p *Parser) parseListValues(startPos int) ([]string, int, error) {
 	}
 }
 
+// listSpace is the whitespace a list may be padded with, in one place so the
+// skip loops and the trim below cannot drift apart.
+const listSpace = " \t\n\r"
+
 func isListSpace(ch byte) bool {
-	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+	return strings.IndexByte(listSpace, ch) >= 0
 }

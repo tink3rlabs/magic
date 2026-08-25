@@ -59,6 +59,10 @@ func (e *TermExpr) Eval(input map[string]interface{}) bool {
 		}
 		return wildcardMatch(fmt.Sprintf("%v", val), fmt.Sprintf("%v", e.Value))
 
+	// The IN and NOT IN branches below repeat the list assertion rather than
+	// sharing one. Merging them would have to validate the list before applying
+	// the absent-key rule, which would turn NOT IN on a missing key from true
+	// into false. The duplication is what keeps that rule first.
 	case "IN":
 		if !ok {
 			return false
@@ -107,18 +111,21 @@ func wildcardMatch(value, pattern string) bool {
 	if !strings.HasPrefix(value, prefix) {
 		return false
 	}
-	value = value[len(prefix):]
+	rest := value[len(prefix):]
 
 	// Interior segments float, but must appear in the order they were written.
+	// Taking the leftmost occurrence of each is safe: with "*" as the only
+	// metacharacter, matching a segment as early as possible always leaves the
+	// most room for the segments after it.
 	for _, segment := range segments[1 : len(segments)-1] {
-		idx := strings.Index(value, segment)
+		idx := strings.Index(rest, segment)
 		if idx < 0 {
 			return false
 		}
-		value = value[idx+len(segment):]
+		rest = rest[idx+len(segment):]
 	}
 
-	return strings.HasSuffix(value, suffix)
+	return strings.HasSuffix(rest, suffix)
 }
 
 func listContains(list []string, val string) bool {

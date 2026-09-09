@@ -3,17 +3,17 @@ module github.com/tink3rlabs/magic
 go 1.25.0
 
 require (
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.0
-	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1
 	github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos v1.5.0
 	github.com/auth0/go-jwt-middleware/v2 v2.3.1
-	github.com/aws/aws-sdk-go-v2 v1.45.1
-	github.com/aws/aws-sdk-go-v2/credentials v1.20.1
-	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.65.1
+	github.com/aws/aws-sdk-go-v2 v1.46.0
+	github.com/aws/aws-sdk-go-v2/credentials v1.20.3
+	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.67.0
 	github.com/aws/aws-sdk-go-v2/service/sns v1.44.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/grindlemire/go-lucene v0.2.1
-	github.com/mattn/go-sqlite3 v1.14.50
+	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.71.0
 	go.opentelemetry.io/otel v1.46.0
@@ -33,20 +33,20 @@ require (
 require (
 	filippo.io/edwards25519 v1.1.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
-	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2 // indirect
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0 // indirect
 	github.com/ajg/form v1.5.1 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.19.1 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.1 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.1 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.38.1 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.19.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.5.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.40.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.13.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.7.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sso v1.35.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.40.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.47.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.13.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.9.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.37.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.42.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.49.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -60,6 +60,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
@@ -84,8 +85,8 @@ require (
 
 require (
 	github.com/TwiN/deepmerge v0.2.2
-	github.com/aws/aws-sdk-go-v2/config v1.33.1
-	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.21.1
+	github.com/aws/aws-sdk-go-v2/config v1.33.3
+	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.21.3
 	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-chi/render v1.0.3

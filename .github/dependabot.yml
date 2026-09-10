@@ -11,6 +11,13 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # magic is a consumed library, so a dependency bump changes what downstream
+    # gets. "fix" makes go-semantic-release cut a patch tag for it; the default
+    # "chore" cuts nothing, which is why v0.19.0 sat a month behind main.
+    # Majors still need a human to add a BREAKING CHANGE footer when one applies.
+    commit-message:
+      prefix: "fix"
+      include: "scope"
     groups:
       patches:
         update-types:

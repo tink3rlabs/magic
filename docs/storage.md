@@ -202,6 +202,19 @@ For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string
 n, err := adapter.Count(&Task{}, map[string]any{"status": "in_progress"})
 ```
 
+### Update
+
+On the SQL and Memory adapters, `Update` writes only the row identified by the item's primary key, and only if that row also matches `filter`:
+
+```go
+err := adapter.Update(&Task{Id: id, TenantID: tenant, Title: "new"}, map[string]any{"tenant_id": tenant})
+if errors.Is(err, storage.ErrNotFound) {
+    // no task with that id in this tenant; nothing was written
+}
+```
+
+`Update` never creates a row (use `Create`) and returns an error when the item has no primary key value.
+
 ### Not-found
 
 ```go

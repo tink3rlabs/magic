@@ -42,6 +42,120 @@ func setupSQLCoverage(t *testing.T) (*storage.MemoryAdapter, *storage.SQLAdapter
 	return m, m.DB
 }
 
+type scopedItem struct {
+	Id        string  `json:"id" gorm:"primaryKey;column:id"`
+	Tenant    string  `json:"tenant" gorm:"column:tenant"`
+	Name      string  `json:"name" gorm:"column:name"`
+	DeletedAt *string `json:"deleted_at" gorm:"column:deleted_at"`
+}
+
+func (scopedItem) TableName() string { return "sql_scoped_items" }
+
+// setupScopedItems seeds two live tenant-A rows, one tenant-B row and one
+// soft-deleted tenant-A row.
+func setupScopedItems(t *testing.T) *storage.SQLAdapter {
+	t.Helper()
+	m := storage.GetMemoryAdapterInstance()
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS sql_scoped_items (id TEXT PRIMARY KEY, tenant TEXT, name TEXT, deleted_at TEXT)`,
+		`DELETE FROM sql_scoped_items`,
+		`INSERT INTO sql_scoped_items VALUES ('a1', 'A', 'one', NULL), ('a2', 'A', 'two', NULL), ('b1', 'B', 'other', NULL), ('a3', 'A', 'gone', '2020-01-01')`,
+	} {
+		if err := m.Execute(stmt); err != nil {
+			t.Fatalf("setup %q: %v", stmt, err)
+		}
+	}
+	return m.DB
+}
+
+func scopedItemByID(t *testing.T, sql *storage.SQLAdapter, id string) scopedItem {
+	t.Helper()
+	var got scopedItem
+	if err := sql.Get(&got, map[string]any{"id": id}); err != nil {
+		t.Fatalf("Get %s: %v", id, err)
+	}
+	return got
+}
+
+func TestSQLAdapterUpdateOnlyWritesTheItemRow(t *testing.T) {
+	sql := setupScopedItems(t)
+
+	if err := sql.Update(&scopedItem{Id: "a1", Tenant: "A", Name: "renamed"}, map[string]any{"tenant": "A"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got := scopedItemByID(t, sql, "a1").Name; got != "renamed" {
+		t.Fatalf("a1 name = %q; want %q", got, "renamed")
+	}
+	if got := scopedItemByID(t, sql, "a2").Name; got != "two" {
+		t.Fatalf("a2 name = %q; want %q", got, "two")
+	}
+}
+
+func TestSQLAdapterUpdateWithUnchangedValuesSucceeds(t *testing.T) {
+	sql := setupScopedItems(t)
+
+	if err := sql.Update(&scopedItem{Id: "a1", Tenant: "A", Name: "one"}, map[string]any{"tenant": "A"}); err != nil {
+		t.Fatalf("Update with unchanged values: %v", err)
+	}
+}
+
+func TestSQLAdapterUpdateRejectsRowOutsideFilter(t *testing.T) {
+	sql := setupScopedItems(t)
+
+	err := sql.Update(&scopedItem{Id: "b1", Tenant: "A", Name: "overwritten"}, map[string]any{"tenant": "A"})
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("Update = %v; want ErrNotFound", err)
+	}
+	if got := scopedItemByID(t, sql, "b1"); got.Tenant != "B" || got.Name != "other" {
+		t.Fatalf("b1 = %+v; want it unchanged", got)
+	}
+}
+
+func TestSQLAdapterUpdateDoesNotCreateMissingRow(t *testing.T) {
+	sql := setupScopedItems(t)
+
+	err := sql.Update(&scopedItem{Id: "missing", Tenant: "A", Name: "new"}, map[string]any{"tenant": "A"})
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("Update = %v; want ErrNotFound", err)
+	}
+	var got scopedItem
+	if err := sql.Get(&got, map[string]any{"id": "missing"}); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("Get missing = %v (%+v); want ErrNotFound", err, got)
+	}
+}
+
+func TestSQLAdapterUpdateRequiresPrimaryKey(t *testing.T) {
+	sql := setupScopedItems(t)
+
+	if err := sql.Update(&scopedItem{Tenant: "A", Name: "everyone"}, map[string]any{"tenant": "A"}); err == nil {
+		t.Fatal("Update without a primary key = nil; want an error")
+	}
+	for _, id := range []string{"a1", "a2"} {
+		if got := scopedItemByID(t, sql, id).Name; got == "everyone" {
+			t.Fatalf("%s was overwritten by an update without a primary key", id)
+		}
+	}
+	total, err := sql.Count(&[]scopedItem{}, map[string]any{"id": ""})
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("rows with empty id = %d; want 0", total)
+	}
+}
+
+func TestSQLAdapterUpdateSkipsSoftDeletedRow(t *testing.T) {
+	sql := setupScopedItems(t)
+
+	err := sql.Update(&scopedItem{Id: "a3", Tenant: "A", Name: "restored"}, map[string]any{"tenant": "A", "deleted_at": nil})
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("Update = %v; want ErrNotFound", err)
+	}
+	if got := scopedItemByID(t, sql, "a3"); got.DeletedAt == nil || got.Name != "gone" {
+		t.Fatalf("a3 = %+v; want it still soft-deleted and unchanged", got)
+	}
+}
+
 func TestSQLAdapterNonContextCRUDRoundTrip(t *testing.T) {
 	_, sql := setupSQLCoverage(t)
 

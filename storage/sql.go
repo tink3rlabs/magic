@@ -72,7 +72,7 @@ func (s *SQLAdapter) OpenConnection() {
 		s.DB, err = gorm.Open(postgres.New(postgres.Config{DSN: dsn.String(), PreferSimpleProtocol: true}), &gormConf)
 	case MYSQL:
 		dsn := new(bytes.Buffer)
-		fmt.Fprintf(dsn, "%s:%s@tcp(%s:%s)/%s", s.config["user"], s.config["password"], s.config["host"], s.config["port"], s.config["dbname"])
+		fmt.Fprintf(dsn, "%s:%s@tcp(%s:%s)/%s?clientFoundRows=true", s.config["user"], s.config["password"], s.config["host"], s.config["port"], s.config["dbname"])
 		s.DB, err = gorm.Open(mysql.New(mysql.Config{DSN: dsn.String()}), &gormConf)
 	case SQLITE:
 		path := "file::memory:?cache=shared"
@@ -230,9 +230,39 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
+	db := s.dbWithCtx(ctx)
+	if err := requirePrimaryKey(ctx, db, item); err != nil {
+		return err
+	}
 	query, bindings := s.buildQuery(filter)
-	result := s.dbWithCtx(ctx).Where(query, bindings).Save(item)
-	return result.Error
+	result := db.Model(item).Where(query, bindings).Select("*").Updates(item)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// requirePrimaryKey rejects items without a primary key value: gorm only
+// scopes Updates to the item's row when the key is set, so a zero key would
+// update every row the filter matches.
+func requirePrimaryKey(ctx context.Context, db *gorm.DB, item any) error {
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(item); err != nil {
+		return err
+	}
+	if len(stmt.Schema.PrimaryFields) == 0 {
+		return errors.New("a primary key is required when updating a resource")
+	}
+	rv := reflect.Indirect(reflect.ValueOf(item))
+	for _, field := range stmt.Schema.PrimaryFields {
+		if _, isZero := field.ValueOf(ctx, rv); isZero {
+			return errors.New("a primary key is required when updating a resource")
+		}
+	}
+	return nil
 }
 
 func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {

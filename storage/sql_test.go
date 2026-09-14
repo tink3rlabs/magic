@@ -144,6 +144,22 @@ func TestSQLAdapterUpdateRequiresPrimaryKey(t *testing.T) {
 	}
 }
 
+func TestSQLAdapterUpdateRejectsNonStructItems(t *testing.T) {
+	sql := setupScopedItems(t)
+
+	for name, item := range map[string]any{
+		"slice":       &[]scopedItem{{Id: "a1", Tenant: "A", Name: "bulk"}},
+		"nil pointer": (*scopedItem)(nil),
+	} {
+		if err := sql.Update(item, map[string]any{"tenant": "A"}); err == nil {
+			t.Fatalf("%s: Update = nil; want an error", name)
+		}
+	}
+	if got := scopedItemByID(t, sql, "a1").Name; got != "one" {
+		t.Fatalf("a1 name = %q; want %q", got, "one")
+	}
+}
+
 func TestSQLAdapterUpdateSkipsSoftDeletedRow(t *testing.T) {
 	sql := setupScopedItems(t)
 

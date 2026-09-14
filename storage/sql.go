@@ -72,7 +72,11 @@ func (s *SQLAdapter) OpenConnection() {
 		s.DB, err = gorm.Open(postgres.New(postgres.Config{DSN: dsn.String(), PreferSimpleProtocol: true}), &gormConf)
 	case MYSQL:
 		dsn := new(bytes.Buffer)
-		fmt.Fprintf(dsn, "%s:%s@tcp(%s:%s)/%s?clientFoundRows=true", s.config["user"], s.config["password"], s.config["host"], s.config["port"], s.config["dbname"])
+		sep := "?"
+		if strings.Contains(s.config["dbname"], "?") {
+			sep = "&"
+		}
+		fmt.Fprintf(dsn, "%s:%s@tcp(%s:%s)/%s%sclientFoundRows=true", s.config["user"], s.config["password"], s.config["host"], s.config["port"], s.config["dbname"], sep)
 		s.DB, err = gorm.Open(mysql.New(mysql.Config{DSN: dsn.String()}), &gormConf)
 	case SQLITE:
 		path := "file::memory:?cache=shared"
@@ -249,6 +253,10 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 // scopes Updates to the item's row when the key is set, so a zero key would
 // update every row the filter matches.
 func requirePrimaryKey(ctx context.Context, db *gorm.DB, item any) error {
+	rv := reflect.Indirect(reflect.ValueOf(item))
+	if rv.Kind() != reflect.Struct {
+		return errors.New("updating a resource requires a single struct item")
+	}
 	stmt := &gorm.Statement{DB: db}
 	if err := stmt.Parse(item); err != nil {
 		return err
@@ -256,7 +264,6 @@ func requirePrimaryKey(ctx context.Context, db *gorm.DB, item any) error {
 	if len(stmt.Schema.PrimaryFields) == 0 {
 		return errors.New("a primary key is required when updating a resource")
 	}
-	rv := reflect.Indirect(reflect.ValueOf(item))
 	for _, field := range stmt.Schema.PrimaryFields {
 		if _, isZero := field.ValueOf(ctx, rv); isZero {
 			return errors.New("a primary key is required when updating a resource")

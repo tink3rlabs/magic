@@ -158,6 +158,9 @@ func mysqlDSN(config map[string]string) (string, error) {
 	cfg.Net = "tcp"
 	cfg.Addr = net.JoinHostPort(config["host"], config["port"])
 	cfg.DBName = dbname
+	// Report matched rows, not changed ones, so an Update that rewrites
+	// identical values isn't mistaken for a missing row.
+	cfg.ClientFoundRows = true
 	return cfg.FormatDSN(), nil
 }
 
@@ -304,12 +307,45 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
+	db := s.dbWithCtx(ctx)
+	if err := requirePrimaryKey(ctx, db, item); err != nil {
+		return err
+	}
 	query, bindings, err := s.buildQuery(filter)
 	if err != nil {
 		return err
 	}
-	result := s.dbWithCtx(ctx).Where(query, bindings).Save(item)
-	return result.Error
+	result := db.Model(item).Where(query, bindings).Select("*").Updates(item)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// requirePrimaryKey rejects items without a primary key value: gorm only
+// scopes Updates to the item's row when the key is set, so a zero key would
+// update every row the filter matches.
+func requirePrimaryKey(ctx context.Context, db *gorm.DB, item any) error {
+	rv := reflect.Indirect(reflect.ValueOf(item))
+	if rv.Kind() != reflect.Struct {
+		return errors.New("updating a resource requires a single struct item")
+	}
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(item); err != nil {
+		return err
+	}
+	if len(stmt.Schema.PrimaryFields) == 0 {
+		return errors.New("a primary key is required when updating a resource")
+	}
+	for _, field := range stmt.Schema.PrimaryFields {
+		if _, isZero := field.ValueOf(ctx, rv); isZero {
+			return errors.New("a primary key is required when updating a resource")
+		}
+	}
+	return nil
 }
 
 func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {

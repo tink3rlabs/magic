@@ -422,7 +422,6 @@ func (s *SQLAdapter) QueryContext(ctx context.Context, dest any, statement strin
 	return "", fmt.Errorf("not implemented yet")
 }
 
-
 func (s *SQLAdapter) applyWhere(q *gorm.DB, query string, bindings map[string]any) *gorm.DB {
 	if query == "" {
 		return q

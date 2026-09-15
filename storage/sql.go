@@ -215,7 +215,7 @@ func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string
 		return errors.New("filtering is required when getting a resource")
 	}
 	query, bindings := s.buildQuery(filter)
-	result := s.dbWithCtx(ctx).Where(query, bindings).Find(dest)
+	result := s.applyWhere(s.dbWithCtx(ctx), query, bindings).Find(dest)
 	if result.RowsAffected == 0 {
 		return ErrNotFound
 	}
@@ -231,7 +231,7 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 		return errors.New("filtering is required when updating a resource")
 	}
 	query, bindings := s.buildQuery(filter)
-	result := s.dbWithCtx(ctx).Where(query, bindings).Save(item)
+	result := s.applyWhere(s.dbWithCtx(ctx), query, bindings).Save(item)
 	return result.Error
 }
 
@@ -244,7 +244,7 @@ func (s *SQLAdapter) DeleteContext(ctx context.Context, item any, filter map[str
 		return errors.New("filtering is required when deleting a resource")
 	}
 	query, bindings := s.buildQuery(filter)
-	result := s.dbWithCtx(ctx).Where(query, bindings).Delete(item)
+	result := s.applyWhere(s.dbWithCtx(ctx), query, bindings).Delete(item)
 	return result.Error
 }
 
@@ -343,7 +343,7 @@ func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, 
 	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if len(filter) > 0 {
 			query, bindings := s.buildQuery(filter)
-			return q.Where(query, bindings)
+			return s.applyWhere(q, query, bindings)
 		}
 		return q
 	})
@@ -403,7 +403,7 @@ func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[stri
 
 	if len(filter) > 0 {
 		query, bindings := s.buildQuery(filter)
-		q = q.Where(query, bindings)
+		q = s.applyWhere(q, query, bindings)
 	}
 
 	var total int64
@@ -422,6 +422,15 @@ func (s *SQLAdapter) QueryContext(ctx context.Context, dest any, statement strin
 	return "", fmt.Errorf("not implemented yet")
 }
 
+func (s *SQLAdapter) applyWhere(q *gorm.DB, query string, bindings map[string]any) *gorm.DB {
+	if query == "" {
+		return q
+	}
+	if len(bindings) == 0 {
+		return q.Where(query)
+	}
+	return q.Where(query, bindings)
+}
 
 func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any) {
 	clauses := []string{}

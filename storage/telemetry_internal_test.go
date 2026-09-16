@@ -17,32 +17,32 @@ type legacyAdapter struct {
 	calls     int
 }
 
-func (a *legacyAdapter) Execute(string) error                                { a.calls++; return nil }
-func (a *legacyAdapter) Ping() error                                         { a.calls++; return nil }
-func (a *legacyAdapter) GetType() StorageAdapterType                         { return "legacy" }
-func (a *legacyAdapter) GetProvider() StorageProviders                       { return a.provider }
-func (a *legacyAdapter) GetSchemaName() string                               { return "" }
-func (a *legacyAdapter) CreateSchema() error                                 { a.calls++; return nil }
-func (a *legacyAdapter) CreateMigrationTable() error                         { a.calls++; return nil }
-func (a *legacyAdapter) UpdateMigrationTable(int, string, string) error      { a.calls++; return nil }
-func (a *legacyAdapter) GetLatestMigration() (int, error)                    { a.calls++; return 0, nil }
-func (a *legacyAdapter) Create(any, ...map[string]any) error                 { a.calls++; return a.createErr }
-func (a *legacyAdapter) Get(any, map[string]any, ...map[string]any) error    { a.calls++; return nil }
-func (a *legacyAdapter) Update(any, map[string]any, ...map[string]any) error { a.calls++; return nil }
-func (a *legacyAdapter) Delete(any, map[string]any, ...map[string]any) error { a.calls++; return nil }
-func (a *legacyAdapter) List(any, string, map[string]any, int, string, ...map[string]any) (string, error) {
+func (a *legacyAdapter) Execute(string) error                           { a.calls++; return nil }
+func (a *legacyAdapter) Ping() error                                    { a.calls++; return nil }
+func (a *legacyAdapter) GetType() StorageAdapterType                    { return "legacy" }
+func (a *legacyAdapter) GetProvider() StorageProviders                  { return a.provider }
+func (a *legacyAdapter) GetSchemaName() string                          { return "" }
+func (a *legacyAdapter) CreateSchema() error                            { a.calls++; return nil }
+func (a *legacyAdapter) CreateMigrationTable() error                    { a.calls++; return nil }
+func (a *legacyAdapter) UpdateMigrationTable(int, string, string) error { a.calls++; return nil }
+func (a *legacyAdapter) GetLatestMigration() (int, error)               { a.calls++; return 0, nil }
+func (a *legacyAdapter) Create(any, ...Option) error                    { a.calls++; return a.createErr }
+func (a *legacyAdapter) Get(any, map[string]any, ...Option) error       { a.calls++; return nil }
+func (a *legacyAdapter) Update(any, map[string]any, ...Option) error    { a.calls++; return nil }
+func (a *legacyAdapter) Delete(any, map[string]any, ...Option) error    { a.calls++; return nil }
+func (a *legacyAdapter) List(any, string, map[string]any, int, string, ...Option) (string, error) {
 	a.calls++
 	return "", nil
 }
-func (a *legacyAdapter) Search(any, string, string, int, string, ...map[string]any) (string, error) {
+func (a *legacyAdapter) Search(any, string, string, int, string, ...Option) (string, error) {
 	a.calls++
 	return "", nil
 }
-func (a *legacyAdapter) Count(any, map[string]any, ...map[string]any) (int64, error) {
+func (a *legacyAdapter) Count(any, map[string]any, ...Option) (int64, error) {
 	a.calls++
 	return 0, nil
 }
-func (a *legacyAdapter) Query(any, string, int, string, ...map[string]any) (string, error) {
+func (a *legacyAdapter) Query(any, string, int, string, ...Option) (string, error) {
 	a.calls++
 	return "", nil
 }

@@ -268,14 +268,14 @@ type ContextualStorageAdapter interface {
 
     ExecuteContext(ctx context.Context, statement string) error
     PingContext(ctx context.Context) error
-    CreateContext(ctx context.Context, item any, params ...map[string]any) error
-    GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error
-    UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error
-    DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error
-    ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error)
-    SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error)
-    CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error)
-    QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error)
+    CreateContext(ctx context.Context, item any, opts ...Option) error
+    GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error
+    UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error
+    DeleteContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error
+    ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error)
+    SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error)
+    CountContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (int64, error)
+    QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (string, error)
 }
 ```
 
@@ -286,11 +286,11 @@ Schema/migration methods (`CreateSchema`, `CreateMigrationTable`, `UpdateMigrati
 Every adapter implements the `Context` variants as the primary methods. The non-`Context` variants delegate with `context.Background()`:
 
 ```go
-func (a *sqlAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
+func (a *sqlAdapter) Get(dest any, filter map[string]any, opts ...Option) error {
     return a.GetContext(context.Background(), dest, filter, params...)
 }
 
-func (a *sqlAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
+func (a *sqlAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error {
     // real implementation lives here
 }
 ```

@@ -175,7 +175,7 @@ func (s *CosmosDBAdapter) Create(item any, opts ...Option) error {
 }
 
 func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, opts ...Option) error {
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return err
 	}
@@ -247,7 +247,7 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 		return fmt.Errorf("filtering is required when getting a resource")
 	}
 
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return err
 	}
@@ -325,7 +325,7 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 		return fmt.Errorf("filtering is required when updating a resource")
 	}
 
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return err
 	}
@@ -417,7 +417,7 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 		return fmt.Errorf("an id filter is required when deleting a resource")
 	}
 
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return err
 	}
@@ -463,7 +463,7 @@ func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, 
 }
 
 func (s *CosmosDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
@@ -481,7 +481,7 @@ func (s *CosmosDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 	// This implementation treats Search as List with no filter
 	// For custom queries, use the Query method instead
 
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to search: %w", err)
 	}
@@ -581,7 +581,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 		return "", err
 	}
 
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", err
 	}

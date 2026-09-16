@@ -251,6 +251,13 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return "", fmt.Errorf("failed to list: %w", err)
+	}
+	if err := requireFilterWhenOrdering(sortKey, len(filter) > 0); err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
 
@@ -261,12 +268,23 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 		}
 
 		if sortKey != "" {
-			query += fmt.Sprintf(` ORDER BY %s`, sortKey)
+			query += fmt.Sprintf(` ORDER BY %s %s`, sortKey, options.SortDirection)
 		}
 
 		input.Statement = aws.String(query)
 		return input
 	})
+}
+
+// requireFilterWhenOrdering rejects an ordered scan with nothing to scope it.
+// PartiQL on DynamoDB refuses ORDER BY unless the statement also carries a
+// WHERE, and the service reports that as an opaque ValidationException from
+// inside ExecuteStatement. Failing here names the caller's actual mistake.
+func requireFilterWhenOrdering(sortKey string, hasWhere bool) error {
+	if sortKey == "" || hasWhere {
+		return nil
+	}
+	return fmt.Errorf("ordering by %q requires a filter: DynamoDB rejects ORDER BY without a WHERE clause", sortKey)
 }
 
 func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
@@ -288,6 +306,13 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 	if err != nil {
 		return "", err
 	}
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return "", fmt.Errorf("failed to search: %w", err)
+	}
+	if err := requireFilterWhenOrdering(sortKey, whereClause != ""); err != nil {
+		return "", err
+	}
 
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Build query
@@ -296,7 +321,7 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 			query += fmt.Sprintf(` WHERE %s`, whereClause)
 		}
 		if sortKey != "" {
-			query += fmt.Sprintf(` ORDER BY %s`, sortKey)
+			query += fmt.Sprintf(` ORDER BY %s %s`, sortKey, options.SortDirection)
 		}
 
 		input.Statement = aws.String(query)

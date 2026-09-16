@@ -74,8 +74,15 @@ func WithPartitionKeyField(field string) Option {
 	return func(o *Options) { o.PartitionKeyField = field }
 }
 
-// newOptions resolves opts over the defaults and validates the result.
-func newOptions(opts ...Option) (Options, error) {
+// ResolveOptions applies opts over the defaults and validates the result.
+//
+// The adapters in this package call it for themselves, so callers of
+// StorageAdapter never need it. It is exported for anyone implementing
+// StorageAdapter outside this package — a wrapper that forwards to another
+// adapter, or a fake in a test — since such an implementation receives
+// []Option and would otherwise have to apply them by hand and reimplement the
+// validation.
+func ResolveOptions(opts ...Option) (Options, error) {
 	resolved := Options{SortDirection: Ascending}
 	for _, opt := range opts {
 		if opt != nil {

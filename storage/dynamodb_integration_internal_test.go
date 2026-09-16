@@ -116,21 +116,18 @@ func TestDynamoDBCreateAndGet(t *testing.T) {
 	}
 }
 
-// TestDynamoDBUpdateIsAWholeItemPut documents what Update does on this adapter
-// today: it forwards to Create, which is a PutItem. A PutItem replaces the
-// whole item, so an attribute missing from the struct is not merely left
-// unchanged -- it is deleted.
-//
-// This is the behaviour WithFields exists to avoid, and the adapter does not
-// honour it. The test pins the current reality rather than the intent; see the
-// skipped test below for what the intent would look like.
-func TestDynamoDBUpdateIsAWholeItemPut(t *testing.T) {
+// TestDynamoDBUpdateWithoutFieldsWritesEveryAttribute pins the default, and it
+// is the same default the SQL adapter has: with no WithFields, every attribute
+// of the item is written, so a field left zero in the struct overwrites what
+// was stored. That is a caller passing an incomplete item, not the adapter
+// losing data -- the distinction matters, because before #263 the same call
+// *deleted* the attribute rather than setting it.
+func TestDynamoDBUpdateWithoutFieldsWritesEveryAttribute(t *testing.T) {
 	adapter := newDynamoTestAdapter(t)
 
 	if err := adapter.Create(&dynamoItem{Id: "d1", Name: "original", Color: "red"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// Only name is set, exactly as a caller changing one field would.
 	if err := adapter.Update(&dynamoItem{Id: "d1", Name: "renamed"}, map[string]any{"id": "d1"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -143,46 +140,57 @@ func TestDynamoDBUpdateIsAWholeItemPut(t *testing.T) {
 		t.Fatalf("name = %q; want %q", got.Name, "renamed")
 	}
 	if got.Color != "" {
-		t.Fatalf("color = %q; want it lost -- a PutItem replaces the whole item. "+
-			"If this now holds \"red\", Update has learned to merge and the "+
-			"WithFields test below should be enabled.", got.Color)
+		t.Fatalf("color = %q; want the zero value written, as Select(\"*\") does on SQL", got.Color)
 	}
 }
 
-// TestDynamoDBUpdateIgnoresItsFilter pins the other half: Update forwards to
-// Create without the filter, so a filter that matches nothing still writes.
-// On the SQL adapter the same call returns ErrNotFound and writes nothing.
-func TestDynamoDBUpdateIgnoresItsFilter(t *testing.T) {
+// TestDynamoDBUpdateRespectsItsFilter is the contract #258 gave the SQL
+// adapter: write only if the row also matches the filter, and report
+// ErrNotFound when it does not. Update used to forward to a PutItem without
+// the filter, so a filter matching nothing still wrote.
+func TestDynamoDBUpdateRespectsItsFilter(t *testing.T) {
 	adapter := newDynamoTestAdapter(t)
 
 	if err := adapter.Create(&dynamoItem{Id: "d1", Name: "original", Color: "red"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	err := adapter.Update(
-		&dynamoItem{Id: "d1", Name: "overwritten", Color: "red"},
-		map[string]any{"name": "a value the row does not have"},
+		&dynamoItem{Id: "d1", Name: "overwritten", Color: "blue"},
+		map[string]any{"id": "d1", "name": "a value the row does not have"},
 	)
-	if err != nil {
-		t.Fatalf("Update with a non-matching filter: %v; want the current no-op-filter behaviour", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update with a non-matching filter = %v; want ErrNotFound", err)
 	}
 
 	var got dynamoItem
 	if err := adapter.Get(&got, map[string]any{"id": "d1"}); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Name != "overwritten" {
-		t.Fatalf("name = %q; want %q -- the filter is currently ignored. If this "+
-			"is now \"original\", Update has learned to honour its filter.", got.Name, "overwritten")
+	if got.Name != "original" || got.Color != "red" {
+		t.Fatalf("got %+v; want the row untouched", got)
 	}
 }
 
-// TestDynamoDBUpdateHonoursWithFields is what the adapter should do: write only
-// the named attributes and leave the rest of the item alone, which DynamoDB
-// expresses natively with an UpdateExpression. It is skipped because the
-// adapter forwards Update to a PutItem; the two tests above pin why.
-func TestDynamoDBUpdateHonoursWithFields(t *testing.T) {
-	t.Skip("DynamoDBAdapter.Update is a whole-item PutItem and does not honour WithFields yet")
+// TestDynamoDBUpdateDoesNotCreateMissingItem matches the SQL adapter: Update
+// never creates. UpdateItem will happily create the item when the key is
+// absent, so this needs an explicit condition on the key.
+func TestDynamoDBUpdateDoesNotCreateMissingItem(t *testing.T) {
+	adapter := newDynamoTestAdapter(t)
 
+	err := adapter.Update(&dynamoItem{Id: "ghost", Name: "n"}, map[string]any{"id": "ghost"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update of a missing item = %v; want ErrNotFound", err)
+	}
+	var got dynamoItem
+	if err := adapter.Get(&got, map[string]any{"id": "ghost"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get = %v; want the item never created", err)
+	}
+}
+
+// TestDynamoDBUpdateHonoursWithFields is the point of the exercise: write only
+// the named attributes and leave the rest of the stored item alone, which
+// DynamoDB expresses natively with an UpdateExpression.
+func TestDynamoDBUpdateHonoursWithFields(t *testing.T) {
 	adapter := newDynamoTestAdapter(t)
 
 	if err := adapter.Create(&dynamoItem{Id: "d1", Name: "original", Color: "red"}); err != nil {

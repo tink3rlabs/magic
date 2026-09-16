@@ -2,10 +2,13 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -23,6 +26,12 @@ import (
 type DynamoDBAdapter struct {
 	DB     *dynamodb.Client
 	config map[string]string
+
+	// keySchema caches each table's key attribute names, hash first. Update
+	// needs them to address the item and to keep key attributes out of the SET
+	// clause, and a table's key schema cannot change once it exists.
+	keySchemaMu sync.RWMutex
+	keySchema   map[string][]string
 }
 
 var dynamoDBAdapterLock = &sync.Mutex{}
@@ -177,9 +186,157 @@ func (s *DynamoDBAdapter) Update(item any, filter map[string]any, opts ...Option
 	return s.UpdateContext(context.Background(), item, filter, opts...)
 }
 
+// UpdateContext writes item to the entry its key identifies, and only if that
+// entry also matches filter. It never creates one; use Create.
+//
+// This is an UpdateItem with an UpdateExpression rather than a PutItem, which
+// is what lets it write some attributes and leave the rest of the stored entry
+// alone. A PutItem cannot: it replaces the whole entry, so an attribute the
+// caller never mentioned is deleted rather than preserved (#263).
+//
+// Without WithFields every attribute of the item is written, which matches the
+// SQL adapter's default. With it, only the named ones are.
 func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
-	return s.CreateContext(ctx, item)
+	if len(filter) == 0 {
+		return errors.New("filtering is required when updating a resource")
+	}
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return fmt.Errorf("failed to update: %w", err)
+	}
+
+	table := s.getTableName(item)
+	keyNames, err := s.keyAttributeNames(ctx, table)
+	if err != nil {
+		return err
+	}
+	attributes, err := attributevalue.MarshalMapWithOptions(item, useJSONTag)
+	if err != nil {
+		return fmt.Errorf("failed to marshal input item into dynamodb item, %v", err)
+	}
+
+	key := make(map[string]types.AttributeValue, len(keyNames))
+	for _, name := range keyNames {
+		value, present := attributes[name]
+		if !present {
+			return fmt.Errorf("a key attribute is required when updating a resource: %q is missing from the item", name)
+		}
+		key[name] = value
+	}
+
+	names := map[string]string{}
+	values := map[string]types.AttributeValue{}
+
+	// UpdateItem rejects a SET on a key attribute, so those are skipped rather
+	// than rejected: with no WithFields the write set is every attribute of the
+	// item, and the key is always among them.
+	write := options.Fields
+	if !options.FieldsSet {
+		write = make([]string, 0, len(attributes))
+		for name := range attributes {
+			write = append(write, name)
+		}
+		sort.Strings(write) // a map range would vary the expression per call
+	}
+	assignments := []string{}
+	for _, field := range write {
+		if slices.Contains(keyNames, field) {
+			continue
+		}
+		value, present := attributes[field]
+		if !present {
+			return fmt.Errorf("unknown field %q on %s", field, table)
+		}
+		name, placeholder := fmt.Sprintf("#s%d", len(assignments)), fmt.Sprintf(":s%d", len(assignments))
+		names[name], values[placeholder] = field, value
+		assignments = append(assignments, fmt.Sprintf("%s = %s", name, placeholder))
+	}
+	if len(assignments) == 0 {
+		return errors.New("nothing to update: every field named is a key attribute")
+	}
+
+	// The entry must already exist -- UpdateItem would otherwise create it --
+	// and must match the filter. Key attributes may appear in a condition even
+	// though they may not be assigned, so the filter needs no special casing.
+	names["#exists"] = keyNames[0]
+	conditions := []string{"attribute_exists(#exists)"}
+	for field, want := range filter {
+		value, err := attributevalue.Marshal(want)
+		if err != nil {
+			return fmt.Errorf("failed to marshal filter value for %q, %v", field, err)
+		}
+		name, placeholder := fmt.Sprintf("#c%d", len(conditions)), fmt.Sprintf(":c%d", len(conditions))
+		names[name], values[placeholder] = field, value
+		conditions = append(conditions, fmt.Sprintf("%s = %s", name, placeholder))
+	}
+
+	_, err = s.DB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(table),
+		Key:                       key,
+		UpdateExpression:          aws.String("SET " + strings.Join(assignments, ", ")),
+		ConditionExpression:       aws.String(strings.Join(conditions, " AND ")),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+	})
+	if err != nil {
+		// The condition covers both "no such entry" and "the filter did not
+		// match", and DynamoDB reports them identically. ErrNotFound is what
+		// the SQL adapter returns for either.
+		var unmet *types.ConditionalCheckFailedException
+		if errors.As(err, &unmet) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("failed to update item, %v", err)
+	}
+	return nil
 }
+
+// keyAttributeNames returns the table's key attribute names, hash key first.
+// The schema is fixed for the life of a table, so it is fetched once per table
+// and cached.
+func (s *DynamoDBAdapter) keyAttributeNames(ctx context.Context, table string) ([]string, error) {
+	s.keySchemaMu.RLock()
+	cached, ok := s.keySchema[table]
+	s.keySchemaMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	described, err := s.DB.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(table)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe table %s: %v", table, err)
+	}
+	var hash, sortKey string
+	for _, element := range described.Table.KeySchema {
+		if element.AttributeName == nil {
+			continue
+		}
+		if element.KeyType == types.KeyTypeHash {
+			hash = *element.AttributeName
+		} else {
+			sortKey = *element.AttributeName
+		}
+	}
+	if hash == "" {
+		return nil, fmt.Errorf("table %s reports no hash key", table)
+	}
+	names := []string{hash}
+	if sortKey != "" {
+		names = append(names, sortKey)
+	}
+
+	s.keySchemaMu.Lock()
+	if s.keySchema == nil {
+		s.keySchema = map[string][]string{}
+	}
+	s.keySchema[table] = names
+	s.keySchemaMu.Unlock()
+	return names, nil
+}
+
+// useJSONTag makes the attributevalue codec read `json` tags, which is how
+// every other method in this adapter marshals.
+func useJSONTag(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" }
 
 func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, opts ...Option) error {
 	return s.DeleteContext(context.Background(), item, filter, opts...)

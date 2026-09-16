@@ -63,6 +63,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 10
+    services:
+      # The DynamoDB adapter tests talk to a real DynamoDB API. Without an
+      # endpoint they skip, so running them here is what keeps that skip from
+      # turning into a silent pass. DynamoDB Local is the lightest thing that
+      # speaks the API: a few seconds to start, no AWS account.
+      dynamodb:
+        image: amazon/dynamodb-local:2.5.2
+        ports:
+          - 8000:8000
     # services:
     #   cassandra:
     #     image: cassandra:5 # Use a specific version if needed
@@ -89,6 +98,7 @@ jobs:
         # from silently failing to build if that default ever changes.
         env:
           CGO_ENABLED: '1'
+          DYNAMODB_TEST_ENDPOINT: http://localhost:8000
         run: go test -v -cover ./...
         # env:
         #   CASSANDRA_HOSTS: "localhost"

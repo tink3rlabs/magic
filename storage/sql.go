@@ -304,7 +304,7 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to update: %w", err)
 	}
@@ -478,7 +478,7 @@ func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit
 }
 
 func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
@@ -496,7 +496,7 @@ func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, c
 }
 
 func (s *SQLAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
-	options, err := newOptions(opts...)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to search: %w", err)
 	}

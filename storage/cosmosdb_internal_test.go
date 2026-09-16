@@ -106,8 +106,8 @@ func TestCosmosDBBuildPartitionKeyEmptyStringFieldMeansUnspecified(t *testing.T)
 	if got != "" {
 		t.Fatalf("pk = %q; want empty", got)
 	}
-	if _, err := newOptions(WithPartitionKey("", "v")); err == nil {
-		t.Fatalf("newOptions = nil error; want a value without a field rejected")
+	if _, err := ResolveOptions(WithPartitionKey("", "v")); err == nil {
+		t.Fatalf("ResolveOptions = nil error; want a value without a field rejected")
 	}
 }
 

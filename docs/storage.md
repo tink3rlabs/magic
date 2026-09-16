@@ -136,24 +136,31 @@ adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, conf
 ```
 
 !!! warning "CosmosDB partition key is per-call, not global"
-    Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter exposes this via the variadic `params ...map[string]any` argument. If you forget, queries either fail or cross-partition-fan-out (slow and expensive). See the table and example below.
+    Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter takes it as an option. If you forget, queries either fail or cross-partition-fan-out (slow and expensive).
 
-CosmosDB takes per-call params for the partition key. Pass them in the variadic `params ...map[string]any` argument on `Create` / `Get` / `Update` / `Delete` / `List` / `Search`:
-
-| Param key      | Meaning                                                                |
-|----------------|------------------------------------------------------------------------|
-| `pk_field`     | Field name to use as the partition key in your document (default `"pk"`). |
-| `pk_value`     | Value for that partition key.                                          |
-| `sort_direction` | `"ASC"` (default) or `"DESC"` for `List` / `Search`. Same key as `storage.SortDirectionKey`. |
+Pass it on `Create` / `Get` / `Update` / `Delete` / `List` / `Search`:
 
 ```go title="storage.go"
-params := map[string]any{
-    "pk_field": "tenant",
-    "pk_value": "acme-corp",
-}
-err := adapter.Create(user, params)
-err  = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
+pk := storage.WithPartitionKey("tenant", "acme-corp")
+
+err := adapter.Create(user, pk)
+err  = adapter.Get(&user, map[string]any{"id": "user-123"}, pk)
 ```
+
+`WithPartitionKeyField` names the field and leaves the adapter to read the value
+off the item; the field defaults to `"pk"` when neither is given.
+
+## Options
+
+Every operation takes a variadic `...storage.Option`. Options are uniform across
+adapters: one an operation or adapter has no use for is accepted and ignored.
+
+| Option                      | Read by            | Meaning                                              |
+|-----------------------------|--------------------|------------------------------------------------------|
+| `WithSortDirection(dir)`    | `List`, `Search`   | `storage.Ascending` (default) or `storage.Descending`. |
+| `WithFields(fields...)`     | `Update`           | Write only these fields. Default is every field.      |
+| `WithPartitionKey(f, v)`    | CosmosDB           | Address a partition by field and value.               |
+| `WithPartitionKeyField(f)`  | CosmosDB           | Name the field; the value is read off the item.       |
 
 ## Common patterns
 
@@ -188,16 +195,16 @@ _, err = adapter.List(
     nil,
     100,
     "",
-    map[string]any{storage.SortDirectionKey: "DESC"},
+    storage.WithSortDirection(storage.Descending),
 )
 ```
 
-The value is case-insensitive (`"asc"` and `"ASC"` are equivalent). Anything other than asc/desc returns an error.
+Anything other than `storage.Ascending` or `storage.Descending` returns an error.
 
 ### Filter vs search
 
-- **`List(dest, sortKey, filter, limit, cursor, params...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed.
-- **`Search(dest, sortKey, query, limit, cursor, params...)`** — `query` is a Lucene query string. See [Search (Lucene)](./lucene.md).
+- **`List(dest, sortKey, filter, limit, cursor, opts...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed.
+- **`Search(dest, sortKey, query, limit, cursor, opts...)`** — `query` is a Lucene query string. See [Search (Lucene)](./lucene.md).
 
 For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string straight to `Search`. magic handles validation, error reporting, and parameterization.
 
@@ -219,6 +226,20 @@ if errors.Is(err, storage.ErrNotFound) {
 ```
 
 `Update` never creates a row (use `Create`) and returns an error when the item has no primary key value.
+
+By default it writes every field of the item. That is a problem whenever two
+callers read the same row and then change different fields: each writes back the
+values it read for the fields it never touched, so the second write silently
+reverts the first. Name the fields that actually changed and the two stop
+colliding:
+
+```go
+err := adapter.Update(&task, filter, storage.WithFields("title", "modified_at"))
+```
+
+`WithFields` also makes clearing a field work — the named fields are written
+whether or not they hold a zero value. An unknown field name, or no field at
+all, is an error rather than a silently wider write.
 
 ### Not-found
 
@@ -253,7 +274,7 @@ The SQL adapter wraps each migration in a transaction. DynamoDB and CosmosDB do 
 When you need a raw query that doesn't fit the interface, use:
 
 - `adapter.Execute(statement)` — fire-and-forget DDL/DML.
-- `adapter.Query(dest, statement, limit, cursor, params...)` — **not implemented on the SQL adapter** (returns a "not implemented yet" error today).
+- `adapter.Query(dest, statement, limit, cursor, opts...)` — **not implemented on the SQL adapter** (returns a "not implemented yet" error today).
 
 These bypass the Lucene layer entirely. **You are responsible for parameter binding.** Prefer `List` / `Search` whenever possible.
 

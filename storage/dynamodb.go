@@ -120,11 +120,11 @@ func (s *DynamoDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("DynamoDB GetLatestMigration is not supported")
 }
 
-func (s *DynamoDBAdapter) Create(item any, params ...map[string]any) error {
-	return s.CreateContext(context.Background(), item, params...)
+func (s *DynamoDBAdapter) Create(item any, opts ...Option) error {
+	return s.CreateContext(context.Background(), item, opts...)
 }
 
-func (s *DynamoDBAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
+func (s *DynamoDBAdapter) CreateContext(ctx context.Context, item any, opts ...Option) error {
 	i, err := attributevalue.MarshalMapWithOptions(item, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal input item into dynamodb item, %v", err)
@@ -142,11 +142,11 @@ func (s *DynamoDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	return nil
 }
 
-func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
-	return s.GetContext(context.Background(), dest, filter, params...)
+func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, opts ...Option) error {
+	return s.GetContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *DynamoDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
+func (s *DynamoDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
@@ -173,19 +173,19 @@ func (s *DynamoDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	}
 }
 
-func (s *DynamoDBAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
-	return s.UpdateContext(context.Background(), item, filter, params...)
+func (s *DynamoDBAdapter) Update(item any, filter map[string]any, opts ...Option) error {
+	return s.UpdateContext(context.Background(), item, filter, opts...)
 }
 
-func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
 	return s.CreateContext(ctx, item)
 }
 
-func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
-	return s.DeleteContext(context.Background(), item, filter, params...)
+func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, opts ...Option) error {
+	return s.DeleteContext(context.Background(), item, filter, opts...)
 }
 
-func (s *DynamoDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+func (s *DynamoDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
@@ -243,11 +243,11 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	return nextToken, nil
 }
 
-func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
+	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, opts...)
 }
 
-func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
@@ -269,11 +269,11 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 	})
 }
 
-func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, opts...)
 }
 
-func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
@@ -305,21 +305,21 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 	})
 }
 
-func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	return s.CountContext(context.Background(), dest, filter, params...)
+func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, opts ...Option) (int64, error) {
+	return s.CountContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *DynamoDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+func (s *DynamoDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil
 }
 
-func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.QueryContext(context.Background(), dest, statement, limit, cursor, opts...)
 }
 
-func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		input.Statement = aws.String(statement)
 		return input

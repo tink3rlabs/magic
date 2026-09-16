@@ -309,9 +309,7 @@ func TestSQLAdapterListDescendingSort(t *testing.T) {
 	}
 
 	var page []sqlCoverageItem
-	_, err := sql.List(&page, "id", nil, 10, "", map[string]any{
-		storage.SortDirectionKey: string(storage.Descending),
-	})
+	_, err := sql.List(&page, "id", nil, 10, "", storage.WithSortDirection(storage.Descending))
 	if err != nil {
 		t.Fatalf("List DESC: %v", err)
 	}
@@ -386,9 +384,7 @@ func TestSQLAdapterRejectsUnsafeFilterKeys(t *testing.T) {
 func TestSQLAdapterListRejectsInvalidSortDirection(t *testing.T) {
 	_, sql := setupSQLCoverage(t)
 	var page []sqlCoverageItem
-	_, err := sql.List(&page, "id", nil, 10, "", map[string]any{
-		storage.SortDirectionKey: "sideways",
-	})
+	_, err := sql.List(&page, "id", nil, 10, "", storage.WithSortDirection(storage.SortingDirection("sideways")))
 	if err == nil {
 		t.Fatalf("expected error for invalid sort direction")
 	}
@@ -445,9 +441,7 @@ func TestSQLAdapterSearchInvalidFieldIsBadRequest(t *testing.T) {
 func TestSQLAdapterSearchRejectsInvalidSortDirection(t *testing.T) {
 	_, sql := setupSQLCoverage(t)
 	var page []sqlCoverageItem
-	_, err := sql.Search(&page, "id", "", 10, "", map[string]any{
-		storage.SortDirectionKey: "weird",
-	})
+	_, err := sql.Search(&page, "id", "", 10, "", storage.WithSortDirection(storage.SortingDirection("weird")))
 	if err == nil {
 		t.Fatalf("expected error from Search for invalid sort direction")
 	}

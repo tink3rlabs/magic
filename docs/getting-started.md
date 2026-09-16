@@ -107,7 +107,7 @@ searched: [{02 Frame walls in_progress}] next:
 - **Factory** — `StorageAdapterFactory{}.GetInstance` returns a `storage.StorageAdapter`. The result is wrapped with telemetry instrumentation. If you need the concrete `*SQLAdapter` (for example, to register a GORM plugin), use [`storage.UnwrapAdapter`](https://pkg.go.dev/github.com/tink3rlabs/magic/storage#UnwrapAdapter).
 - **`sortKey`** — pass the JSON/column name (`"id"`), not the Go struct field name (`"ID"`). magic validates it against `^[a-zA-Z_][a-zA-Z0-9_]*$` to block injection.
 - **Cursor pagination** — `List` and `Search` return an opaque cursor. Pass it back to fetch the next page. An empty cursor means you're done.
-- **Sort direction** — defaults to ascending. Flip with `map[string]any{storage.SortDirectionKey: "DESC"}` as the final variadic argument.
+- **Sort direction** — defaults to ascending. Flip with `storage.WithSortDirection(storage.Descending)` as a trailing option.
 - **Lucene** — `NewParser` introspects your struct via `json` tags and figures out which fields are searchable. `Search` uses this when you pass a query string. Full syntax: [Lucene](lucene.md).
 
 ## Now what

@@ -15,7 +15,7 @@ type sortDirRow struct {
 func (sortDirRow) TableName() string { return "memtest_sortdir" }
 
 // The in-memory adapter delegates to an embedded SQLAdapter. It must forward
-// the variadic params (which carry SortDirectionKey) so that ordering and
+// the variadic options (which carry the sort direction) so that ordering and
 // validation behave the same as the SQL adapter — see storage/memory.go.
 func TestMemoryAdapterForwardsSortDirection(t *testing.T) {
 	adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, nil)
@@ -34,7 +34,7 @@ func TestMemoryAdapterForwardsSortDirection(t *testing.T) {
 	}
 
 	var desc []sortDirRow
-	if _, err := adapter.List(&desc, "id", nil, 10, "", map[string]any{storage.SortDirectionKey: "DESC"}); err != nil {
+	if _, err := adapter.List(&desc, "id", nil, 10, "", storage.WithSortDirection(storage.Descending)); err != nil {
 		t.Fatalf("list DESC: %v", err)
 	}
 	got := []string{}
@@ -47,13 +47,13 @@ func TestMemoryAdapterForwardsSortDirection(t *testing.T) {
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("DESC ordering = %v, want %v (SortDirectionKey was dropped?)", got, want)
+			t.Fatalf("DESC ordering = %v, want %v (WithSortDirection was dropped?)", got, want)
 		}
 	}
 
 	// An invalid direction must surface an error, not be silently ignored.
 	var bad []sortDirRow
-	if _, err := adapter.List(&bad, "id", nil, 10, "", map[string]any{storage.SortDirectionKey: "sideways"}); err == nil {
+	if _, err := adapter.List(&bad, "id", nil, 10, "", storage.WithSortDirection(storage.SortingDirection("sideways"))); err == nil {
 		t.Fatalf("invalid sort direction returned no error; want error")
 	}
 }

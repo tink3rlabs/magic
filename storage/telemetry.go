@@ -38,14 +38,14 @@ type ContextualStorageAdapter interface {
 	ExecuteContext(ctx context.Context, statement string) error
 	PingContext(ctx context.Context) error
 
-	CreateContext(ctx context.Context, item any, params ...map[string]any) error
-	GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error
-	UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error
-	DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error
-	ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error)
-	SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error)
-	CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error)
-	QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error)
+	CreateContext(ctx context.Context, item any, opts ...Option) error
+	GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error
+	UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error
+	DeleteContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error
+	ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error)
+	SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error)
+	CountContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (int64, error)
+	QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (string, error)
 }
 
 // Metric + label names and operation labels, kept in sync with
@@ -340,63 +340,63 @@ func (w *instrumentedAdapter) GetLatestMigration() (int, error) {
 
 // CRUD operations emit spans + metrics.
 
-func (w *instrumentedAdapter) Create(item any, params ...map[string]any) error {
-	return w.CreateContext(context.Background(), item, params...)
+func (w *instrumentedAdapter) Create(item any, opts ...Option) error {
+	return w.CreateContext(context.Background(), item, opts...)
 }
 
-func (w *instrumentedAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) (err error) {
+func (w *instrumentedAdapter) CreateContext(ctx context.Context, item any, opts ...Option) (err error) {
 	ctx, obs := w.begin(ctx, opCreate, attribute.String("magic.storage.model", modelName(item)))
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.CreateContext(ctx, item, params...)
+		return w.ctxInner.CreateContext(ctx, item, opts...)
 	}
-	return w.inner.Create(item, params...)
+	return w.inner.Create(item, opts...)
 }
 
-func (w *instrumentedAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
-	return w.GetContext(context.Background(), dest, filter, params...)
+func (w *instrumentedAdapter) Get(dest any, filter map[string]any, opts ...Option) error {
+	return w.GetContext(context.Background(), dest, filter, opts...)
 }
 
-func (w *instrumentedAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (err error) {
+func (w *instrumentedAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (err error) {
 	ctx, obs := w.begin(ctx, opGet, attribute.String("magic.storage.model", modelName(dest)))
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.GetContext(ctx, dest, filter, params...)
+		return w.ctxInner.GetContext(ctx, dest, filter, opts...)
 	}
-	return w.inner.Get(dest, filter, params...)
+	return w.inner.Get(dest, filter, opts...)
 }
 
-func (w *instrumentedAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
-	return w.UpdateContext(context.Background(), item, filter, params...)
+func (w *instrumentedAdapter) Update(item any, filter map[string]any, opts ...Option) error {
+	return w.UpdateContext(context.Background(), item, filter, opts...)
 }
 
-func (w *instrumentedAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) (err error) {
+func (w *instrumentedAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) (err error) {
 	ctx, obs := w.begin(ctx, opUpdate, attribute.String("magic.storage.model", modelName(item)))
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.UpdateContext(ctx, item, filter, params...)
+		return w.ctxInner.UpdateContext(ctx, item, filter, opts...)
 	}
-	return w.inner.Update(item, filter, params...)
+	return w.inner.Update(item, filter, opts...)
 }
 
-func (w *instrumentedAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
-	return w.DeleteContext(context.Background(), item, filter, params...)
+func (w *instrumentedAdapter) Delete(item any, filter map[string]any, opts ...Option) error {
+	return w.DeleteContext(context.Background(), item, filter, opts...)
 }
 
-func (w *instrumentedAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) (err error) {
+func (w *instrumentedAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, opts ...Option) (err error) {
 	ctx, obs := w.begin(ctx, opDelete, attribute.String("magic.storage.model", modelName(item)))
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.DeleteContext(ctx, item, filter, params...)
+		return w.ctxInner.DeleteContext(ctx, item, filter, opts...)
 	}
-	return w.inner.Delete(item, filter, params...)
+	return w.inner.Delete(item, filter, opts...)
 }
 
-func (w *instrumentedAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return w.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+func (w *instrumentedAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
+	return w.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, opts...)
 }
 
-func (w *instrumentedAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (nextCursor string, err error) {
+func (w *instrumentedAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (nextCursor string, err error) {
 	ctx, obs := w.begin(ctx, opList,
 		attribute.String("magic.storage.model", modelName(dest)),
 		attribute.String("magic.storage.sort_field", sortKey),
@@ -404,16 +404,16 @@ func (w *instrumentedAdapter) ListContext(ctx context.Context, dest any, sortKey
 	)
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.ListContext(ctx, dest, sortKey, filter, limit, cursor, params...)
+		return w.ctxInner.ListContext(ctx, dest, sortKey, filter, limit, cursor, opts...)
 	}
-	return w.inner.List(dest, sortKey, filter, limit, cursor, params...)
+	return w.inner.List(dest, sortKey, filter, limit, cursor, opts...)
 }
 
-func (w *instrumentedAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return w.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+func (w *instrumentedAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
+	return w.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, opts...)
 }
 
-func (w *instrumentedAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (nextCursor string, err error) {
+func (w *instrumentedAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (nextCursor string, err error) {
 	ctx, obs := w.begin(ctx, opSearch,
 		attribute.String("magic.storage.model", modelName(dest)),
 		attribute.String("magic.storage.sort_field", sortKey),
@@ -421,36 +421,36 @@ func (w *instrumentedAdapter) SearchContext(ctx context.Context, dest any, sortK
 	)
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.SearchContext(ctx, dest, sortKey, query, limit, cursor, params...)
+		return w.ctxInner.SearchContext(ctx, dest, sortKey, query, limit, cursor, opts...)
 	}
-	return w.inner.Search(dest, sortKey, query, limit, cursor, params...)
+	return w.inner.Search(dest, sortKey, query, limit, cursor, opts...)
 }
 
-func (w *instrumentedAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	return w.CountContext(context.Background(), dest, filter, params...)
+func (w *instrumentedAdapter) Count(dest any, filter map[string]any, opts ...Option) (int64, error) {
+	return w.CountContext(context.Background(), dest, filter, opts...)
 }
 
-func (w *instrumentedAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (total int64, err error) {
+func (w *instrumentedAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (total int64, err error) {
 	ctx, obs := w.begin(ctx, opCount, attribute.String("magic.storage.model", modelName(dest)))
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.CountContext(ctx, dest, filter, params...)
+		return w.ctxInner.CountContext(ctx, dest, filter, opts...)
 	}
-	return w.inner.Count(dest, filter, params...)
+	return w.inner.Count(dest, filter, opts...)
 }
 
-func (w *instrumentedAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return w.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+func (w *instrumentedAdapter) Query(dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
+	return w.QueryContext(context.Background(), dest, statement, limit, cursor, opts...)
 }
 
-func (w *instrumentedAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (nextCursor string, err error) {
+func (w *instrumentedAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (nextCursor string, err error) {
 	ctx, obs := w.begin(ctx, opQuery,
 		attribute.String("magic.storage.model", modelName(dest)),
 		attribute.Int("magic.storage.limit", limit),
 	)
 	defer func() { w.end(obs, err) }()
 	if w.ctxInner != nil {
-		return w.ctxInner.QueryContext(ctx, dest, statement, limit, cursor, params...)
+		return w.ctxInner.QueryContext(ctx, dest, statement, limit, cursor, opts...)
 	}
-	return w.inner.Query(dest, statement, limit, cursor, params...)
+	return w.inner.Query(dest, statement, limit, cursor, opts...)
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"reflect"
 	"regexp"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -90,7 +92,11 @@ func (s *SQLAdapter) OpenConnection() {
 	}
 }
 
-var postgresKeyword = regexp.MustCompile(`^[A-Za-z0-9_.]+$`)
+var (
+	// Dots allow Postgres custom settings such as pg_trgm.similarity_threshold.
+	validPostgresKey    = regexp.MustCompile(`^[A-Za-z0-9_.]+$`)
+	postgresValueQuoter = strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+)
 
 // postgresDSN quotes every value, so spaces, quotes or backslashes in a value
 // can't end it early or add settings.
@@ -100,25 +106,49 @@ func postgresDSN(config map[string]string) (string, error) {
 		if key == "schema" {
 			continue
 		}
-		if !postgresKeyword.MatchString(key) {
+		if !validPostgresKey.MatchString(key) {
 			return "", fmt.Errorf("invalid postgres config key %q", key)
 		}
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
 
-	quote := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
 	settings := make([]string, len(keys))
+	redacted := make([]string, len(keys))
 	for i, key := range keys {
-		settings[i] = fmt.Sprintf("%s='%s'", key, quote.Replace(config[key]))
+		settings[i] = fmt.Sprintf("%s='%s'", key, postgresValueQuoter.Replace(config[key]))
+		redacted[i] = settings[i]
+		if key == "password" {
+			redacted[i] = "password=xxxxx"
+		}
 	}
-	return strings.Join(settings, " "), nil
+	dsn := strings.Join(settings, " ")
+
+	// pgx masks the password in parse errors with a pattern that stops at an
+	// escaped quote, so report parse errors against a string without it.
+	if _, err := pgconn.ParseConfig(dsn); err != nil {
+		var parseErr *pgconn.ParseConfigError
+		if errors.As(err, &parseErr) {
+			parseErr.ConnString = strings.Join(redacted, " ")
+			return "", parseErr
+		}
+		return "", err
+	}
+	return dsn, nil
 }
 
 // mysqlDSN lets the driver escape the values. Options appended to dbname
 // after a "?" are still honored.
 func mysqlDSN(config map[string]string) (string, error) {
-	dbname, params, _ := strings.Cut(config["dbname"], "?")
+	// The driver doesn't escape the user name, so a ':' would split it.
+	if strings.Contains(config["user"], ":") {
+		return "", errors.New("mysql user name must not contain ':'")
+	}
+	rawName, params, _ := strings.Cut(config["dbname"], "?")
+	dbname, err := url.PathUnescape(rawName)
+	if err != nil {
+		return "", fmt.Errorf("invalid mysql dbname: %w", err)
+	}
 	cfg, err := mysqldriver.ParseDSN("/?" + params)
 	if err != nil {
 		return "", fmt.Errorf("invalid mysql options in dbname: %w", err)

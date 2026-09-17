@@ -85,3 +85,42 @@ func TestMySQLDSNRejectsInvalidOptions(t *testing.T) {
 		t.Fatalf("error %q contains the password", err)
 	}
 }
+
+func TestPostgresDSNParseErrorHidesPassword(t *testing.T) {
+	for _, password := range []string{"SEKRITa' SEKRITb", "SEKRIT plain", `SEKRIT\ x`} {
+		_, err := postgresDSN(map[string]string{"host": "h", "port": "not-a-port", "password": password})
+		if err == nil {
+			t.Fatalf("password %q: nil error; want the invalid port rejected", password)
+		}
+		if strings.Contains(err.Error(), "SEKRIT") {
+			t.Fatalf("error %q contains the password", err)
+		}
+		if !strings.Contains(err.Error(), "invalid port") {
+			t.Fatalf("error %q; want it to name the invalid port", err)
+		}
+	}
+}
+
+func TestMySQLDSNDecodesDBName(t *testing.T) {
+	dsn, err := mysqlDSN(map[string]string{"host": "h", "port": "3306", "dbname": "my%20db/x?parseTime=true"})
+	if err != nil {
+		t.Fatalf("mysqlDSN: %v", err)
+	}
+	cfg, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parse %q: %v", dsn, err)
+	}
+	if cfg.DBName != "my db/x" {
+		t.Fatalf("DBName = %q; want %q", cfg.DBName, "my db/x")
+	}
+
+	if _, err := mysqlDSN(map[string]string{"dbname": "bad%zz"}); err == nil {
+		t.Fatal("mysqlDSN = nil error; want the invalid escape rejected")
+	}
+}
+
+func TestMySQLDSNRejectsColonInUser(t *testing.T) {
+	if _, err := mysqlDSN(map[string]string{"user": "u:x", "password": "p"}); err == nil {
+		t.Fatal("mysqlDSN = nil error; want a user name with ':' rejected")
+	}
+}

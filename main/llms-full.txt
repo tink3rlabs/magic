@@ -2043,6 +2043,12 @@ adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.SQL, config)
 
 The SQL adapter uses [GORM](https://gorm.io) internally. Connection pooling, migrations, and schema creation are handled for you via `CreateSchema()`, `CreateMigrationTable()`, etc. The `schema` key is Postgres-specific and becomes a `TablePrefix` on the GORM config.
 
+Values are escaped when the connection string is built, so passwords may contain spaces, quotes, `@`, `/` or `?`. For MySQL, driver options can follow the database name: `"dbname": "app?parseTime=true"`.
+
+Quote secrets in YAML
+
+If the config map comes from a YAML file, quote the values. Unquoted, `0123` is read as the number `83`, `~` as null, and `p@ss #x` as `p@ss`. Single quotes keep everything literal: `password: 'p@ss #x'`.
+
 ### DynamoDB
 
 ```

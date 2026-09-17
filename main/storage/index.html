@@ -1030,6 +1030,11 @@
 <a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="nx">adapter</span><span class="p">,</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">storage</span><span class="p">.</span><span class="nx">StorageAdapterFactory</span><span class="p">{}.</span><span class="nx">GetInstance</span><span class="p">(</span><span class="nx">storage</span><span class="p">.</span><span class="nx">SQL</span><span class="p">,</span><span class="w"> </span><span class="nx">config</span><span class="p">)</span>
 </code></pre></div>
 <p>The SQL adapter uses <a href="https://gorm.io">GORM</a> internally. Connection pooling, migrations, and schema creation are handled for you via <code>CreateSchema()</code>, <code>CreateMigrationTable()</code>, etc. The <code>schema</code> key is Postgres-specific and becomes a <code>TablePrefix</code> on the GORM config.</p>
+<p>Values are escaped when the connection string is built, so passwords may contain spaces, quotes, <code>@</code>, <code>/</code> or <code>?</code>. For MySQL, driver options can follow the database name: <code>"dbname": "app?parseTime=true"</code>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Quote secrets in YAML</p>
+<p>If the config map comes from a YAML file, quote the values. Unquoted, <code>0123</code> is read as the number <code>83</code>, <code>~</code> as null, and <code>p@ss #x</code> as <code>p@ss</code>. Single quotes keep everything literal: <code>password: 'p@ss #x'</code>.</p>
+</div>
 <h3 id="dynamodb">DynamoDB<a class="headerlink" href="#dynamodb" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nx">config</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">string</span><span class="p">{</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="s">"provider"</span><span class="p">:</span><span class="w">   </span><span class="s">"dynamodb"</span><span class="p">,</span>

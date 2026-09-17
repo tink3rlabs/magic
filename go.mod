@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.4
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.68.0
-	github.com/aws/aws-sdk-go-v2/service/sns v1.44.1
+	github.com/aws/aws-sdk-go-v2/service/sns v1.47.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/grindlemire/go-lucene v0.2.1
 	github.com/mattn/go-sqlite3 v1.14.52

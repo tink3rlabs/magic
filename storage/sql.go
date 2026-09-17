@@ -1,17 +1,22 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -62,18 +67,15 @@ func (s *SQLAdapter) OpenConnection() {
 
 	switch s.provider {
 	case POSTGRESQL:
-		dsn := new(bytes.Buffer)
-
-		for key, value := range s.config {
-			if key != "schema" {
-				fmt.Fprintf(dsn, "%s=%s ", key, value)
-			}
+		var dsn string
+		if dsn, err = postgresDSN(s.config); err == nil {
+			s.DB, err = gorm.Open(postgres.New(postgres.Config{DSN: dsn, PreferSimpleProtocol: true}), &gormConf)
 		}
-		s.DB, err = gorm.Open(postgres.New(postgres.Config{DSN: dsn.String(), PreferSimpleProtocol: true}), &gormConf)
 	case MYSQL:
-		dsn := new(bytes.Buffer)
-		fmt.Fprintf(dsn, "%s:%s@tcp(%s:%s)/%s", s.config["user"], s.config["password"], s.config["host"], s.config["port"], s.config["dbname"])
-		s.DB, err = gorm.Open(mysql.New(mysql.Config{DSN: dsn.String()}), &gormConf)
+		var dsn string
+		if dsn, err = mysqlDSN(s.config); err == nil {
+			s.DB, err = gorm.Open(mysql.New(mysql.Config{DSN: dsn}), &gormConf)
+		}
 	case SQLITE:
 		path := "file::memory:?cache=shared"
 		if s.config["path"] != "" {
@@ -88,6 +90,75 @@ func (s *SQLAdapter) OpenConnection() {
 	if err != nil {
 		slogger.Fatal("failed to open a database connection", slog.Any("error", err.Error()))
 	}
+}
+
+var (
+	// Dots allow Postgres custom settings such as pg_trgm.similarity_threshold.
+	validPostgresKey    = regexp.MustCompile(`^[A-Za-z0-9_.]+$`)
+	postgresValueQuoter = strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+)
+
+// postgresDSN quotes every value, so spaces, quotes or backslashes in a value
+// can't end it early or add settings.
+func postgresDSN(config map[string]string) (string, error) {
+	keys := make([]string, 0, len(config))
+	for key := range config {
+		if key == "schema" {
+			continue
+		}
+		if !validPostgresKey.MatchString(key) {
+			return "", fmt.Errorf("invalid postgres config key %q", key)
+		}
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	settings := make([]string, len(keys))
+	redacted := make([]string, len(keys))
+	for i, key := range keys {
+		settings[i] = fmt.Sprintf("%s='%s'", key, postgresValueQuoter.Replace(config[key]))
+		redacted[i] = settings[i]
+		if key == "password" {
+			redacted[i] = "password=xxxxx"
+		}
+	}
+	dsn := strings.Join(settings, " ")
+
+	// pgx masks the password in parse errors with a pattern that stops at an
+	// escaped quote, so report parse errors against a string without it.
+	if _, err := pgconn.ParseConfig(dsn); err != nil {
+		var parseErr *pgconn.ParseConfigError
+		if errors.As(err, &parseErr) {
+			parseErr.ConnString = strings.Join(redacted, " ")
+			return "", parseErr
+		}
+		return "", err
+	}
+	return dsn, nil
+}
+
+// mysqlDSN lets the driver escape the values. Options appended to dbname
+// after a "?" are still honored.
+func mysqlDSN(config map[string]string) (string, error) {
+	// The driver doesn't escape the user name, so a ':' would split it.
+	if strings.Contains(config["user"], ":") {
+		return "", errors.New("mysql user name must not contain ':'")
+	}
+	rawName, params, _ := strings.Cut(config["dbname"], "?")
+	dbname, err := url.PathUnescape(rawName)
+	if err != nil {
+		return "", fmt.Errorf("invalid mysql dbname: %w", err)
+	}
+	cfg, err := mysqldriver.ParseDSN("/?" + params)
+	if err != nil {
+		return "", fmt.Errorf("invalid mysql options in dbname: %w", err)
+	}
+	cfg.User = config["user"]
+	cfg.Passwd = config["password"]
+	cfg.Net = "tcp"
+	cfg.Addr = net.JoinHostPort(config["host"], config["port"])
+	cfg.DBName = dbname
+	return cfg.FormatDSN(), nil
 }
 
 // dbWithCtx returns s.DB bound to ctx when non-nil, letting gorm

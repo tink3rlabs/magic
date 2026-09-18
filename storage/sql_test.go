@@ -210,6 +210,49 @@ func TestSQLAdapterListRejectsInvalidSortKey(t *testing.T) {
 	}
 }
 
+func TestSQLAdapterRejectsUnsafeFilterKeys(t *testing.T) {
+	_, sql := setupSQLCoverage(t)
+	for _, id := range []string{"a", "b", "c"} {
+		if err := sql.Create(&sqlCoverageItem{Id: id, Name: "orig"}); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+	// Without validation this key closes the filter's parentheses and turns
+	// the WHERE into "(1=1) OR (...)", which matches every row.
+	filter := map[string]any{"1=1) OR (1=1": nil, "name": "orig"}
+
+	var got sqlCoverageItem
+	if err := sql.Get(&got, filter); err == nil {
+		t.Fatal("Get = nil error; want the filter key rejected")
+	}
+	var page []sqlCoverageItem
+	if _, err := sql.List(&page, "id", filter, 10, ""); err == nil {
+		t.Fatal("List = nil error; want the filter key rejected")
+	}
+	if _, err := sql.Count(&[]sqlCoverageItem{}, filter); err == nil {
+		t.Fatal("Count = nil error; want the filter key rejected")
+	}
+	if err := sql.Update(&sqlCoverageItem{Id: "a", Name: "changed"}, filter); err == nil {
+		t.Fatal("Update = nil error; want the filter key rejected")
+	}
+	if err := sql.Delete(&sqlCoverageItem{}, filter); err == nil {
+		t.Fatal("Delete = nil error; want the filter key rejected")
+	}
+
+	var rows []sqlCoverageItem
+	if _, err := sql.List(&rows, "id", nil, 10, ""); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %v; want all 3 left", rows)
+	}
+	for _, row := range rows {
+		if row.Name != "orig" {
+			t.Fatalf("rows = %v; want none changed", rows)
+		}
+	}
+}
+
 func TestSQLAdapterListRejectsInvalidSortDirection(t *testing.T) {
 	_, sql := setupSQLCoverage(t)
 	var page []sqlCoverageItem

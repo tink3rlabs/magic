@@ -285,7 +285,10 @@ func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string
 	if len(filter) == 0 {
 		return errors.New("filtering is required when getting a resource")
 	}
-	query, bindings := s.buildQuery(filter)
+	query, bindings, err := s.buildQuery(filter)
+	if err != nil {
+		return err
+	}
 	result := s.dbWithCtx(ctx).Where(query, bindings).Find(dest)
 	if result.RowsAffected == 0 {
 		return ErrNotFound
@@ -301,7 +304,10 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
 	}
-	query, bindings := s.buildQuery(filter)
+	query, bindings, err := s.buildQuery(filter)
+	if err != nil {
+		return err
+	}
 	result := s.dbWithCtx(ctx).Where(query, bindings).Save(item)
 	return result.Error
 }
@@ -314,7 +320,10 @@ func (s *SQLAdapter) DeleteContext(ctx context.Context, item any, filter map[str
 	if len(filter) == 0 {
 		return errors.New("filtering is required when deleting a resource")
 	}
-	query, bindings := s.buildQuery(filter)
+	query, bindings, err := s.buildQuery(filter)
+	if err != nil {
+		return err
+	}
 	result := s.dbWithCtx(ctx).Where(query, bindings).Delete(item)
 	return result.Error
 }
@@ -411,9 +420,15 @@ func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, 
 	if err != nil {
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
+	var query string
+	var bindings map[string]any
+	if len(filter) > 0 {
+		if query, bindings, err = s.buildQuery(filter); err != nil {
+			return "", err
+		}
+	}
 	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
-		if len(filter) > 0 {
-			query, bindings := s.buildQuery(filter)
+		if query != "" {
 			return q.Where(query, bindings)
 		}
 		return q
@@ -473,7 +488,10 @@ func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[stri
 	q := s.dbWithCtx(ctx).Model(dest)
 
 	if len(filter) > 0 {
-		query, bindings := s.buildQuery(filter)
+		query, bindings, err := s.buildQuery(filter)
+		if err != nil {
+			return 0, err
+		}
 		q = q.Where(query, bindings)
 	}
 
@@ -494,11 +512,16 @@ func (s *SQLAdapter) QueryContext(ctx context.Context, dest any, statement strin
 }
 
 
-func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any) {
+// buildQuery rejects keys that aren't plain column names: keys are written
+// into the SQL as-is, only values are bound.
+func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any, error) {
 	clauses := []string{}
 	bindings := make(map[string]any)
 
 	for key, value := range filter {
+		if !validColumnName.MatchString(key) {
+			return "", nil, fmt.Errorf("invalid filter key %q: must match [a-zA-Z_][a-zA-Z0-9_]*", key)
+		}
 		if value == nil {
 			// For nil values, use IS NULL instead of = @key
 			clauses = append(clauses, fmt.Sprintf("%s IS NULL", key))
@@ -508,5 +531,5 @@ func (s *SQLAdapter) buildQuery(filter map[string]any) (string, map[string]any) 
 			bindings[key] = value
 		}
 	}
-	return strings.Join(clauses, " AND "), bindings
+	return strings.Join(clauses, " AND "), bindings, nil
 }

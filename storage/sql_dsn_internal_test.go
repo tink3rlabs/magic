@@ -70,7 +70,7 @@ func TestMySQLDSNKeepsValuesIntact(t *testing.T) {
 		if err != nil {
 			t.Fatalf("password %q: parse: %v", password, err)
 		}
-		if cfg.Passwd != password || cfg.User != "o'brien" || cfg.DBName != "app" || cfg.Addr != "[::1]:3306" || !cfg.ParseTime {
+		if cfg.Passwd != password || cfg.User != "o'brien" || cfg.DBName != "app" || cfg.Addr != "[::1]:3306" || !cfg.ParseTime || !cfg.ClientFoundRows {
 			t.Fatalf("password %q: got %+v", password, cfg)
 		}
 	}

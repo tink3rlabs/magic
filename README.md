@@ -132,13 +132,15 @@ config := map[string]string{
 adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, config)
 ```
 
-**Optional Parameters for CRUD Operations:**
+**Options for CRUD Operations:**
 
-The CosmosDB adapter supports dynamic partition key configuration through optional parameters:
+Every operation takes a variadic `...storage.Option`. An option an operation or
+adapter has no use for is accepted and ignored.
 
-- `pk_field`: The field name to use as the partition key in your documents (defaults to `"pk"` if not specified)
-- `pk_value`: The value for the partition key
-- `sort_direction`: Sort direction for List and Search operations (`"ASC"` or `"DESC"`, defaults to `"ASC"`)
+- `storage.WithPartitionKeyField(field)`: the field to use as the partition key in your documents (defaults to `"pk"`)
+- `storage.WithPartitionKey(field, value)`: that field plus an explicit value
+- `storage.WithSortDirection(dir)`: `storage.Ascending` (default) or `storage.Descending`, for List and Search
+- `storage.WithFields(fields...)`: for Update, write only these fields instead of every field
 
 **Example with Custom Partition Key:**
 
@@ -158,27 +160,25 @@ user := &User{
     Email:  "john@example.com",
 }
 
-params := map[string]any{
-    "pk_field": "tenant",           // Field name in document
-    "pk_value": "acme-corp",        // Partition key value
-}
+pk := storage.WithPartitionKey("tenant", "acme-corp")
 
-err := adapter.Create(user, params)
+err := adapter.Create(user, pk)
 
 // Get user - must specify partition key
-err = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
+err = adapter.Get(&user, map[string]any{"id": "user-123"}, pk)
 
 // List users in a specific tenant (ascending order)
 var users []User
-cursor, err := adapter.List(&users, "name", map[string]any{}, 10, "", params)
+cursor, err := adapter.List(&users, "name", map[string]any{}, 10, "", pk)
 
 // List users in descending order by name
-paramsWithSort := map[string]any{
-    "pk_field":      "tenant",
-    "pk_value":      "acme-corp",
-    "sort_direction": "DESC",
-}
-cursor, err = adapter.List(&users, "name", map[string]any{}, 10, "", paramsWithSort)
+cursor, err = adapter.List(&users, "name", map[string]any{}, 10, "", pk,
+    storage.WithSortDirection(storage.Descending))
+
+// Rename a user without writing back the other fields we read
+user.Name = "Jane Doe"
+err = adapter.Update(user, map[string]any{"id": "user-123"}, pk,
+    storage.WithFields("name"))
 
 // Update user
 user.Email = "newemail@example.com"
@@ -228,7 +228,7 @@ err = adapter.Delete(&User{}, map[string]any{"id": user.ID}, params)
 
 - NoSQL document storage with SQL API using Azure SDK for Go (`azcosmos`)
 - UUID generation for items without IDs
-- Dynamic partition key configuration via `pk_field` and `pk_value` parameters
+- Dynamic partition key configuration via `WithPartitionKey` / `WithPartitionKeyField`
 - Single-partition query support
 - Native cursor-based pagination with continuation tokens
 - SQL query support with parameterized queries
@@ -263,7 +263,7 @@ err = adapter.Delete(&User{}, map[string]any{"id": user.ID}, params)
 - Database migrations not supported
 - Full-text search requires Azure Cognitive Search integration (Search method returns List results)
 - Azure-specific service
-- Partition key (`pk_field` and `pk_value`) must be specified for all operations
+- The partition key (`WithPartitionKey`) must be specified for all operations
 
 See more detailed examples in the examples folder
 

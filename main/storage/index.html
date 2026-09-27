@@ -573,6 +573,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#not-found" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -842,6 +853,17 @@
     <span class="md-ellipsis">
       
         Count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update
       
     </span>
   </a>
@@ -1146,23 +1168,31 @@
 <h3 id="count">Count<a class="headerlink" href="#count" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nx">n</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">Count</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">Task</span><span class="p">{},</span><span class="w"> </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">"status"</span><span class="p">:</span><span class="w"> </span><span class="s">"in_progress"</span><span class="p">})</span>
 </code></pre></div>
-<h3 id="not-found">Not-found<a class="headerlink" href="#not-found" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">task</span><span class="p">,</span><span class="w"> </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">"id"</span><span class="p">:</span><span class="w"> </span><span class="s">"missing"</span><span class="p">})</span>
+<h3 id="update">Update<a class="headerlink" href="#update" title="Permanent link">&para;</a></h3>
+<p>On the SQL and Memory adapters, <code>Update</code> writes only the row identified by the item's primary key, and only if that row also matches <code>filter</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">Update</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">Task</span><span class="p">{</span><span class="nx">Id</span><span class="p">:</span><span class="w"> </span><span class="nx">id</span><span class="p">,</span><span class="w"> </span><span class="nx">TenantID</span><span class="p">:</span><span class="w"> </span><span class="nx">tenant</span><span class="p">,</span><span class="w"> </span><span class="nx">Title</span><span class="p">:</span><span class="w"> </span><span class="s">"new"</span><span class="p">},</span><span class="w"> </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">"tenant_id"</span><span class="p">:</span><span class="w"> </span><span class="nx">tenant</span><span class="p">})</span>
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">if</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">Is</span><span class="p">(</span><span class="nx">err</span><span class="p">,</span><span class="w"> </span><span class="nx">storage</span><span class="p">.</span><span class="nx">ErrNotFound</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="c1">// 404</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="c1">// no task with that id in this tenant; nothing was written</span>
 <a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="p">}</span>
+</code></pre></div>
+<p><code>Update</code> never creates a row (use <code>Create</code>) and returns an error when the item has no primary key value.</p>
+<h3 id="not-found">Not-found<a class="headerlink" href="#not-found" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">Get</span><span class="p">(</span><span class="o">&amp;</span><span class="nx">task</span><span class="p">,</span><span class="w"> </span><span class="kt">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="kt">any</span><span class="p">{</span><span class="s">"id"</span><span class="p">:</span><span class="w"> </span><span class="s">"missing"</span><span class="p">})</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">if</span><span class="w"> </span><span class="nx">errors</span><span class="p">.</span><span class="nx">Is</span><span class="p">(</span><span class="nx">err</span><span class="p">,</span><span class="w"> </span><span class="nx">storage</span><span class="p">.</span><span class="nx">ErrNotFound</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="c1">// 404</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="p">}</span>
 </code></pre></div>
 <h2 id="migrations">Migrations<a class="headerlink" href="#migrations" title="Permanent link">&para;</a></h2>
 <p>Each adapter implements <code>CreateMigrationTable</code>, <code>GetLatestMigration</code>, and <code>UpdateMigrationTable</code>. magic ships an <code>embed.FS</code> (<code>storage.ConfigFs</code>) that adapters use to load SQL migration files; populate it from your own <code>embed</code>'d migrations directory at startup.</p>
 <p>A typical bootstrap:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">CreateSchema</span><span class="p">();</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="nx">log</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="p">}</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">CreateMigrationTable</span><span class="p">();</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nx">log</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="p">}</span>
-<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="nx">latest</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">GetLatestMigration</span><span class="p">()</span>
-<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="c1">// run any newer migrations in order...</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">CreateSchema</span><span class="p">();</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span><span class="nx">log</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="p">}</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="k">if</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">CreateMigrationTable</span><span class="p">();</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">nil</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">    </span><span class="nx">log</span><span class="p">.</span><span class="nx">Fatal</span><span class="p">(</span><span class="nx">err</span><span class="p">)</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="p">}</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="nx">latest</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">adapter</span><span class="p">.</span><span class="nx">GetLatestMigration</span><span class="p">()</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="c1">// run any newer migrations in order...</span>
 </code></pre></div>
 <p>The SQL adapter wraps each migration in a transaction. DynamoDB and CosmosDB do not have schema migrations in the relational sense; the helpers are no-ops on those adapters.</p>
 <h2 id="escape-hatches">Escape hatches<a class="headerlink" href="#escape-hatches" title="Permanent link">&para;</a></h2>

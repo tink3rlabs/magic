@@ -27,7 +27,7 @@ The same parser drives the storage adapter's `Search` method, so most code never
 | Map / struct (JSONB)               | no                | Reachable via `field.subfield` syntax (see [JSON paths](#json-sub-fields)). |
 | Slice / array (`text[]`, JSON array) | no              | Multi-valued; `field:value` means containment (see [Array fields](#array-multi-valued-fields)). |
 
-Field names in the query are the JSON tag, not the Go field name.
+Field names in the query are the JSON tag, not the Go field name. The generated SQL uses the column GORM reads: a field tagged `json:"amount" gorm:"column:total_amount"` is queried as `amount:100` and rendered as `"total_amount" = ?`. Fields GORM never reads from a column (`gorm:"-"`, `gorm:"-:all"`) are rejected as unknown fields by `ParseToSQL`; `ParseToDynamoDBPartiQL` ignores GORM tags.
 
 ## Operators
 

@@ -477,7 +477,16 @@ func (s *SQLDriver) quoteColumn(colStr string) string {
 	if isJSONSyntax(colStr) {
 		return colStr
 	}
-	return s.dialect.QuoteIdent(colStr)
+	return s.dialect.QuoteIdent(s.column(colStr))
+}
+
+// column maps a field name to the SQL column it is stored in. Lookups into
+// s.fields stay keyed by field name; only the emitted identifier changes.
+func (s *SQLDriver) column(name string) string {
+	if field, ok := s.fields[name]; ok && field.Column != "" {
+		return field.Column
+	}
+	return name
 }
 
 func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
@@ -646,7 +655,7 @@ func (s *SQLDriver) formatFieldName(fieldName string) expr.Column {
 			// through untouched — this is the only chance to quote it. Left
 			// bare, a mixed-case column folds on Postgres ("column \"mixed\"
 			// does not exist") and a reserved word is a syntax error on MySQL.
-			return expr.Column(s.dialect.JSONExtract(s.dialect.QuoteIdent(baseField), subField))
+			return expr.Column(s.dialect.JSONExtract(s.dialect.QuoteIdent(s.column(baseField)), subField))
 		}
 	}
 	return expr.Column(fieldName)

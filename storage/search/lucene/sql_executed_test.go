@@ -2,6 +2,7 @@ package lucene
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
@@ -341,6 +342,108 @@ func TestExecuted_TypedArrayRejectsWildcard(t *testing.T) {
 		t.Run(provider, func(t *testing.T) {
 			if _, _, err := p.ParseToSQL("nums:*5*", provider); err == nil {
 				t.Errorf("ParseToSQL(nums:*5*, %s) returned no error; wildcards on a numeric array must be rejected", provider)
+			}
+		})
+	}
+}
+
+// Order exposes public (json) field names that differ from its gorm columns,
+// plus fields gorm does not read from any column.
+type Order struct {
+	Id       string         `json:"id"`
+	Status   string         `json:"status" gorm:"column:state"`
+	Amount   float64        `json:"amount" gorm:"column:total_amount"`
+	Labels   []string       `json:"labels" gorm:"column:label_list"`
+	Details  map[string]any `json:"details" gorm:"type:text;COLUMN:extra"`
+	Note     string         `json:"note" gorm:"-"`
+	Summary  string         `json:"summary" gorm:"-:all"`
+	Migrated string         `json:"migrated" gorm:"-:migration"`
+}
+
+// newOrdersDB creates the orders fixture. Column names follow the gorm tags,
+// not the json names, so any filter that leaks a json name into SQL fails with
+// "no such column".
+//
+//	id | state  | total_amount | label_list  | extra             | migrated
+//	 1 | open   | 100          | ["a","b"]   | {"region":"north"} | x
+//	 2 | closed | 250          | ["c"]       | {"region":"south"} | y
+func newOrdersDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`CREATE TABLE orders (id TEXT, state TEXT, total_amount REAL, label_list TEXT, extra TEXT, migrated TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO orders VALUES
+		('1','open',100,'["a","b"]','{"region":"north"}','x'),
+		('2','closed',250,'["c"]','{"region":"south"}','y')`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return db
+}
+
+func TestExecuted_GormColumnNames(t *testing.T) {
+	db := newOrdersDB(t)
+	p, err := NewParser(Order{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		filter string
+		want   int
+	}{
+		{"renamed scalar", "status:open", 1},
+		{"renamed numeric", "amount:250", 1},
+		{"renamed numeric range", "amount:[100 TO 200]", 1},
+		{"renamed scalar wildcard", "status:clo*", 1},
+		{"renamed array containment", "labels:b", 1},
+		{"renamed array wildcard", "labels:*c*", 1},
+		{"renamed json subfield", "details.region:south", 1},
+		{"renamed scalar null check", "status:null", 0},
+		{"migration-ignored field is still a column", "migrated:x", 1},
+		{"implicit search uses the column", "closed", 1},
+		{"boolean composition", "status:open OR amount:250", 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			where, params, err := p.ParseToSQL(tt.filter, "sqlite")
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q): %v", tt.filter, err)
+			}
+			var n int
+			query := "SELECT count(*) FROM orders WHERE " + where
+			if err := db.QueryRow(query, params...).Scan(&n); err != nil {
+				t.Fatalf("executing %q (from filter %q): %v", query, tt.filter, err)
+			}
+			if n != tt.want {
+				t.Errorf("filter %q matched %d rows, want %d", tt.filter, n, tt.want)
+			}
+		})
+	}
+}
+
+// A field gorm never reads from a column must be an unknown field, not a
+// column reference that only fails once the query runs.
+func TestGormIgnoredFieldsAreNotFilterable(t *testing.T) {
+	p, err := NewParser(Order{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, filter := range []string{"note:x", "summary:x"} {
+		t.Run(filter, func(t *testing.T) {
+			_, _, err := p.ParseToSQL(filter, "postgresql")
+			var invalid *InvalidFieldError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("ParseToSQL(%q) error = %v, want *InvalidFieldError", filter, err)
 			}
 		})
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	lucene "github.com/grindlemire/go-lucene"
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
+	"gorm.io/gorm/schema"
 )
 
 // Safety limits for query parsing
@@ -30,6 +31,7 @@ type ParserConfig struct {
 // FieldInfo describes a searchable field and its properties.
 type FieldInfo struct {
 	Name           string
+	Column         string       // SQL column the field is stored in; empty means Name
 	Type           reflect.Type // For validation only
 	ImplicitSearch bool         // Whether this field is included in unfielded/implicit queries
 }
@@ -70,6 +72,8 @@ type Parser struct {
 // Field name extraction:
 // - Uses `json` struct tag for field names
 // - Skips fields without `json` tag or with `json:"-"`
+// - Skips fields gorm never reads from a column (`gorm:"-"`, `gorm:"-:all"`)
+// - Renders SQL against the `gorm:"column:..."` name when one is set
 func NewParser(model any, config ...*ParserConfig) (*Parser, error) {
 	fields, err := extractFields(model)
 	if err != nil {
@@ -135,11 +139,19 @@ func extractFields(model any) ([]FieldInfo, error) {
 			jsonTag = jsonTag[:commaIdx]
 		}
 
+		gormTag := schema.ParseTagSetting(field.Tag.Get("gorm"), ";")
+		if ignore, ok := gormTag["-"]; ok {
+			if ignore = strings.ToLower(strings.TrimSpace(ignore)); ignore == "-" || ignore == "all" {
+				continue
+			}
+		}
+
 		// Implicit search: only string fields
 		implicitSearch := field.Type.Kind() == reflect.String
 
 		fields = append(fields, FieldInfo{
 			Name:           jsonTag,
+			Column:         gormTag["COLUMN"],
 			Type:           field.Type,
 			ImplicitSearch: implicitSearch,
 		})

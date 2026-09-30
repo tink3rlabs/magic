@@ -1041,7 +1041,7 @@
 </tr>
 </tbody>
 </table>
-<p>Field names in the query are the JSON tag, not the Go field name.</p>
+<p>Field names in the query are the JSON tag, not the Go field name. The generated SQL uses the column GORM reads: a field tagged <code>json:"amount" gorm:"column:total_amount"</code> is queried as <code>amount:100</code> and rendered as <code>"total_amount" = ?</code>. Fields GORM never reads from a column (<code>gorm:"-"</code>, <code>gorm:"-:all"</code>) are rejected as unknown fields by <code>ParseToSQL</code>; <code>ParseToDynamoDBPartiQL</code> ignores GORM tags.</p>
 <h2 id="operators">Operators<a class="headerlink" href="#operators" title="Permanent link">&para;</a></h2>
 <p>All operators below have been verified against <code>storage/search/lucene/sql_driver.go</code>. Behavior that differs between providers is called out explicitly.</p>
 <h3 id="equality">Equality<a class="headerlink" href="#equality" title="Permanent link">&para;</a></h3>

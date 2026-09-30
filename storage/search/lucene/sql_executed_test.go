@@ -3,6 +3,7 @@ package lucene
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
@@ -356,6 +357,7 @@ type Order struct {
 	Labels   []string       `json:"labels" gorm:"column:label_list"`
 	Details  map[string]any `json:"details" gorm:"type:text;COLUMN:extra"`
 	Note     string         `json:"note" gorm:"-"`
+	Computed map[string]any `json:"computed" gorm:"-"`
 	Summary  string         `json:"summary" gorm:"-:all"`
 	Migrated string         `json:"migrated" gorm:"-:migration"`
 }
@@ -438,7 +440,7 @@ func TestGormIgnoredFieldsAreNotFilterable(t *testing.T) {
 		t.Fatalf("NewParser: %v", err)
 	}
 
-	for _, filter := range []string{"note:x", "summary:x"} {
+	for _, filter := range []string{"note:x", "summary:x", "computed.k:x"} {
 		t.Run(filter, func(t *testing.T) {
 			_, _, err := p.ParseToSQL(filter, "postgresql")
 			var invalid *InvalidFieldError
@@ -449,18 +451,18 @@ func TestGormIgnoredFieldsAreNotFilterable(t *testing.T) {
 	}
 }
 
-// gorm tags describe SQL storage only: DynamoDB keeps every json-tagged field.
-func TestGormIgnoredFieldsStayFilterableOnDynamoDB(t *testing.T) {
+// SQLite reads an unknown double-quoted identifier as a string literal, so the
+// executed implicit-search case cannot catch a leaked "note"; assert on the SQL.
+func TestImplicitSearchSkipsGormIgnoredFields(t *testing.T) {
 	p, err := NewParser(Order{})
 	if err != nil {
 		t.Fatalf("NewParser: %v", err)
 	}
-
-	for _, filter := range []string{"note:x", "summary:x"} {
-		t.Run(filter, func(t *testing.T) {
-			if _, _, err := p.ParseToDynamoDBPartiQL(filter); err != nil {
-				t.Errorf("ParseToDynamoDBPartiQL(%q): %v", filter, err)
-			}
-		})
+	where, _, err := p.ParseToSQL("closed", "postgresql")
+	if err != nil {
+		t.Fatalf("ParseToSQL(closed): %v", err)
+	}
+	if strings.Contains(where, `"note"`) || strings.Contains(where, `"summary"`) {
+		t.Errorf("implicit search reaches a field without a column: %s", where)
 	}
 }

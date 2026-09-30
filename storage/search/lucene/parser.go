@@ -74,8 +74,7 @@ type Parser struct {
 // - Uses `json` struct tag for field names
 // - Skips fields without `json` tag or with `json:"-"`
 // - Renders SQL against the `gorm:"column:..."` name when one is set
-// - Excludes fields gorm never reads from a column (`gorm:"-"`, `gorm:"-:all"`)
-//   from SQL queries; other backends still accept them
+// - Excludes fields without a column (`gorm:"-"`, `gorm:"-:all"`) from SQL only
 func NewParser(model any, config ...*ParserConfig) (*Parser, error) {
 	fields, err := extractFields(model)
 	if err != nil {
@@ -296,10 +295,7 @@ func (p *Parser) parseQueryCommon(query string, queryType string) (*expr.Express
 // Creates a SQL driver on-demand for rendering with provider-specific syntax.
 // Provider should be one of: "postgresql", "mysql", "sqlite"
 func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error) {
-	sp, err := p.sqlParser()
-	if err != nil {
-		return "", nil, err
-	}
+	sp := p.sqlParser()
 	e, err := sp.parseQueryCommon(query, "SQL")
 	if err != nil {
 		return "", nil, err
@@ -320,24 +316,22 @@ func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error
 
 // sqlParser returns p restricted to fields backed by a SQL column, so a
 // NoColumn field is an unknown field in validation and implicit expansion.
-func (p *Parser) sqlParser() (*Parser, error) {
+func (p *Parser) sqlParser() *Parser {
 	fields := make([]FieldInfo, 0, len(p.Fields))
+	fieldMap := make(map[string]FieldInfo, len(p.Fields))
 	for _, f := range p.Fields {
 		if !f.NoColumn {
 			fields = append(fields, f)
+			fieldMap[f.Name] = f
 		}
 	}
 	if len(fields) == len(p.Fields) {
-		return p, nil
-	}
-	fieldMap, err := buildFieldMap(fields)
-	if err != nil {
-		return nil, err
+		return p
 	}
 	sp := *p
 	sp.Fields = fields
 	sp.fieldMap = fieldMap
-	return &sp, nil
+	return &sp
 }
 
 // ParseToDynamoDBPartiQL parses a Lucene query and converts it to DynamoDB PartiQL.

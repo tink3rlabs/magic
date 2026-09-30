@@ -32,6 +32,7 @@ type ParserConfig struct {
 type FieldInfo struct {
 	Name           string
 	Column         string       // SQL column the field is stored in; empty means Name
+	NoColumn       bool         // No SQL column backs the field (gorm:"-"); excluded from SQL queries only
 	Type           reflect.Type // For validation only
 	ImplicitSearch bool         // Whether this field is included in unfielded/implicit queries
 }
@@ -72,8 +73,9 @@ type Parser struct {
 // Field name extraction:
 // - Uses `json` struct tag for field names
 // - Skips fields without `json` tag or with `json:"-"`
-// - Skips fields gorm never reads from a column (`gorm:"-"`, `gorm:"-:all"`)
 // - Renders SQL against the `gorm:"column:..."` name when one is set
+// - Excludes fields gorm never reads from a column (`gorm:"-"`, `gorm:"-:all"`)
+//   from SQL queries; other backends still accept them
 func NewParser(model any, config ...*ParserConfig) (*Parser, error) {
 	fields, err := extractFields(model)
 	if err != nil {
@@ -140,11 +142,7 @@ func extractFields(model any) ([]FieldInfo, error) {
 		}
 
 		gormTag := schema.ParseTagSetting(field.Tag.Get("gorm"), ";")
-		if ignore, ok := gormTag["-"]; ok {
-			if ignore = strings.ToLower(strings.TrimSpace(ignore)); ignore == "-" || ignore == "all" {
-				continue
-			}
-		}
+		ignore := strings.ToLower(strings.TrimSpace(gormTag["-"]))
 
 		// Implicit search: only string fields
 		implicitSearch := field.Type.Kind() == reflect.String
@@ -152,6 +150,7 @@ func extractFields(model any) ([]FieldInfo, error) {
 		fields = append(fields, FieldInfo{
 			Name:           jsonTag,
 			Column:         gormTag["COLUMN"],
+			NoColumn:       ignore == "-" || ignore == "all",
 			Type:           field.Type,
 			ImplicitSearch: implicitSearch,
 		})
@@ -297,13 +296,17 @@ func (p *Parser) parseQueryCommon(query string, queryType string) (*expr.Express
 // Creates a SQL driver on-demand for rendering with provider-specific syntax.
 // Provider should be one of: "postgresql", "mysql", "sqlite"
 func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error) {
-	e, err := p.parseQueryCommon(query, "SQL")
+	sp, err := p.sqlParser()
+	if err != nil {
+		return "", nil, err
+	}
+	e, err := sp.parseQueryCommon(query, "SQL")
 	if err != nil {
 		return "", nil, err
 	}
 
 	// Create SQL driver on-demand for the specified provider and render
-	driver, err := NewSQLDriver(p.Fields, provider)
+	driver, err := NewSQLDriver(sp.Fields, provider)
 	if err != nil {
 		return "", nil, err
 	}
@@ -313,6 +316,28 @@ func (p *Parser) ParseToSQL(query string, provider string) (string, []any, error
 	}
 
 	return sql, params, nil
+}
+
+// sqlParser returns p restricted to fields backed by a SQL column, so a
+// NoColumn field is an unknown field in validation and implicit expansion.
+func (p *Parser) sqlParser() (*Parser, error) {
+	fields := make([]FieldInfo, 0, len(p.Fields))
+	for _, f := range p.Fields {
+		if !f.NoColumn {
+			fields = append(fields, f)
+		}
+	}
+	if len(fields) == len(p.Fields) {
+		return p, nil
+	}
+	fieldMap, err := buildFieldMap(fields)
+	if err != nil {
+		return nil, err
+	}
+	sp := *p
+	sp.Fields = fields
+	sp.fieldMap = fieldMap
+	return &sp, nil
 }
 
 // ParseToDynamoDBPartiQL parses a Lucene query and converts it to DynamoDB PartiQL.

@@ -448,3 +448,19 @@ func TestGormIgnoredFieldsAreNotFilterable(t *testing.T) {
 		})
 	}
 }
+
+// gorm tags describe SQL storage only: DynamoDB keeps every json-tagged field.
+func TestGormIgnoredFieldsStayFilterableOnDynamoDB(t *testing.T) {
+	p, err := NewParser(Order{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, filter := range []string{"note:x", "summary:x"} {
+		t.Run(filter, func(t *testing.T) {
+			if _, _, err := p.ParseToDynamoDBPartiQL(filter); err != nil {
+				t.Errorf("ParseToDynamoDBPartiQL(%q): %v", filter, err)
+			}
+		})
+	}
+}

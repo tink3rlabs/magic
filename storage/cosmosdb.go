@@ -170,13 +170,15 @@ func (s *CosmosDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("CosmosDB GetLatestMigration is not supported")
 }
 
-func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
-	return s.CreateContext(context.Background(), item, params...)
+func (s *CosmosDBAdapter) Create(item any, opts ...Option) error {
+	return s.CreateContext(context.Background(), item, opts...)
 }
 
-func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
-	// Extract provider-specific parameters
-	paramMap := extractParams(params...)
+func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, opts ...Option) error {
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return err
+	}
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -193,11 +195,11 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	}
 
 	// Build partition key from params if provided
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
+	if pk, err := s.buildPartitionKey(options); err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
 		// Set the partition key value in the item
-		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		pkFieldName := s.getPartitionKeyFieldName(options)
 		itemMap[pkFieldName] = pk
 	} else if _, exists := itemMap["pk"]; !exists {
 		// If no partition key is provided and item doesn't have pk, use id as partition key
@@ -213,7 +215,7 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	}
 
 	// Get the partition key value from the item
-	pkFieldName := s.getPartitionKeyFieldName(paramMap)
+	pkFieldName := s.getPartitionKeyFieldName(options)
 	var pkValue string
 	if pk, exists := itemMap[pkFieldName]; exists {
 		pkValue = pk.(string)
@@ -236,17 +238,19 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	return nil
 }
 
-func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
-	return s.GetContext(context.Background(), dest, filter, params...)
+func (s *CosmosDBAdapter) Get(dest any, filter map[string]any, opts ...Option) error {
+	return s.GetContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
+func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error {
 	if len(filter) == 0 {
 		return fmt.Errorf("filtering is required when getting a resource")
 	}
 
-	// Extract provider-specific parameters
-	paramMap := extractParams(params...)
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return err
+	}
 
 	containerName := s.getContainerName(dest)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -271,10 +275,10 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	}
 
 	// Add partition key condition if provided in params
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
+	if pk, err := s.buildPartitionKey(options); err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
-		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		pkFieldName := s.getPartitionKeyFieldName(options)
 		paramName := fmt.Sprintf("@param%d", paramIndex)
 		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
 		queryParams = append(queryParams, azcosmos.QueryParameter{
@@ -294,7 +298,7 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	}
 
 	// Execute query
-	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)
+	page, err := s.executeQuery(ctx, containerClient, query, options, queryOptions)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %v", err)
 	}
@@ -312,17 +316,19 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	return nil
 }
 
-func (s *CosmosDBAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
-	return s.UpdateContext(context.Background(), item, filter, params...)
+func (s *CosmosDBAdapter) Update(item any, filter map[string]any, opts ...Option) error {
+	return s.UpdateContext(context.Background(), item, filter, opts...)
 }
 
-func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
 	if len(filter) == 0 {
 		return fmt.Errorf("filtering is required when updating a resource")
 	}
 
-	// Extract provider-specific parameters
-	paramMap := extractParams(params...)
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return err
+	}
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -337,7 +343,7 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	}
 	existingItem := reflect.New(itemType).Interface()
 
-	err = s.GetContext(ctx, existingItem, filter, params...)
+	err = s.GetContext(ctx, existingItem, filter, opts...)
 	if err != nil {
 		return err
 	}
@@ -361,13 +367,13 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	}
 
 	// Get the partition key field name
-	pkFieldName := s.getPartitionKeyFieldName(paramMap)
+	pkFieldName := s.getPartitionKeyFieldName(options)
 
 	// Get or set the partition key value
 	pk, exists := existingItemMap[pkFieldName]
 	if !exists {
 		// Check if partition key is provided in params
-		if paramPk, err := s.buildPartitionKey(paramMap); err != nil {
+		if paramPk, err := s.buildPartitionKey(options); err != nil {
 			return fmt.Errorf("failed to build partition key: %v", err)
 		} else if paramPk != "" {
 			pk = paramPk
@@ -402,17 +408,19 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	return nil
 }
 
-func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
-	return s.DeleteContext(context.Background(), item, filter, params...)
+func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, opts ...Option) error {
+	return s.DeleteContext(context.Background(), item, filter, opts...)
 }
 
-func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
 	if len(filter) == 0 {
 		return fmt.Errorf("an id filter is required when deleting a resource")
 	}
 
-	// Extract provider-specific parameters
-	paramMap := extractParams(params...)
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return err
+	}
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -423,7 +431,7 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 	id := filter["id"]
 
 	// Try to get partition key from params first
-	pk, err := s.buildPartitionKey(paramMap)
+	pk, err := s.buildPartitionKey(options)
 	if err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
 	}
@@ -450,57 +458,53 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 	return nil
 }
 
-func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+func (s *CosmosDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
+	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, opts...)
 }
 
-func (s *CosmosDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	// Extract sort direction from params
-	paramMap := extractParams(params...)
-	sortDirection, err := extractSortDirection(paramMap)
+func (s *CosmosDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
 
-	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, filter, params...)
+	return s.executePaginatedQuery(ctx, dest, sortKey, options.SortDirection, limit, cursor, filter, opts...)
 }
 
-func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+func (s *CosmosDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, opts...)
 }
 
-func (s *CosmosDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *CosmosDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
 	// Note: The Search method in CosmosDB is designed for full-text search scenarios
 	// For CosmosDB, full-text search requires Azure Cognitive Search integration
 	// This implementation treats Search as List with no filter
 	// For custom queries, use the Query method instead
 
-	// Extract sort direction from params
-	paramMap := extractParams(params...)
-	sortDirection, err := extractSortDirection(paramMap)
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to search: %w", err)
 	}
 
 	// Use executePaginatedQuery with empty filter (the query parameter is ignored for CosmosDB)
-	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, map[string]any{}, params...)
+	return s.executePaginatedQuery(ctx, dest, sortKey, options.SortDirection, limit, cursor, map[string]any{}, opts...)
 }
 
-func (s *CosmosDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	return s.CountContext(context.Background(), dest, filter, params...)
+func (s *CosmosDBAdapter) Count(dest any, filter map[string]any, opts ...Option) (int64, error) {
+	return s.CountContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil
 }
 
-func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.QueryContext(context.Background(), dest, statement, limit, cursor, opts...)
 }
 
-func (s *CosmosDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *CosmosDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
 	// Note: For custom SQL queries, partition key parameters should be handled within the statement itself
 	// The params are available but not automatically applied to the query
 	// Users should include partition key conditions in their custom SQL statements when needed
@@ -571,14 +575,16 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	limit int,
 	cursor string,
 	filter map[string]any,
-	params ...map[string]any,
+	opts ...Option,
 ) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
 
-	// Extract provider-specific parameters
-	paramMap := extractParams(params...)
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return "", err
+	}
 
 	containerName := s.getContainerName(dest)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -604,10 +610,10 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	}
 
 	// Add partition key condition if provided in params
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
+	if pk, err := s.buildPartitionKey(options); err != nil {
 		return "", fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
-		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		pkFieldName := s.getPartitionKeyFieldName(options)
 		paramName := fmt.Sprintf("@param%d", paramIndex)
 		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
 		queryParams = append(queryParams, azcosmos.QueryParameter{
@@ -642,7 +648,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	}
 
 	// Execute query
-	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)
+	page, err := s.executeQuery(ctx, containerClient, query, options, queryOptions)
 	if err != nil {
 		return "", fmt.Errorf("failed to execute query: %v", err)
 	}
@@ -703,31 +709,26 @@ func (s *CosmosDBAdapter) itemToMap(item any) map[string]interface{} {
 	return itemMap
 }
 
-// buildPartitionKey constructs a partition key from parameters
-// Only supports explicit pk_field and pk_value parameters
-func (s *CosmosDBAdapter) buildPartitionKey(paramMap map[string]any) (string, error) {
-	// Check for pk_field and pk_value parameters
-	if fieldName, exists := paramMap["pk_field"]; exists {
-		if fieldStr, ok := fieldName.(string); ok && fieldStr != "" {
-			if value, exists := paramMap["pk_value"]; exists {
-				return fmt.Sprintf("%v", value), nil
-			}
-			return "", fmt.Errorf("pk_field specified but pk_value not found")
-		}
-		return "", fmt.Errorf("pk_field must be a non-empty string")
+// buildPartitionKey constructs a partition key from the resolved options.
+// Only an explicitly addressed partition key counts, i.e. WithPartitionKey.
+// An empty string means no partition key was specified.
+func (s *CosmosDBAdapter) buildPartitionKey(options Options) (string, error) {
+	if options.PartitionKeyField == "" {
+		return "", nil
 	}
-
-	return "", nil // No partition key specified
+	if options.PartitionKeyValue == nil {
+		return "", fmt.Errorf("partition key field %q specified without a value: use WithPartitionKey", options.PartitionKeyField)
+	}
+	return fmt.Sprintf("%v", options.PartitionKeyValue), nil
 }
 
-// getPartitionKeyFieldName gets the partition key field name from params, defaulting to "pk"
-func (s *CosmosDBAdapter) getPartitionKeyFieldName(paramMap map[string]any) string {
-	if fieldName, exists := paramMap["pk_field"]; exists {
-		if fieldStr, ok := fieldName.(string); ok && fieldStr != "" {
-			return fieldStr
-		}
+// getPartitionKeyFieldName returns the item field holding the partition key,
+// defaulting to "pk" when the caller named none.
+func (s *CosmosDBAdapter) getPartitionKeyFieldName(options Options) string {
+	if options.PartitionKeyField != "" {
+		return options.PartitionKeyField
 	}
-	return "pk" // Default
+	return "pk"
 }
 
 // executeQuery executes a query and handles single-partition vs cross-partition logic
@@ -735,11 +736,11 @@ func (s *CosmosDBAdapter) executeQuery(
 	ctx context.Context,
 	containerClient *azcosmos.ContainerClient,
 	query string,
-	paramMap map[string]any,
+	options Options,
 	queryOptions *azcosmos.QueryOptions,
 ) (azcosmos.QueryItemsResponse, error) {
 	// Determine if we need cross-partition query
-	pk, err := s.buildPartitionKey(paramMap)
+	pk, err := s.buildPartitionKey(options)
 	if err != nil {
 		return azcosmos.QueryItemsResponse{}, fmt.Errorf("failed to build partition key: %v", err)
 	}

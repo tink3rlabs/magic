@@ -271,20 +271,20 @@ func (s *SQLAdapter) GetLatestMigration() (int, error) {
 	return latestMigration, nil
 }
 
-func (s *SQLAdapter) Create(item any, params ...map[string]any) error {
-	return s.CreateContext(context.Background(), item, params...)
+func (s *SQLAdapter) Create(item any, opts ...Option) error {
+	return s.CreateContext(context.Background(), item, opts...)
 }
 
-func (s *SQLAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
+func (s *SQLAdapter) CreateContext(ctx context.Context, item any, opts ...Option) error {
 	result := s.dbWithCtx(ctx).Create(reflect.ValueOf(item).Interface())
 	return result.Error
 }
 
-func (s *SQLAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
-	return s.GetContext(context.Background(), dest, filter, params...)
+func (s *SQLAdapter) Get(dest any, filter map[string]any, opts ...Option) error {
+	return s.GetContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
+func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when getting a resource")
 	}
@@ -299,13 +299,17 @@ func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string
 	return result.Error
 }
 
-func (s *SQLAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
-	return s.UpdateContext(context.Background(), item, filter, params...)
+func (s *SQLAdapter) Update(item any, filter map[string]any, opts ...Option) error {
+	return s.UpdateContext(context.Background(), item, filter, opts...)
 }
 
-func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when updating a resource")
+	}
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return fmt.Errorf("failed to update: %w", err)
 	}
 	db := s.dbWithCtx(ctx)
 	if err := requirePrimaryKey(ctx, db, item); err != nil {
@@ -315,12 +319,43 @@ func (s *SQLAdapter) UpdateContext(ctx context.Context, item any, filter map[str
 	if err != nil {
 		return err
 	}
-	result := db.Model(item).Where(query, bindings).Select("*").Updates(item)
+
+	// Selecting the named fields rather than every field is what stops an update
+	// writing back the fields the caller never touched. Select is also what makes
+	// a zero value in a named field persist: Updates on a struct skips
+	// zero-valued fields unless they are selected.
+	write := db.Model(item).Where(query, bindings)
+	if options.FieldsSet {
+		if err := requireKnownFields(db, item, options.Fields); err != nil {
+			return err
+		}
+		write = write.Select(options.Fields)
+	} else {
+		write = write.Select("*")
+	}
+
+	result := write.Updates(item)
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// requireKnownFields rejects a field the item does not have. Without it a
+// misspelled name is silently dropped by gorm, which is the same quiet data
+// loss that naming the fields is meant to prevent.
+func requireKnownFields(db *gorm.DB, item any, fields []string) error {
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(item); err != nil {
+		return err
+	}
+	for _, field := range fields {
+		if stmt.Schema.LookUpField(field) == nil {
+			return fmt.Errorf("unknown field %q on %s", field, stmt.Schema.Table)
+		}
 	}
 	return nil
 }
@@ -348,11 +383,11 @@ func requirePrimaryKey(ctx context.Context, db *gorm.DB, item any) error {
 	return nil
 }
 
-func (s *SQLAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
-	return s.DeleteContext(context.Background(), item, filter, params...)
+func (s *SQLAdapter) Delete(item any, filter map[string]any, opts ...Option) error {
+	return s.DeleteContext(context.Background(), item, filter, opts...)
 }
 
-func (s *SQLAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+func (s *SQLAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
 	if len(filter) == 0 {
 		return errors.New("filtering is required when deleting a resource")
 	}
@@ -447,12 +482,12 @@ func findFieldByJSONTag(v reflect.Value, tag string) reflect.Value {
 	return reflect.Value{}
 }
 
-func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+func (s *SQLAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
+	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, opts...)
 }
 
-func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	sortDirection, err := extractSortDirection(extractParams(params...))
+func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
@@ -463,7 +498,7 @@ func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, 
 			return "", err
 		}
 	}
-	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
+	return s.executePaginatedQuery(ctx, dest, sortKey, options.SortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if query != "" {
 			return q.Where(query, bindings)
 		}
@@ -471,17 +506,17 @@ func (s *SQLAdapter) ListContext(ctx context.Context, dest any, sortKey string, 
 	})
 }
 
-func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+func (s *SQLAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, opts...)
 }
 
-func (s *SQLAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	sortDirection, err := extractSortDirection(extractParams(params...))
+func (s *SQLAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
+	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return "", fmt.Errorf("failed to search: %w", err)
 	}
 	if query == "" {
-		return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
+		return s.executePaginatedQuery(ctx, dest, sortKey, options.SortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 			return q
 		})
 	}
@@ -508,7 +543,7 @@ func (s *SQLAdapter) SearchContext(ctx context.Context, dest any, sortKey string
 
 	slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, queryParams))
 
-	return s.executePaginatedQuery(ctx, dest, sortKey, sortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
+	return s.executePaginatedQuery(ctx, dest, sortKey, options.SortDirection, limit, cursor, func(q *gorm.DB) *gorm.DB {
 		if whereClause != "" {
 			return q.Where(whereClause, queryParams...)
 		}
@@ -516,11 +551,11 @@ func (s *SQLAdapter) SearchContext(ctx context.Context, dest any, sortKey string
 	})
 }
 
-func (s *SQLAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	return s.CountContext(context.Background(), dest, filter, params...)
+func (s *SQLAdapter) Count(dest any, filter map[string]any, opts ...Option) (int64, error) {
+	return s.CountContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (int64, error) {
 	q := s.dbWithCtx(ctx).Model(dest)
 
 	if len(filter) > 0 {
@@ -539,14 +574,13 @@ func (s *SQLAdapter) CountContext(ctx context.Context, dest any, filter map[stri
 	return total, nil
 }
 
-func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.QueryContext(context.Background(), dest, statement, limit, cursor, opts...)
 }
 
-func (s *SQLAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *SQLAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
 	return "", fmt.Errorf("not implemented yet")
 }
-
 
 // buildQuery rejects keys that aren't plain column names: keys are written
 // into the SQL as-is, only values are bound.

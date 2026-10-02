@@ -66,7 +66,7 @@ func TestCosmosDBItemToMapReturnsEmptyForUnmarshalableInput(t *testing.T) {
 
 func TestCosmosDBBuildPartitionKeyAbsentReturnsEmpty(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got, err := s.buildPartitionKey(map[string]any{})
+	got, err := s.buildPartitionKey(Options{})
 	if err != nil {
 		t.Fatalf("buildPartitionKey: %v", err)
 	}
@@ -77,10 +77,7 @@ func TestCosmosDBBuildPartitionKeyAbsentReturnsEmpty(t *testing.T) {
 
 func TestCosmosDBBuildPartitionKeyPresentReturnsValueString(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got, err := s.buildPartitionKey(map[string]any{
-		"pk_field": "tenant",
-		"pk_value": 42,
-	})
+	got, err := s.buildPartitionKey(Options{PartitionKeyField: "tenant", PartitionKeyValue: 42})
 	if err != nil {
 		t.Fatalf("buildPartitionKey: %v", err)
 	}
@@ -91,48 +88,41 @@ func TestCosmosDBBuildPartitionKeyPresentReturnsValueString(t *testing.T) {
 
 func TestCosmosDBBuildPartitionKeyFieldWithoutValueIsError(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, err := s.buildPartitionKey(map[string]any{"pk_field": "tenant"})
+	_, err := s.buildPartitionKey(Options{PartitionKeyField: "tenant"})
 	if err == nil {
 		t.Fatalf("expected error when pk_field is set without pk_value")
 	}
 }
 
-func TestCosmosDBBuildPartitionKeyNonStringFieldIsError(t *testing.T) {
+// An empty field name is indistinguishable from naming no field at all, so it
+// reads as "no partition key" rather than as an error. A value without a field
+// is still rejected -- by Options.validate, before any adapter sees it.
+func TestCosmosDBBuildPartitionKeyEmptyStringFieldMeansUnspecified(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, err := s.buildPartitionKey(map[string]any{"pk_field": 5})
-	if err == nil {
-		t.Fatalf("expected error when pk_field is not a string")
+	got, err := s.buildPartitionKey(Options{PartitionKeyField: ""})
+	if err != nil {
+		t.Fatalf("buildPartitionKey: %v", err)
 	}
-}
-
-func TestCosmosDBBuildPartitionKeyEmptyStringFieldIsError(t *testing.T) {
-	s := &CosmosDBAdapter{}
-	_, err := s.buildPartitionKey(map[string]any{"pk_field": ""})
-	if err == nil {
-		t.Fatalf("expected error when pk_field is an empty string")
+	if got != "" {
+		t.Fatalf("pk = %q; want empty", got)
+	}
+	if _, err := ResolveOptions(WithPartitionKey("", "v")); err == nil {
+		t.Fatalf("ResolveOptions = nil error; want a value without a field rejected")
 	}
 }
 
 func TestCosmosDBGetPartitionKeyFieldNameDefaultsToPk(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	if got := s.getPartitionKeyFieldName(map[string]any{}); got != "pk" {
+	if got := s.getPartitionKeyFieldName(Options{}); got != "pk" {
 		t.Fatalf("default pk field = %q; want %q", got, "pk")
 	}
 }
 
 func TestCosmosDBGetPartitionKeyFieldNameUsesCustomField(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got := s.getPartitionKeyFieldName(map[string]any{"pk_field": "tenant_id"})
+	got := s.getPartitionKeyFieldName(Options{PartitionKeyField: "tenant_id"})
 	if got != "tenant_id" {
 		t.Fatalf("pk field = %q; want %q", got, "tenant_id")
-	}
-}
-
-func TestCosmosDBGetPartitionKeyFieldNameFallsBackForNonStringField(t *testing.T) {
-	s := &CosmosDBAdapter{}
-	got := s.getPartitionKeyFieldName(map[string]any{"pk_field": 12})
-	if got != "pk" {
-		t.Fatalf("pk field = %q; want fallback %q", got, "pk")
 	}
 }
 

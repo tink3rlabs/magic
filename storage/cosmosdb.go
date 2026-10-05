@@ -170,6 +170,17 @@ func (s *CosmosDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("CosmosDB GetLatestMigration is not supported")
 }
 
+
+// nonEmptyString asserts v is a non-empty string. Cosmos partition keys and
+// item ids are always strings; a bare type assert panics on int/nil values.
+func nonEmptyString(v any, what string) (string, error) {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return "", fmt.Errorf("%s must be a non-empty string", what)
+	}
+	return s, nil
+}
+
 func (s *CosmosDBAdapter) Create(item any, params ...map[string]any) error {
 	return s.CreateContext(context.Background(), item, params...)
 }
@@ -178,18 +189,22 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	// Extract provider-specific parameters
 	paramMap := extractParams(params...)
 
+	// Convert item to map to work with individual fields
+	itemMap := s.itemToMap(item)
+
+	// Ensure id field exists and is a non-empty string before touching the client
+	idVal, exists := itemMap["id"]
+	if !exists {
+		return fmt.Errorf("item must have an id field")
+	}
+	if _, err := nonEmptyString(idVal, "item id"); err != nil {
+		return err
+	}
+
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
 	if err != nil {
 		return fmt.Errorf("failed to create container client: %v", err)
-	}
-
-	// Convert item to map to work with individual fields
-	itemMap := s.itemToMap(item)
-
-	// Ensure id field exists
-	if _, exists := itemMap["id"]; !exists {
-		return fmt.Errorf("item must have an id field")
 	}
 
 	// Build partition key from params if provided
@@ -216,10 +231,18 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	pkFieldName := s.getPartitionKeyFieldName(paramMap)
 	var pkValue string
 	if pk, exists := itemMap[pkFieldName]; exists {
-		pkValue = pk.(string)
+		s, err := nonEmptyString(pk, "partition key")
+		if err != nil {
+			return err
+		}
+		pkValue = s
 	} else if pk, exists := itemMap["pk"]; exists {
 		// Fallback to "pk" field if custom field doesn't exist
-		pkValue = pk.(string)
+		s, err := nonEmptyString(pk, "partition key")
+		if err != nil {
+			return err
+		}
+		pkValue = s
 	} else {
 		return fmt.Errorf("partition key field '%s' not found in item", pkFieldName)
 	}
@@ -390,11 +413,20 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 		return fmt.Errorf("failed to marshal item: %v", err)
 	}
 
+	idStr, err := nonEmptyString(id, "item id")
+	if err != nil {
+		return err
+	}
+	pkStr, err := nonEmptyString(pk, "partition key")
+	if err != nil {
+		return err
+	}
+
 	// Create partition key
-	partitionKey := azcosmos.NewPartitionKeyString(pk.(string))
+	partitionKey := azcosmos.NewPartitionKeyString(pkStr)
 
 	// Update item
-	_, err = containerClient.ReplaceItem(ctx, partitionKey, id.(string), itemBytes, nil)
+	_, err = containerClient.ReplaceItem(ctx, partitionKey, idStr, itemBytes, nil)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %v", err)
 	}

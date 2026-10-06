@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -407,17 +408,13 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 }
 
 func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
-	if len(filter) == 0 {
-		return fmt.Errorf("an id filter is required when deleting a resource")
-	}
-
 	idVal, ok := filter["id"]
 	if !ok {
-		return fmt.Errorf("an id filter is required when deleting a resource")
+		return errors.New("an id filter is required when deleting a resource")
 	}
 	id, ok := idVal.(string)
 	if !ok || id == "" {
-		return fmt.Errorf("delete filter id must be a non-empty string")
+		return errors.New("delete filter id must be a non-empty string")
 	}
 
 	// Extract provider-specific parameters
@@ -433,7 +430,7 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 		if filterPk, exists := filter["pk"]; exists {
 			pkStr, ok := filterPk.(string)
 			if !ok || pkStr == "" {
-				return fmt.Errorf("delete filter pk must be a non-empty string")
+				return errors.New("delete filter pk must be a non-empty string")
 			}
 			pk = pkStr
 		} else {

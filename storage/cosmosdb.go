@@ -170,9 +170,8 @@ func (s *CosmosDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("CosmosDB GetLatestMigration is not supported")
 }
 
-
-// nonEmptyString asserts v is a non-empty string. Cosmos partition keys and
-// item ids are always strings; a bare type assert panics on int/nil values.
+// nonEmptyString asserts v is a non-empty string. This adapter only builds
+// string partition keys and item ids; a bare type assert panics on int/nil values.
 func nonEmptyString(v any, what string) (string, error) {
 	s, ok := v.(string)
 	if !ok || s == "" {
@@ -229,22 +228,17 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 
 	// Get the partition key value from the item
 	pkFieldName := s.getPartitionKeyFieldName(paramMap)
-	var pkValue string
-	if pk, exists := itemMap[pkFieldName]; exists {
-		s, err := nonEmptyString(pk, "partition key")
-		if err != nil {
-			return err
-		}
-		pkValue = s
-	} else if pk, exists := itemMap["pk"]; exists {
+	pk, exists := itemMap[pkFieldName]
+	if !exists {
 		// Fallback to "pk" field if custom field doesn't exist
-		s, err := nonEmptyString(pk, "partition key")
-		if err != nil {
-			return err
-		}
-		pkValue = s
-	} else {
+		pk, exists = itemMap["pk"]
+	}
+	if !exists {
 		return fmt.Errorf("partition key field '%s' not found in item", pkFieldName)
+	}
+	pkValue, err := nonEmptyString(pk, "partition key")
+	if err != nil {
+		return err
 	}
 
 	// Create partition key

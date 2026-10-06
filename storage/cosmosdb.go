@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -407,12 +408,35 @@ func (s *CosmosDBAdapter) Delete(item any, filter map[string]any, params ...map[
 }
 
 func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
-	if len(filter) == 0 {
-		return fmt.Errorf("an id filter is required when deleting a resource")
+	idVal, ok := filter["id"]
+	if !ok {
+		return errors.New("an id filter is required when deleting a resource")
+	}
+	id, ok := idVal.(string)
+	if !ok || id == "" {
+		return errors.New("delete filter id must be a non-empty string")
 	}
 
 	// Extract provider-specific parameters
 	paramMap := extractParams(params...)
+
+	// Resolve partition key before touching the client so bad filters
+	// fail without a network round-trip.
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
+		return fmt.Errorf("failed to build partition key: %v", err)
+	}
+	if pk == "" {
+		if filterPk, exists := filter["pk"]; exists {
+			pkStr, ok := filterPk.(string)
+			if !ok || pkStr == "" {
+				return errors.New("delete filter pk must be a non-empty string")
+			}
+			pk = pkStr
+		} else {
+			pk = id
+		}
+	}
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)
@@ -420,29 +444,9 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 		return fmt.Errorf("failed to create container client: %v", err)
 	}
 
-	id := filter["id"]
-
-	// Try to get partition key from params first
-	pk, err := s.buildPartitionKey(paramMap)
-	if err != nil {
-		return fmt.Errorf("failed to build partition key: %v", err)
-	}
-
-	// If no partition key from params, try to get from filter
-	if pk == "" {
-		if filterPk, exists := filter["pk"]; exists {
-			pk = filterPk.(string)
-		} else {
-			// Fallback to id
-			pk = id.(string)
-		}
-	}
-
-	// Create partition key
 	partitionKey := azcosmos.NewPartitionKeyString(pk)
 
-	// Delete item
-	_, err = containerClient.DeleteItem(ctx, partitionKey, id.(string), nil)
+	_, err = containerClient.DeleteItem(ctx, partitionKey, id, nil)
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %v", err)
 	}

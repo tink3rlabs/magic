@@ -292,11 +292,14 @@ func (s *SQLAdapter) GetContext(ctx context.Context, dest any, filter map[string
 	if err != nil {
 		return err
 	}
-	result := s.dbWithCtx(ctx).Where(query, bindings).Find(dest)
+	result := s.dbWithCtx(ctx).Where(query, bindings).Limit(1).Find(dest)
+	if result.Error != nil {
+		return result.Error
+	}
 	if result.RowsAffected == 0 {
 		return ErrNotFound
 	}
-	return result.Error
+	return nil
 }
 
 func (s *SQLAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {

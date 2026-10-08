@@ -207,7 +207,7 @@ For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string
 n, err := adapter.Count(&Task{}, map[string]any{"status": "in_progress"})
 ```
 
-An empty filter counts every item. On CosmosDB, `Count` runs a server-side `SELECT VALUE COUNT(1)` and requires `pk_field` and `pk_value` in `params`: the Go SDK cannot run cross-partition aggregates, so a count is always scoped to one partition and returns an error without them. Filter keys must be plain identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`), matching the SQL adapter.
+An empty filter counts every item. On CosmosDB, `Count` runs a server-side `SELECT VALUE COUNT(1)` and requires `pk_field` and `pk_value` in `params`: the Go SDK cannot run cross-partition aggregates, so a count is always scoped to one partition and returns an error without them. Filter keys and `pk_field` must be identifiers (`[a-zA-Z_][a-zA-Z0-9_]*`) or dotted paths of them (`address.city`) for nested properties. A filter value that is an empty slice matches nothing, so the count is 0.
 
 ### Update
 

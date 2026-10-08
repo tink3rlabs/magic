@@ -22,13 +22,24 @@ const (
 // Entries are kept in a list ordered by last update. Because every entry has
 // the same ttl, that is also expiry order, so expired and evicted entries are
 // always at the front and neither needs a scan of the whole store.
+//
+// Alongside the per-partition entries, byRange keeps the newest token for each
+// partition range of a container, updated on every set, so a read across
+// partitions only reads that small map. It is dropped with the container's
+// last partition entry.
 type sessionTokenStore struct {
 	mu          sync.RWMutex
 	byContainer map[string]map[string]*list.Element
+	byRange     map[string]map[string]rangeSessionToken
 	order       *list.List // of *sessionTokenEntry, least recently updated first
 	ttl         time.Duration
 	max         int
 	now         func() time.Time
+}
+
+type rangeSessionToken struct {
+	token     string
+	expiresAt time.Time
 }
 
 type sessionTokenEntry struct {
@@ -41,6 +52,7 @@ type sessionTokenEntry struct {
 func newSessionTokenStore() *sessionTokenStore {
 	return &sessionTokenStore{
 		byContainer: make(map[string]map[string]*list.Element),
+		byRange:     make(map[string]map[string]rangeSessionToken),
 		order:       list.New(),
 		ttl:         defaultSessionTokenTTL,
 		max:         defaultSessionTokenMax,
@@ -58,6 +70,7 @@ func (s *sessionTokenStore) set(containerName string, pk string, token string) {
 
 	now := s.now()
 	s.removeExpiredLocked(now)
+	s.setRangeLocked(containerName, token, now)
 
 	partitions := s.byContainer[containerName]
 	if el, ok := partitions[pk]; ok {
@@ -112,27 +125,33 @@ func (s *sessionTokenStore) getForContainer(containerName string) string {
 	defer s.mu.RUnlock()
 
 	now := s.now()
-	newest := make(map[string]string)
-	for _, el := range s.byContainer[containerName] {
-		entry := el.Value.(*sessionTokenEntry)
-		if !entry.expiresAt.After(now) {
-			continue
+	ranges := s.byRange[containerName]
+	tokens := make([]string, 0, len(ranges))
+	for _, r := range ranges {
+		if r.expiresAt.After(now) {
+			tokens = append(tokens, r.token)
 		}
-		rank, ok := parseSessionToken(entry.token)
-		if !ok {
-			continue
-		}
-		if current, ok := newest[rank.rangeID]; !ok || shouldReplaceSessionToken(current, entry.token) {
-			newest[rank.rangeID] = entry.token
-		}
-	}
-
-	tokens := make([]string, 0, len(newest))
-	for _, token := range newest {
-		tokens = append(tokens, token)
 	}
 	sort.Strings(tokens)
 	return strings.Join(tokens, ",")
+}
+
+// setRangeLocked records token as the newest for its partition range, unless
+// the range already holds a newer one that hasn't expired.
+func (s *sessionTokenStore) setRangeLocked(containerName string, token string, now time.Time) {
+	rank, ok := parseSessionToken(token)
+	if !ok {
+		return
+	}
+	ranges := s.byRange[containerName]
+	if ranges == nil {
+		ranges = make(map[string]rangeSessionToken)
+		s.byRange[containerName] = ranges
+	}
+	if current, ok := ranges[rank.rangeID]; ok && current.expiresAt.After(now) && !shouldReplaceSessionToken(current.token, token) {
+		return
+	}
+	ranges[rank.rangeID] = rangeSessionToken{token: token, expiresAt: now.Add(s.ttl)}
 }
 
 func (s *sessionTokenStore) removeExpiredLocked(now time.Time) {
@@ -150,6 +169,7 @@ func (s *sessionTokenStore) removeLocked(el *list.Element) {
 	delete(partitions, entry.pk)
 	if len(partitions) == 0 {
 		delete(s.byContainer, entry.containerName)
+		delete(s.byRange, entry.containerName)
 	}
 }
 

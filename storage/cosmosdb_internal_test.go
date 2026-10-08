@@ -875,3 +875,172 @@ func TestCosmosDBSessionTokensConcurrentAccess(t *testing.T) {
 func strPtr(s string) *string {
 	return &s
 }
+
+// sessionTokenTransport answers the requests a CosmosDBAdapter makes against a
+// real azcosmos.Client, so tests can check the headers that actually go out.
+// Writes return createStatus with the session token writeToken; queries
+// return one item and record the session token they were sent.
+type sessionTokenTransport struct {
+	createStatus int
+	writeToken   string
+
+	mu            sync.Mutex
+	querySessions []string
+}
+
+func (f *sessionTokenTransport) Do(req *http.Request) (*http.Response, error) {
+	status, body, header := http.StatusOK, "{}", http.Header{}
+	header.Set("Content-Type", "application/json")
+	switch {
+	case req.Method == http.MethodGet && req.URL.Path == "/":
+		body = `{"id":"acct","writableLocations":[{"name":"East US","databaseAccountEndpoint":"https://acct.documents.azure.com:443/"}],` +
+			`"readableLocations":[{"name":"East US","databaseAccountEndpoint":"https://acct.documents.azure.com:443/"}]}`
+	case req.Header.Get("x-ms-documentdb-query") == "True":
+		f.mu.Lock()
+		f.querySessions = append(f.querySessions, req.Header.Get("x-ms-session-token"))
+		f.mu.Unlock()
+		body = `{"_rid":"r","Documents":[{"id":"1","pk":"a"}],"_count":1}`
+	case strings.HasSuffix(req.URL.Path, "/docs"):
+		status = f.createStatus
+		header.Set("x-ms-session-token", f.writeToken)
+		body = `{"id":"1","pk":"a"}`
+		if status == http.StatusConflict {
+			body = `{"code":"Conflict","message":"Entity with the specified id already exists in the system."}`
+		}
+	}
+	return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+}
+
+func (f *sessionTokenTransport) lastQuerySession(t *testing.T) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.querySessions) == 0 {
+		t.Fatalf("no query was sent")
+	}
+	return f.querySessions[len(f.querySessions)-1]
+}
+
+func newSessionTokenAdapter(t *testing.T, transport *sessionTokenTransport) *CosmosDBAdapter {
+	t.Helper()
+	cred, err := azcosmos.NewKeyCredential("dGVzdC1rZXk=")
+	if err != nil {
+		t.Fatalf("NewKeyCredential: %v", err)
+	}
+	client, err := azcosmos.NewClientWithKey("https://acct.documents.azure.com:443/", cred,
+		&azcosmos.ClientOptions{ClientOptions: azcore.ClientOptions{Transport: transport}})
+	if err != nil {
+		t.Fatalf("NewClientWithKey: %v", err)
+	}
+	db, err := client.NewDatabase("d")
+	if err != nil {
+		t.Fatalf("NewDatabase: %v", err)
+	}
+	return &CosmosDBAdapter{client: client, databaseClient: db, sessionTokens: newSessionTokenStore()}
+}
+
+func TestCosmosDBReadsSendSessionTokenFromWrite(t *testing.T) {
+	cases := []struct {
+		name         string
+		createStatus int
+		wantErr      bool
+	}{
+		{"after a successful create", http.StatusCreated, false},
+		{"after a 409 conflict", http.StatusConflict, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := &sessionTokenTransport{createStatus: tc.createStatus, writeToken: "0:-1#42"}
+			s := newSessionTokenAdapter(t, transport)
+			pkA := map[string]any{"pk_field": "pk", "pk_value": "a"}
+			pkB := map[string]any{"pk_field": "pk", "pk_value": "b"}
+
+			if err := s.Create(cosmosSampleItem{Id: "1"}, pkA); (err != nil) != tc.wantErr {
+				t.Fatalf("Create err = %v; want error: %v", err, tc.wantErr)
+			}
+
+			var got cosmosSampleItem
+			if err := s.Get(&got, map[string]any{"id": "1"}, pkA); err != nil {
+				t.Fatalf("Get pk=a: %v", err)
+			}
+			if got := transport.lastQuerySession(t); got != "0:-1#42" {
+				t.Fatalf("Get pk=a sent session token %q; want %q", got, "0:-1#42")
+			}
+
+			if err := s.Get(&got, map[string]any{"id": "1"}, pkB); err != nil {
+				t.Fatalf("Get pk=b: %v", err)
+			}
+			if got := transport.lastQuerySession(t); got != "" {
+				t.Fatalf("Get pk=b sent session token %q; want none", got)
+			}
+
+			var page []cosmosSampleItem
+			if _, err := s.List(&page, "id", nil, 10, ""); err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if got := transport.lastQuerySession(t); got != "0:-1#42" {
+				t.Fatalf("List across partitions sent session token %q; want %q", got, "0:-1#42")
+			}
+		})
+	}
+}
+
+func TestCosmosDBSessionTokensConfigTurnsTrackingOff(t *testing.T) {
+	if newCosmosSessionTokenStore(map[string]string{"session_tokens": "false"}) != nil {
+		t.Fatalf(`session_tokens "false" should turn tracking off`)
+	}
+	for _, v := range []string{"", "true", "not-a-bool"} {
+		if newCosmosSessionTokenStore(map[string]string{"session_tokens": v}) == nil {
+			t.Fatalf("session_tokens %q should leave tracking on", v)
+		}
+	}
+
+	transport := &sessionTokenTransport{createStatus: http.StatusCreated, writeToken: "0:-1#42"}
+	s := newSessionTokenAdapter(t, transport)
+	s.sessionTokens = nil
+	params := map[string]any{"pk_field": "pk", "pk_value": "a"}
+	if err := s.Create(cosmosSampleItem{Id: "1"}, params); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var got cosmosSampleItem
+	if err := s.Get(&got, map[string]any{"id": "1"}, params); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := transport.lastQuerySession(t); got != "" {
+		t.Fatalf("Get sent session token %q with tracking off; want none", got)
+	}
+}
+
+func TestSessionTokenStoreRangeTokenOutlivesEvictedPartition(t *testing.T) {
+	store := newSessionTokenStore()
+	store.max = 2
+	store.set("orders", "tenant-a", "0:-1#50")
+	store.set("orders", "tenant-b", "0:-1#10")
+	store.set("orders", "tenant-c", "1:-1#5") // evicts tenant-a
+
+	if got := store.get("orders", "tenant-a"); got != "" {
+		t.Fatalf("tenant-a should be evicted, got %q", got)
+	}
+	// Range 0 still holds tenant-a's newer write, so queries across
+	// partitions keep seeing it.
+	if got, want := store.getForContainer("orders"), "0:-1#50,1:-1#5"; got != want {
+		t.Fatalf("getForContainer = %q; want %q", got, want)
+	}
+}
+
+func TestSessionTokenStoreRangeTokensDroppedWithContainer(t *testing.T) {
+	now := time.Unix(0, 0)
+	store := newSessionTokenStore()
+	store.ttl = 5 * time.Second
+	store.now = func() time.Time { return now }
+	store.set("orders", "tenant-a", "0:-1#50")
+
+	now = now.Add(6 * time.Second)
+	if got := store.getForContainer("orders"); got != "" {
+		t.Fatalf("expired range token returned: %q", got)
+	}
+	store.set("invoices", "tenant-a", "0:-1#1") // purges the expired orders entry
+	if _, ok := store.byRange["orders"]; ok {
+		t.Fatalf("range tokens for a container with no entries should be dropped")
+	}
+}

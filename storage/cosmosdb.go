@@ -38,7 +38,7 @@ func GetCosmosDBAdapterInstance(config map[string]string) *CosmosDBAdapter {
 		cosmosDBAdapterLock.Lock()
 		defer cosmosDBAdapterLock.Unlock()
 		if cosmosDBAdapterInstance == nil {
-			cosmosDBAdapterInstance = &CosmosDBAdapter{config: config, sessionTokens: newSessionTokenStore()}
+			cosmosDBAdapterInstance = &CosmosDBAdapter{config: config, sessionTokens: newCosmosSessionTokenStore(config)}
 			cosmosDBAdapterInstance.OpenConnection()
 		}
 	}
@@ -150,6 +150,15 @@ func (s *CosmosDBAdapter) GetProvider() StorageProviders {
 }
 
 const cosmosSessionTokenHeader = "x-ms-session-token"
+
+// newCosmosSessionTokenStore returns the store that gives reads their session
+// token, or nil when the "session_tokens" config key turns tracking off.
+func newCosmosSessionTokenStore(config map[string]string) *sessionTokenStore {
+	if enabled, err := strconv.ParseBool(config["session_tokens"]); err == nil && !enabled {
+		return nil
+	}
+	return newSessionTokenStore()
+}
 
 // recordSessionToken stores the session token from a write. A failed write still
 // carries one in its HTTP response (for example a 409 when an SDK retry collides

@@ -262,22 +262,25 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 
 	paramIndex := 1
 	for key, value := range filter {
-		paramName := fmt.Sprintf("@param%d", paramIndex)
-		conditions = append(conditions, fmt.Sprintf("c.%s = %s", key, paramName))
-		queryParams = append(queryParams, azcosmos.QueryParameter{
-			Name:  paramName,
-			Value: value,
-		})
-		paramIndex++
+		ref, err := cosmosFilterRef(key)
+		if err != nil {
+			return err
+		}
+		condition, params := cosmosEquals(ref, value, &paramIndex)
+		conditions = append(conditions, condition)
+		queryParams = append(queryParams, params...)
 	}
 
 	// Add partition key condition if provided in params
 	if pk, err := s.buildPartitionKey(paramMap); err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
-		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		pkRef, err := s.partitionKeyRef(paramMap)
+		if err != nil {
+			return err
+		}
 		paramName := fmt.Sprintf("@param%d", paramIndex)
-		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
+		conditions = append(conditions, fmt.Sprintf("%s = %s", pkRef, paramName))
 		queryParams = append(queryParams, azcosmos.QueryParameter{
 			Name:  paramName,
 			Value: pk,
@@ -544,21 +547,10 @@ func sumCountPages(ctx context.Context, pager *runtime.Pager[azcosmos.QueryItems
 	return total, nil
 }
 
-// validCosmosFieldPath matches a plain identifier or a dotted path of them
-// (e.g. "address.city"), which Cosmos resolves as a nested property.
-var validCosmosFieldPath = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
-
 // buildCountQuery builds the COUNT statement and its parameters, always scoped
 // to the partition given by pk_field / pk_value, and returns the partition key
-// value to run it against. Filter keys and pk_field are interpolated into the
-// query text, so they are validated first.
+// value to run it against.
 func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[string]any) (string, []azcosmos.QueryParameter, string, error) {
-	for key := range filter {
-		if !validCosmosFieldPath.MatchString(key) {
-			return "", nil, "", fmt.Errorf("invalid filter key %q: must be an identifier or dotted path of identifiers", key)
-		}
-	}
-
 	pk, err := s.buildPartitionKey(paramMap)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("failed to build partition key: %w", err)
@@ -566,9 +558,9 @@ func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[st
 	if pk == "" {
 		return "", nil, "", fmt.Errorf("cosmosdb count requires a non-empty pk_field and pk_value")
 	}
-	pkFieldName := s.getPartitionKeyFieldName(paramMap)
-	if !validCosmosFieldPath.MatchString(pkFieldName) {
-		return "", nil, "", fmt.Errorf("invalid partition key field %q: must be an identifier or dotted path of identifiers", pkFieldName)
+	pkRef, err := s.partitionKeyRef(paramMap)
+	if err != nil {
+		return "", nil, "", err
 	}
 
 	query := "SELECT VALUE COUNT(1) FROM c"
@@ -577,7 +569,10 @@ func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[st
 	paramIndex := 1
 
 	if len(filter) > 0 {
-		clause, filterParams := s.buildFilter(filter, &paramIndex)
+		clause, filterParams, err := s.buildFilter(filter, &paramIndex)
+		if err != nil {
+			return "", nil, "", err
+		}
 		if clause != "" {
 			conditions = append(conditions, clause)
 			queryParams = append(queryParams, filterParams...)
@@ -585,7 +580,7 @@ func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[st
 	}
 
 	paramName := fmt.Sprintf("@param%d", paramIndex)
-	conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
+	conditions = append(conditions, fmt.Sprintf("%s = %s", pkRef, paramName))
 	queryParams = append(queryParams, azcosmos.QueryParameter{
 		Name:  paramName,
 		Value: pk,
@@ -696,7 +691,10 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 
 	// Add filter conditions if provided
 	if len(filter) > 0 {
-		filterClause, filterParams := s.buildFilter(filter, &paramIndex)
+		filterClause, filterParams, err := s.buildFilter(filter, &paramIndex)
+		if err != nil {
+			return "", err
+		}
 		if filterClause != "" {
 			conditions = append(conditions, filterClause)
 			queryParams = append(queryParams, filterParams...)
@@ -707,9 +705,12 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	if pk, err := s.buildPartitionKey(paramMap); err != nil {
 		return "", fmt.Errorf("failed to build partition key: %v", err)
 	} else if pk != "" {
-		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+		pkRef, err := s.partitionKeyRef(paramMap)
+		if err != nil {
+			return "", err
+		}
 		paramName := fmt.Sprintf("@param%d", paramIndex)
-		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
+		conditions = append(conditions, fmt.Sprintf("%s = %s", pkRef, paramName))
 		queryParams = append(queryParams, azcosmos.QueryParameter{
 			Name:  paramName,
 			Value: pk,
@@ -724,7 +725,8 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 
 	// Add ordering - required for consistent pagination
 	if sortKey != "" {
-		query += fmt.Sprintf(" ORDER BY c.%s %s", sortKey, sortDirection)
+		sortRef, _ := cosmosFieldRef(sortKey) // validated by validateSortKey above
+		query += fmt.Sprintf(" ORDER BY %s %s", sortRef, sortDirection)
 	} else {
 		// Use id as default sort key for consistent pagination
 		query += fmt.Sprintf(" ORDER BY c.id %s", sortDirection)
@@ -861,12 +863,66 @@ func (s *CosmosDBAdapter) executeQuery(
 	return page, err
 }
 
-// buildFilter constructs WHERE clause conditions from filter map
-func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (string, []azcosmos.QueryParameter) {
+// validCosmosFieldPath matches a plain identifier or a dotted path of them
+// (e.g. "address.city"), which Cosmos resolves as a nested property.
+var validCosmosFieldPath = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
+
+// cosmosFieldRef renders a field path as a quoted property accessor
+// (c["address"]["city"]). Quoting keeps names that are Cosmos keywords, such
+// as value, order or top, valid; validating the path first keeps the quoting
+// safe, since no part can contain a quote or bracket.
+func cosmosFieldRef(path string) (string, bool) {
+	if !validCosmosFieldPath.MatchString(path) {
+		return "", false
+	}
+	return `c["` + strings.ReplaceAll(path, ".", `"]["`) + `"]`, true
+}
+
+// cosmosFilterRef is cosmosFieldRef for a filter key, with the error to return
+// when the key is not a valid path.
+func cosmosFilterRef(key string) (string, error) {
+	ref, ok := cosmosFieldRef(key)
+	if !ok {
+		return "", fmt.Errorf("invalid filter key %q: must be an identifier or dotted path of identifiers", key)
+	}
+	return ref, nil
+}
+
+// partitionKeyRef returns the property accessor for pk_field. Unlike filter
+// keys it must be a plain identifier: Create writes the partition value under
+// that literal top-level key, so a dotted path would never match it.
+func (s *CosmosDBAdapter) partitionKeyRef(paramMap map[string]any) (string, error) {
+	name := s.getPartitionKeyFieldName(paramMap)
+	if !validColumnName.MatchString(name) {
+		return "", fmt.Errorf("invalid partition key field %q: must match [a-zA-Z_][a-zA-Z0-9_]*", name)
+	}
+	ref, _ := cosmosFieldRef(name)
+	return ref, nil
+}
+
+// cosmosEquals builds an equality condition on ref. A nil value matches both
+// an explicit null and a missing property, the same rows SQL's IS NULL finds;
+// a plain "= null" would skip documents that never had the property.
+func cosmosEquals(ref string, value any, paramIndex *int) (string, []azcosmos.QueryParameter) {
+	if value == nil {
+		return fmt.Sprintf("(NOT IS_DEFINED(%s) OR IS_NULL(%s))", ref, ref), nil
+	}
+	paramName := fmt.Sprintf("@param%d", *paramIndex)
+	*paramIndex++
+	return fmt.Sprintf("%s = %s", ref, paramName), []azcosmos.QueryParameter{{Name: paramName, Value: value}}
+}
+
+// buildFilter constructs WHERE clause conditions from filter map. Keys are
+// written into the query text, so each must be a valid field path.
+func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (string, []azcosmos.QueryParameter, error) {
 	conditions := []string{}
 	queryParams := []azcosmos.QueryParameter{}
 
 	for key, value := range filter {
+		ref, err := cosmosFilterRef(key)
+		if err != nil {
+			return "", nil, err
+		}
 		if reflect.ValueOf(value).Kind() == reflect.Slice {
 			// Handle IN clause for slices
 			slice := reflect.ValueOf(value)
@@ -886,18 +942,13 @@ func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (s
 				})
 				*paramIndex++
 			}
-			conditions = append(conditions, fmt.Sprintf("c.%s IN (%s)", key, strings.Join(placeholders, ", ")))
+			conditions = append(conditions, fmt.Sprintf("%s IN (%s)", ref, strings.Join(placeholders, ", ")))
 		} else {
-			// Handle single value equality
-			paramName := fmt.Sprintf("@param%d", *paramIndex)
-			conditions = append(conditions, fmt.Sprintf("c.%s = %s", key, paramName))
-			queryParams = append(queryParams, azcosmos.QueryParameter{
-				Name:  paramName,
-				Value: value,
-			})
-			*paramIndex++
+			condition, params := cosmosEquals(ref, value, paramIndex)
+			conditions = append(conditions, condition)
+			queryParams = append(queryParams, params...)
 		}
 	}
 
-	return strings.Join(conditions, " AND "), queryParams
+	return strings.Join(conditions, " AND "), queryParams, nil
 }

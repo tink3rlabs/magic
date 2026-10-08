@@ -155,6 +155,14 @@ err := adapter.Create(user, params)
 err  = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
 ```
 
+#### Read-your-writes
+
+The adapter keeps the session token Cosmos DB returns from each `Create` / `Update` / `Delete`, per container and partition key, and sends it on later reads, so on an account with session consistency those reads see that write. A token is also taken from a failed write's response, so after a `409 Conflict` a `Get` sees the item that already exists.
+
+- Reads with `pk_field` / `pk_value` send the token for that partition only.
+- Reads without a partition key, and every `Query`, run across partitions and send the newest token for each partition range of the container.
+- Tokens are held in memory for 5 minutes, up to 10,000 partitions per adapter, and are not shared between processes.
+
 ## Common patterns
 
 ### Cursor pagination

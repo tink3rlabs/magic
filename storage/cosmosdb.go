@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,6 +27,7 @@ type CosmosDBAdapter struct {
 	databaseClient *azcosmos.DatabaseClient
 	config         map[string]string
 	databaseName   string
+	sessionTokens  *sessionTokenStore
 }
 
 var cosmosDBAdapterLock = &sync.Mutex{}
@@ -36,7 +38,7 @@ func GetCosmosDBAdapterInstance(config map[string]string) *CosmosDBAdapter {
 		cosmosDBAdapterLock.Lock()
 		defer cosmosDBAdapterLock.Unlock()
 		if cosmosDBAdapterInstance == nil {
-			cosmosDBAdapterInstance = &CosmosDBAdapter{config: config}
+			cosmosDBAdapterInstance = &CosmosDBAdapter{config: config, sessionTokens: newSessionTokenStore()}
 			cosmosDBAdapterInstance.OpenConnection()
 		}
 	}
@@ -147,6 +149,51 @@ func (s *CosmosDBAdapter) GetProvider() StorageProviders {
 	return COSMOSDB_PROVIDER
 }
 
+const cosmosSessionTokenHeader = "x-ms-session-token"
+
+// recordSessionToken stores the session token from a write. A failed write still
+// carries one in its HTTP response (for example a 409 when an SDK retry collides
+// with an attempt that already landed), and that token is what lets the next read
+// see the existing item.
+func (s *CosmosDBAdapter) recordSessionToken(containerName string, pk string, token *string, err error) {
+	if token == nil && err != nil {
+		var respErr *azcore.ResponseError
+		if errors.As(err, &respErr) && respErr.RawResponse != nil {
+			if t := respErr.RawResponse.Header.Get(cosmosSessionTokenHeader); t != "" {
+				token = &t
+			}
+		}
+	}
+	s.setSessionToken(containerName, pk, token)
+}
+
+// setSessionToken stores token for the partition. The store is created with the
+// adapter; a nil store means tracking is off.
+func (s *CosmosDBAdapter) setSessionToken(containerName string, pk string, token *string) {
+	if s.sessionTokens == nil || token == nil || *token == "" {
+		return
+	}
+	s.sessionTokens.set(containerName, pk, *token)
+}
+
+// applySessionToken sets the session token on a read. A read scoped to one
+// partition (pk != "") gets that partition's token; a read across partitions
+// gets the newest token for every partition range of the container.
+func (s *CosmosDBAdapter) applySessionToken(containerName string, pk string, queryOptions *azcosmos.QueryOptions) {
+	if s.sessionTokens == nil {
+		return
+	}
+	var token string
+	if pk != "" {
+		token = s.sessionTokens.get(containerName, pk)
+	} else {
+		token = s.sessionTokens.getForContainer(containerName)
+	}
+	if token != "" {
+		queryOptions.SessionToken = &token
+	}
+}
+
 func (s *CosmosDBAdapter) GetSchemaName() string {
 	return s.databaseName
 }
@@ -229,7 +276,8 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	partitionKey := azcosmos.NewPartitionKeyString(pkValue)
 
 	// Create item
-	_, err = containerClient.CreateItem(ctx, partitionKey, itemBytes, nil)
+	response, err := containerClient.CreateItem(ctx, partitionKey, itemBytes, nil)
+	s.recordSessionToken(containerName, pkValue, response.SessionToken, err)
 	if err != nil {
 		return fmt.Errorf("failed to create item: %v", err)
 	}
@@ -272,9 +320,11 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	}
 
 	// Add partition key condition if provided in params
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
-	} else if pk != "" {
+	}
+	if pk != "" {
 		pkRef, err := s.partitionKeyRef(paramMap)
 		if err != nil {
 			return err
@@ -296,6 +346,7 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	queryOptions := &azcosmos.QueryOptions{
 		QueryParameters: queryParams,
 	}
+	s.applySessionToken(containerName, pk, queryOptions)
 
 	// Execute query
 	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)
@@ -398,7 +449,8 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	partitionKey := azcosmos.NewPartitionKeyString(pk.(string))
 
 	// Update item
-	_, err = containerClient.ReplaceItem(ctx, partitionKey, id.(string), itemBytes, nil)
+	response, err := containerClient.ReplaceItem(ctx, partitionKey, id.(string), itemBytes, nil)
+	s.recordSessionToken(containerName, pk.(string), response.SessionToken, err)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %v", err)
 	}
@@ -446,7 +498,8 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 	partitionKey := azcosmos.NewPartitionKeyString(pk)
 
 	// Delete item
-	_, err = containerClient.DeleteItem(ctx, partitionKey, id.(string), nil)
+	response, err := containerClient.DeleteItem(ctx, partitionKey, id.(string), nil)
+	s.recordSessionToken(containerName, pk, response.SessionToken, err)
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %v", err)
 	}
@@ -618,6 +671,10 @@ func (s *CosmosDBAdapter) QueryContext(ctx context.Context, dest any, statement 
 		queryOptions.ContinuationToken = &cursor
 	}
 
+	// The statement always runs across partitions, so it gets the token for
+	// every partition range rather than one partition's
+	s.applySessionToken(containerName, "", queryOptions)
+
 	// Execute the custom SQL statement
 	// Cross-partition is enabled by default for custom queries
 	pager := containerClient.NewQueryItemsPager(statement, azcosmos.NewPartitionKeyString(""), queryOptions)
@@ -702,9 +759,11 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	}
 
 	// Add partition key condition if provided in params
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
 		return "", fmt.Errorf("failed to build partition key: %v", err)
-	} else if pk != "" {
+	}
+	if pk != "" {
 		pkRef, err := s.partitionKeyRef(paramMap)
 		if err != nil {
 			return "", err
@@ -742,6 +801,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	if cursor != "" {
 		queryOptions.ContinuationToken = &cursor
 	}
+	s.applySessionToken(containerName, pk, queryOptions)
 
 	// Execute query
 	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)

@@ -5,10 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
@@ -652,4 +656,222 @@ func TestCosmosDBCountContextSendsScopedQuery(t *testing.T) {
 	if len(gotBody.Parameters) != 2 || gotBody.Parameters[1].Value != "tenant-1" {
 		t.Fatalf("parameters = %+v; want status then the partition value", gotBody.Parameters)
 	}
+}
+
+func TestCosmosDBApplySessionTokenScopesByContainerAndPartition(t *testing.T) {
+	s := &CosmosDBAdapter{sessionTokens: newSessionTokenStore()}
+	first := "0:-1#11"
+	second := "1:-1#22"
+
+	s.setSessionToken("orders", "tenant-a", &first)
+	s.setSessionToken("orders", "tenant-b", &second)
+
+	queryOptions := &azcosmos.QueryOptions{}
+	s.applySessionToken("orders", "tenant-a", queryOptions)
+	if queryOptions.SessionToken == nil || *queryOptions.SessionToken != first {
+		t.Fatalf("SessionToken for tenant-a = %v; want %q", queryOptions.SessionToken, first)
+	}
+
+	queryOptions = &azcosmos.QueryOptions{}
+	s.applySessionToken("orders", "tenant-b", queryOptions)
+	if queryOptions.SessionToken == nil || *queryOptions.SessionToken != second {
+		t.Fatalf("SessionToken for tenant-b = %v; want %q", queryOptions.SessionToken, second)
+	}
+
+	queryOptions = &azcosmos.QueryOptions{}
+	s.applySessionToken("orders", "tenant-c", queryOptions)
+	if queryOptions.SessionToken != nil {
+		t.Fatalf("partition with no write must not borrow another partition's token, got %q", *queryOptions.SessionToken)
+	}
+}
+
+func TestCosmosDBApplySessionTokenAcrossPartitionsMergesRanges(t *testing.T) {
+	s := &CosmosDBAdapter{sessionTokens: newSessionTokenStore()}
+	for pk, token := range map[string]string{
+		"tenant-a": "0:-1#11",
+		"tenant-b": "0:-1#15", // same range as tenant-a, newer
+		"tenant-c": "1:-1#7",
+	} {
+		s.setSessionToken("orders", pk, &token)
+	}
+	other := "0:-1#99"
+	s.setSessionToken("invoices", "tenant-a", &other)
+
+	queryOptions := &azcosmos.QueryOptions{}
+	s.applySessionToken("orders", "", queryOptions)
+	want := "0:-1#15,1:-1#7"
+	if queryOptions.SessionToken == nil || *queryOptions.SessionToken != want {
+		t.Fatalf("cross-partition SessionToken = %v; want %q", queryOptions.SessionToken, want)
+	}
+}
+
+func TestCosmosDBApplySessionTokenKeepsExistingWhenNoneStored(t *testing.T) {
+	s := &CosmosDBAdapter{sessionTokens: newSessionTokenStore()}
+	queryOptions := &azcosmos.QueryOptions{SessionToken: strPtr("existing")}
+
+	s.applySessionToken("orders", "tenant-a", queryOptions)
+	if queryOptions.SessionToken == nil || *queryOptions.SessionToken != "existing" {
+		t.Fatalf("expected existing SessionToken to remain unchanged, got %#v", queryOptions.SessionToken)
+	}
+}
+
+func TestSessionTokenStoreExpiresAndEvictsOldest(t *testing.T) {
+	now := time.Unix(0, 0)
+	store := newSessionTokenStore()
+	store.ttl = 5 * time.Second
+	store.max = 2
+	store.now = func() time.Time { return now }
+
+	store.set("orders", "tenant-a", "0:1#12")
+	store.set("orders", "tenant-b", "0:1#15")
+
+	if got := store.get("orders", "tenant-a"); got != "0:1#12" {
+		t.Fatalf("tenant-a token = %q; want %q", got, "0:1#12")
+	}
+
+	now = now.Add(6 * time.Second)
+	if got := store.get("orders", "tenant-a"); got != "" {
+		t.Fatalf("expired token should be gone, got %q", got)
+	}
+
+	store.set("orders", "tenant-c", "0:1#20")
+	store.set("orders", "tenant-d", "0:1#21")
+	store.set("orders", "tenant-e", "0:1#22")
+	if got := store.get("orders", "tenant-c"); got != "" {
+		t.Fatalf("evicted oldest token should be removed, got %q", got)
+	}
+	if got := store.get("orders", "tenant-d"); got != "0:1#21" {
+		t.Fatalf("tenant-d token = %q; want %q", got, "0:1#21")
+	}
+	if got := store.order.Len(); got != 2 {
+		t.Fatalf("store holds %d entries; want 2", got)
+	}
+}
+
+func TestSessionTokenStoreUpdateMovesEntryToBackOfEviction(t *testing.T) {
+	now := time.Unix(0, 0)
+	store := newSessionTokenStore()
+	store.max = 2
+	store.now = func() time.Time { return now }
+
+	store.set("orders", "tenant-a", "0:1#1")
+	store.set("orders", "tenant-b", "0:1#2")
+	store.set("orders", "tenant-a", "0:1#3") // tenant-b is now the least recently updated
+	store.set("orders", "tenant-c", "0:1#4")
+
+	if got := store.get("orders", "tenant-b"); got != "" {
+		t.Fatalf("least recently updated token should be evicted, got %q", got)
+	}
+	if got := store.get("orders", "tenant-a"); got != "0:1#3" {
+		t.Fatalf("tenant-a token = %q; want %q", got, "0:1#3")
+	}
+}
+
+func TestSessionTokenStoreKeepsNewestValidToken(t *testing.T) {
+	store := newSessionTokenStore()
+	store.set("orders", "tenant-a", "0:1#12")
+	store.set("orders", "tenant-a", "0:1#15")
+	if got := store.get("orders", "tenant-a"); got != "0:1#15" {
+		t.Fatalf("newer higher LSN should replace older token; got %q", got)
+	}
+	store.set("orders", "tenant-a", "bad-token")
+	if got := store.get("orders", "tenant-a"); got != "0:1#15" {
+		t.Fatalf("invalid token should not replace valid token; got %q", got)
+	}
+}
+
+func TestSessionTokenStoreOlderTokenDoesNotReplaceNewer(t *testing.T) {
+	store := newSessionTokenStore()
+	store.set("orders", "tenant-a", "0:-1#15")
+	store.set("orders", "tenant-a", "0:-1#12")
+	if got := store.get("orders", "tenant-a"); got != "0:-1#15" {
+		t.Fatalf("older token replaced newer: got %q", got)
+	}
+}
+
+func TestSessionTokenStoreNewRangeReplaces(t *testing.T) {
+	store := newSessionTokenStore()
+	store.set("orders", "tenant-a", "0:-1#500")
+	store.set("orders", "tenant-a", "3:-1#7") // after a split
+	if got := store.get("orders", "tenant-a"); got != "3:-1#7" {
+		t.Fatalf("token from new range not taken: got %q", got)
+	}
+}
+
+func TestParseSessionToken(t *testing.T) {
+	cases := []struct {
+		token string
+		want  sessionTokenRank
+		ok    bool
+	}{
+		{"0:-1#12", sessionTokenRank{rangeID: "0", version: -1, lsn: 12}, true},
+		{"0:1#12345#3=12340#4=12338", sessionTokenRank{rangeID: "0", version: 1, lsn: 12345}, true},
+		{"7:2#9223372036854775807", sessionTokenRank{rangeID: "7", version: 2, lsn: 9223372036854775807}, true},
+		{"bad-token", sessionTokenRank{}, false},
+		{":1#12", sessionTokenRank{}, false},
+		{"0:1", sessionTokenRank{}, false},
+		{"0:x#12", sessionTokenRank{}, false},
+	}
+	for _, tc := range cases {
+		got, ok := parseSessionToken(tc.token)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("parseSessionToken(%q) = %+v, %v; want %+v, %v", tc.token, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestSessionTokenStoreMultiRegionKeepsNewestGlobalLSN(t *testing.T) {
+	store := newSessionTokenStore()
+	// The newer write has a higher global LSN but a lower trailing region LSN.
+	store.set("orders", "tenant-a", "0:1#12340#4=12339")
+	store.set("orders", "tenant-a", "0:1#12345#3=12340#4=12338")
+	if got := store.get("orders", "tenant-a"); got != "0:1#12345#3=12340#4=12338" {
+		t.Fatalf("newer multi-region token not kept: got %q", got)
+	}
+}
+
+func TestCosmosDBRecordSessionTokenFromConflictError(t *testing.T) {
+	s := &CosmosDBAdapter{sessionTokens: newSessionTokenStore()}
+	h := http.Header{}
+	h.Set("x-ms-session-token", "0:-1#42")
+	resp := &http.Response{
+		StatusCode: http.StatusConflict,
+		Header:     h,
+		Body:       io.NopCloser(strings.NewReader(`{"code":"Conflict"}`)),
+		Request:    httptest.NewRequest(http.MethodPost, "https://acct.documents.azure.com/dbs/d/colls/orders/docs", nil),
+	}
+	s.recordSessionToken("orders", "tenant-a", nil, fmt.Errorf("create: %w", runtime.NewResponseError(resp)))
+	if got := s.sessionTokens.get("orders", "tenant-a"); got != "0:-1#42" {
+		t.Fatalf("token from 409 not stored: got %q", got)
+	}
+}
+
+func TestCosmosDBRecordSessionTokenIgnoresErrorWithoutResponse(t *testing.T) {
+	s := &CosmosDBAdapter{sessionTokens: newSessionTokenStore()}
+	s.recordSessionToken("orders", "tenant-a", nil, errors.New("dial tcp: timeout"))
+	if got := s.sessionTokens.get("orders", "tenant-a"); got != "" {
+		t.Fatalf("expected no token, got %q", got)
+	}
+}
+
+func TestCosmosDBSessionTokensConcurrentAccess(t *testing.T) {
+	s := &CosmosDBAdapter{sessionTokens: newSessionTokenStore()}
+	s.sessionTokens.max = 3 // force eviction while goroutines race
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			pk := fmt.Sprintf("tenant-%d", i%5)
+			tok := fmt.Sprintf("0:-1#%d", i)
+			s.recordSessionToken("orders", pk, &tok, nil)
+			s.applySessionToken("orders", pk, &azcosmos.QueryOptions{})
+			s.applySessionToken("orders", "", &azcosmos.QueryOptions{})
+		}(i)
+	}
+	wg.Wait()
+}
+
+func strPtr(s string) *string {
+	return &s
 }

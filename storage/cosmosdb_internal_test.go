@@ -878,8 +878,9 @@ func strPtr(s string) *string {
 
 // sessionTokenTransport answers the requests a CosmosDBAdapter makes against a
 // real azcosmos.Client, so tests can check the headers that actually go out.
-// Writes return createStatus with the session token writeToken; queries
-// return one item and record the session token they were sent.
+// Creates return createStatus and deletes return 204, both with the session
+// token writeToken; queries return one item and record the session token they
+// were sent.
 type sessionTokenTransport struct {
 	createStatus int
 	writeToken   string
@@ -900,6 +901,9 @@ func (f *sessionTokenTransport) Do(req *http.Request) (*http.Response, error) {
 		f.querySessions = append(f.querySessions, req.Header.Get("x-ms-session-token"))
 		f.mu.Unlock()
 		body = `{"_rid":"r","Documents":[{"id":"1","pk":"a"}],"_count":1}`
+	case req.Method == http.MethodDelete:
+		status, body = http.StatusNoContent, ""
+		header.Set("x-ms-session-token", f.writeToken)
 	case strings.HasSuffix(req.URL.Path, "/docs"):
 		status = f.createStatus
 		header.Set("x-ms-session-token", f.writeToken)
@@ -1042,5 +1046,22 @@ func TestSessionTokenStoreRangeTokensDroppedWithContainer(t *testing.T) {
 	store.set("invoices", "tenant-a", "0:-1#1") // purges the expired orders entry
 	if _, ok := store.byRange["orders"]; ok {
 		t.Fatalf("range tokens for a container with no entries should be dropped")
+	}
+}
+
+func TestCosmosDBGetAfterDeleteSendsDeleteSessionToken(t *testing.T) {
+	transport := &sessionTokenTransport{writeToken: "0:-1#43"}
+	s := newSessionTokenAdapter(t, transport)
+	params := map[string]any{"pk_field": "pk", "pk_value": "a"}
+
+	if err := s.Delete(cosmosSampleItem{}, map[string]any{"id": "1"}, params); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	var got cosmosSampleItem
+	if err := s.Get(&got, map[string]any{"id": "1"}, params); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := transport.lastQuerySession(t); got != "0:-1#43" {
+		t.Fatalf("Get after Delete sent session token %q; want %q", got, "0:-1#43")
 	}
 }

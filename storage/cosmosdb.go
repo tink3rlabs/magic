@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
 	"github.com/tink3rlabs/magic/logger"
@@ -503,18 +504,11 @@ func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map
 		return 0, fmt.Errorf("a destination is required to count resources")
 	}
 
-	paramMap := extractParams(params...)
-
 	// Build and validate the query before touching the client so that bad
 	// input fails without any network I/O.
-	query, queryParams, err := s.buildCountQuery(filter, paramMap)
+	query, queryParams, pk, err := s.buildCountQuery(filter, extractParams(params...))
 	if err != nil {
 		return 0, err
-	}
-
-	pk, err := s.buildPartitionKey(paramMap)
-	if err != nil {
-		return 0, fmt.Errorf("failed to build partition key: %w", err)
 	}
 
 	containerClient, err := s.databaseClient.NewContainer(s.getContainerName(dest))
@@ -527,9 +521,12 @@ func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map
 	}
 
 	pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions)
+	return sumCountPages(ctx, pager)
+}
 
-	// Sum every page rather than trusting the first one, so a count that is
-	// split across pages is never under-reported.
+// sumCountPages adds up the COUNT values from every page rather than trusting
+// the first one, so a count that is split across pages is never under-reported.
+func sumCountPages(ctx context.Context, pager *runtime.Pager[azcosmos.QueryItemsResponse]) (int64, error) {
 	var total int64
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
@@ -544,19 +541,34 @@ func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map
 			total += n
 		}
 	}
-
 	return total, nil
 }
 
+// validCosmosFieldPath matches a plain identifier or a dotted path of them
+// (e.g. "address.city"), which Cosmos resolves as a nested property.
+var validCosmosFieldPath = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
+
 // buildCountQuery builds the COUNT statement and its parameters, always scoped
-// to the partition given by pk_field / pk_value. Filter keys are interpolated
-// into the query text, so they are validated first, the same way the SQL
-// adapter does.
-func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[string]any) (string, []azcosmos.QueryParameter, error) {
+// to the partition given by pk_field / pk_value, and returns the partition key
+// value to run it against. Filter keys and pk_field are interpolated into the
+// query text, so they are validated first.
+func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[string]any) (string, []azcosmos.QueryParameter, string, error) {
 	for key := range filter {
-		if !validColumnName.MatchString(key) {
-			return "", nil, fmt.Errorf("invalid filter key %q: must match [a-zA-Z_][a-zA-Z0-9_]*", key)
+		if !validCosmosFieldPath.MatchString(key) {
+			return "", nil, "", fmt.Errorf("invalid filter key %q: must be an identifier or dotted path of identifiers", key)
 		}
+	}
+
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("failed to build partition key: %w", err)
+	}
+	if pk == "" {
+		return "", nil, "", fmt.Errorf("cosmosdb count requires a non-empty pk_field and pk_value")
+	}
+	pkFieldName := s.getPartitionKeyFieldName(paramMap)
+	if !validCosmosFieldPath.MatchString(pkFieldName) {
+		return "", nil, "", fmt.Errorf("invalid partition key field %q: must be an identifier or dotted path of identifiers", pkFieldName)
 	}
 
 	query := "SELECT VALUE COUNT(1) FROM c"
@@ -572,17 +584,6 @@ func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[st
 		}
 	}
 
-	pk, err := s.buildPartitionKey(paramMap)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to build partition key: %w", err)
-	}
-	if pk == "" {
-		return "", nil, fmt.Errorf("cosmosdb count requires pk_field and pk_value")
-	}
-	pkFieldName := s.getPartitionKeyFieldName(paramMap)
-	if !validColumnName.MatchString(pkFieldName) {
-		return "", nil, fmt.Errorf("invalid partition key field %q: must match [a-zA-Z_][a-zA-Z0-9_]*", pkFieldName)
-	}
 	paramName := fmt.Sprintf("@param%d", paramIndex)
 	conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
 	queryParams = append(queryParams, azcosmos.QueryParameter{
@@ -592,7 +593,7 @@ func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[st
 
 	query += " WHERE " + strings.Join(conditions, " AND ")
 
-	return query, queryParams, nil
+	return query, queryParams, pk, nil
 }
 
 func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
@@ -869,6 +870,12 @@ func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (s
 		if reflect.ValueOf(value).Kind() == reflect.Slice {
 			// Handle IN clause for slices
 			slice := reflect.ValueOf(value)
+			if slice.Len() == 0 {
+				// "IN ()" is a syntax error in Cosmos SQL; an empty set
+				// matches nothing.
+				conditions = append(conditions, "false")
+				continue
+			}
 			placeholders := make([]string, slice.Len())
 			for i := 0; i < slice.Len(); i++ {
 				paramName := fmt.Sprintf("@param%d", *paramIndex)

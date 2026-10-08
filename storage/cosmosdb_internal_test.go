@@ -2,8 +2,12 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
+	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
 )
 
 // Pure helpers on *CosmosDBAdapter that do no network I/O. All
@@ -236,11 +240,12 @@ func TestCosmosDBBuildCountQueryRequiresPartitionKey(t *testing.T) {
 		{"no filter, no params", nil, map[string]any{}},
 		{"filter, no params", map[string]any{"status": "active"}, map[string]any{}},
 		{"pk_value without pk_field", nil, map[string]any{"pk_value": "tenant-1"}},
+		{"empty pk_value", nil, map[string]any{"pk_field": "tenant", "pk_value": ""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := s.buildCountQuery(tc.filter, tc.params)
-			if err == nil || !strings.Contains(err.Error(), "requires pk_field and pk_value") {
+			_, _, _, err := s.buildCountQuery(tc.filter, tc.params)
+			if err == nil || !strings.Contains(err.Error(), "requires a non-empty pk_field and pk_value") {
 				t.Fatalf("err = %v; want a partition key required error", err)
 			}
 		})
@@ -249,7 +254,7 @@ func TestCosmosDBBuildCountQueryRequiresPartitionKey(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryPartitionOnlyCountsPartition(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	query, params, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant", "pk_value": "t1"})
+	query, params, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant", "pk_value": "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,7 +268,7 @@ func TestCosmosDBBuildCountQueryPartitionOnlyCountsPartition(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryScalarFilterWithPartition(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	query, params, err := s.buildCountQuery(map[string]any{"status": "active"}, cosmosCountPartition)
+	query, params, _, err := s.buildCountQuery(map[string]any{"status": "active"}, cosmosCountPartition)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -284,7 +289,7 @@ func TestCosmosDBBuildCountQueryScalarFilterWithPartition(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryMultipleKeysAreAndJoined(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	query, params, err := s.buildCountQuery(
+	query, params, _, err := s.buildCountQuery(
 		map[string]any{"status": "active", "owner": "me"},
 		cosmosCountPartition,
 	)
@@ -304,7 +309,7 @@ func TestCosmosDBBuildCountQueryMultipleKeysAreAndJoined(t *testing.T) {
 
 func TestCosmosDBBuildCountQuerySliceFilterUsesInClause(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	query, params, err := s.buildCountQuery(
+	query, params, _, err := s.buildCountQuery(
 		map[string]any{"status": []string{"active", "pending"}},
 		cosmosCountPartition,
 	)
@@ -322,8 +327,8 @@ func TestCosmosDBBuildCountQuerySliceFilterUsesInClause(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryRejectsUnsafeFilterKeys(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	for _, key := range []string{"id = 1 OR 1=1 --", "a b", "a.b", "", "1abc", "a-b"} {
-		_, _, err := s.buildCountQuery(map[string]any{key: "x"}, cosmosCountPartition)
+	for _, key := range []string{"id = 1 OR 1=1 --", "a b", "", "1abc", "a-b", "a.", ".a", "a..b", "a.1b"} {
+		_, _, _, err := s.buildCountQuery(map[string]any{key: "x"}, cosmosCountPartition)
 		if err == nil || !strings.Contains(err.Error(), "invalid filter key") {
 			t.Fatalf("key %q: err = %v; want an invalid filter key error", key, err)
 		}
@@ -332,7 +337,7 @@ func TestCosmosDBBuildCountQueryRejectsUnsafeFilterKeys(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryRejectsUnsafePartitionField(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "a b", "pk_value": "x"})
+	_, _, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "a b", "pk_value": "x"})
 	if err == nil || !strings.Contains(err.Error(), "invalid partition key field") {
 		t.Fatalf("err = %v; want an invalid partition key field error", err)
 	}
@@ -340,7 +345,7 @@ func TestCosmosDBBuildCountQueryRejectsUnsafePartitionField(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryPartitionFieldWithoutValueIsError(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	if _, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant"}); err == nil {
+	if _, _, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant"}); err == nil {
 		t.Fatalf("expected an error when pk_field has no pk_value")
 	}
 }
@@ -365,6 +370,117 @@ func TestCosmosDBCountContextReturnsErrorsInsteadOfZero(t *testing.T) {
 			n, err := s.CountContext(ctx, tc.dest, tc.filter, tc.params...)
 			if err == nil {
 				t.Fatalf("CountContext returned (%d, nil); want an error", n)
+			}
+			if n != 0 {
+				t.Fatalf("count = %d on error; want 0", n)
+			}
+		})
+	}
+}
+
+func TestCosmosDBBuildCountQueryReturnsPartitionKey(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	_, _, pk, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant", "pk_value": 7})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pk != "7" {
+		t.Fatalf("pk = %q; want %q", pk, "7")
+	}
+}
+
+func TestCosmosDBBuildCountQueryAllowsNestedPaths(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	query, _, _, err := s.buildCountQuery(
+		map[string]any{"address.city": "Paris"},
+		map[string]any{"pk_field": "meta.tenant", "pk_value": "t1"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "SELECT VALUE COUNT(1) FROM c WHERE c.address.city = @param1 AND c.meta.tenant = @param2"
+	if query != want {
+		t.Fatalf("query = %q; want %q", query, want)
+	}
+}
+
+func TestCosmosDBBuildCountQueryEmptySliceMatchesNothing(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	query, params, _, err := s.buildCountQuery(
+		map[string]any{"status": []string{}},
+		cosmosCountPartition,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "SELECT VALUE COUNT(1) FROM c WHERE false AND c.pk = @param1"
+	if query != want {
+		t.Fatalf("query = %q; want %q", query, want)
+	}
+	if len(params) != 1 || params[0].Value != "tenant-1" {
+		t.Fatalf("params = %+v; want only the partition key", params)
+	}
+}
+
+func TestCosmosDBBuildFilterEmptySliceIsFalse(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	idx := 1
+	clause, params := s.buildFilter(map[string]any{"status": []string{}}, &idx)
+	if clause != "false" {
+		t.Fatalf("clause = %q; want %q", clause, "false")
+	}
+	if len(params) != 0 || idx != 1 {
+		t.Fatalf("params = %+v, idx = %d; want no params and idx unchanged", params, idx)
+	}
+}
+
+// fakeCountPager returns a pager that yields pages in order, or err on the
+// page at errAt (-1 for never).
+func fakeCountPager(pages [][][]byte, errAt int) *runtime.Pager[azcosmos.QueryItemsResponse] {
+	i := 0
+	return runtime.NewPager(runtime.PagingHandler[azcosmos.QueryItemsResponse]{
+		More: func(azcosmos.QueryItemsResponse) bool { return i < len(pages) },
+		Fetcher: func(context.Context, *azcosmos.QueryItemsResponse) (azcosmos.QueryItemsResponse, error) {
+			if i == errAt {
+				return azcosmos.QueryItemsResponse{}, errors.New("boom")
+			}
+			page := azcosmos.QueryItemsResponse{Items: pages[i]}
+			i++
+			return page, nil
+		},
+	})
+}
+
+func TestCosmosDBSumCountPagesSumsEveryPage(t *testing.T) {
+	pager := fakeCountPager([][][]byte{
+		{[]byte("3")},
+		{},
+		{[]byte("4"), []byte("5")},
+	}, -1)
+	n, err := sumCountPages(context.Background(), pager)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 12 {
+		t.Fatalf("count = %d; want 12", n)
+	}
+}
+
+func TestCosmosDBSumCountPagesErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		pages [][][]byte
+		errAt int
+		want  string
+	}{
+		{"query failure", [][][]byte{{[]byte("3")}, {[]byte("4")}}, 1, "failed to execute count query"},
+		{"non-numeric result", [][][]byte{{[]byte(`{"n":1}`)}}, -1, "failed to parse count result"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n, err := sumCountPages(context.Background(), fakeCountPager(tc.pages, tc.errAt))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v; want %q", err, tc.want)
 			}
 			if n != 0 {
 				t.Fatalf("count = %d on error; want 0", n)

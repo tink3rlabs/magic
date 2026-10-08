@@ -161,7 +161,8 @@ The adapter keeps the session token Cosmos DB returns from each `Create` / `Upda
 
 - Reads with `pk_field` / `pk_value` send the token for that partition only.
 - Reads without a partition key, and every `Query`, run across partitions and send the newest token for each partition range of the container.
-- Tokens are held in memory for 5 minutes, up to 10,000 partitions per adapter, and are not shared between processes.
+- Tokens are held in memory for 5 minutes, up to 10,000 container/partition pairs per adapter, and are not shared between processes.
+- To turn this off, set `"session_tokens": "false"` in the adapter config.
 
 ## Common patterns
 

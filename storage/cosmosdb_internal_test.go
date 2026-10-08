@@ -2,10 +2,16 @@ package storage
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
 )
@@ -144,10 +150,13 @@ func TestCosmosDBGetPartitionKeyFieldNameFallsBackForNonStringField(t *testing.T
 func TestCosmosDBBuildFilterScalarCondition(t *testing.T) {
 	s := &CosmosDBAdapter{}
 	idx := 1
-	clause, params := s.buildFilter(map[string]any{"id": "42"}, &idx)
+	clause, params, err := s.buildFilter(map[string]any{"id": "42"}, &idx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	if clause != "c.id = @param1" {
-		t.Fatalf("clause = %q; want %q", clause, "c.id = @param1")
+	if clause != `c["id"] = @param1` {
+		t.Fatalf("clause = %q; want %q", clause, `c["id"] = @param1`)
 	}
 	if len(params) != 1 {
 		t.Fatalf("len(params) = %d; want 1", len(params))
@@ -163,11 +172,14 @@ func TestCosmosDBBuildFilterScalarCondition(t *testing.T) {
 func TestCosmosDBBuildFilterSliceExpandsToInClause(t *testing.T) {
 	s := &CosmosDBAdapter{}
 	idx := 1
-	clause, params := s.buildFilter(
+	clause, params, err := s.buildFilter(
 		map[string]any{"status": []string{"active", "pending"}},
 		&idx,
 	)
-	if !strings.HasPrefix(clause, "c.status IN (") {
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(clause, `c["status"] IN (`) {
 		t.Fatalf("expected IN clause, got %q", clause)
 	}
 	if len(params) != 2 {
@@ -218,10 +230,13 @@ func TestCosmosDBTrivialGettersAndUnsupportedOps(t *testing.T) {
 func TestCosmosDBBuildFilterMixedConditionsAreAndJoined(t *testing.T) {
 	s := &CosmosDBAdapter{}
 	idx := 1
-	clause, _ := s.buildFilter(map[string]any{
+	clause, _, err := s.buildFilter(map[string]any{
 		"id":     "42",
 		"status": []string{"a", "b"},
 	}, &idx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !strings.Contains(clause, " AND ") {
 		t.Fatalf("expected clauses joined by AND, got %q", clause)
@@ -258,7 +273,7 @@ func TestCosmosDBBuildCountQueryPartitionOnlyCountsPartition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if query != "SELECT VALUE COUNT(1) FROM c WHERE c.tenant = @param1" {
+	if query != `SELECT VALUE COUNT(1) FROM c WHERE c["tenant"] = @param1` {
 		t.Fatalf("query = %q", query)
 	}
 	if len(params) != 1 || params[0].Name != "@param1" || params[0].Value != "t1" {
@@ -272,7 +287,7 @@ func TestCosmosDBBuildCountQueryScalarFilterWithPartition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "SELECT VALUE COUNT(1) FROM c WHERE c.status = @param1 AND c.pk = @param2"
+	want := `SELECT VALUE COUNT(1) FROM c WHERE c["status"] = @param1 AND c["pk"] = @param2`
 	if query != want {
 		t.Fatalf("query = %q; want %q", query, want)
 	}
@@ -299,7 +314,7 @@ func TestCosmosDBBuildCountQueryMultipleKeysAreAndJoined(t *testing.T) {
 	if !strings.HasPrefix(query, "SELECT VALUE COUNT(1) FROM c WHERE ") {
 		t.Fatalf("query = %q; want a WHERE clause", query)
 	}
-	if !strings.Contains(query, "c.status = ") || !strings.Contains(query, "c.owner = ") || !strings.HasSuffix(query, "AND c.pk = @param3") {
+	if !strings.Contains(query, `c["status"] = `) || !strings.Contains(query, `c["owner"] = `) || !strings.HasSuffix(query, `AND c["pk"] = @param3`) {
 		t.Fatalf("query = %q; want both keys AND-joined, then the partition", query)
 	}
 	if len(params) != 3 {
@@ -316,7 +331,7 @@ func TestCosmosDBBuildCountQuerySliceFilterUsesInClause(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "SELECT VALUE COUNT(1) FROM c WHERE c.status IN (@param1, @param2) AND c.pk = @param3"
+	want := `SELECT VALUE COUNT(1) FROM c WHERE c["status"] IN (@param1, @param2) AND c["pk"] = @param3`
 	if query != want {
 		t.Fatalf("query = %q; want %q", query, want)
 	}
@@ -337,9 +352,13 @@ func TestCosmosDBBuildCountQueryRejectsUnsafeFilterKeys(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryRejectsUnsafePartitionField(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, _, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "a b", "pk_value": "x"})
-	if err == nil || !strings.Contains(err.Error(), "invalid partition key field") {
-		t.Fatalf("err = %v; want an invalid partition key field error", err)
+	// A dotted pk_field is rejected too: Create stores the partition value
+	// under the literal top-level key, so a nested lookup would count 0.
+	for _, field := range []string{"a b", `a"]`, "meta.tenant"} {
+		_, _, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": field, "pk_value": "x"})
+		if err == nil || !strings.Contains(err.Error(), "invalid partition key field") {
+			t.Fatalf("pk_field %q: err = %v; want an invalid partition key field error", field, err)
+		}
 	}
 }
 
@@ -389,16 +408,16 @@ func TestCosmosDBBuildCountQueryReturnsPartitionKey(t *testing.T) {
 	}
 }
 
-func TestCosmosDBBuildCountQueryAllowsNestedPaths(t *testing.T) {
+func TestCosmosDBBuildCountQueryAllowsNestedFilterPaths(t *testing.T) {
 	s := &CosmosDBAdapter{}
 	query, _, _, err := s.buildCountQuery(
 		map[string]any{"address.city": "Paris"},
-		map[string]any{"pk_field": "meta.tenant", "pk_value": "t1"},
+		map[string]any{"pk_field": "tenant", "pk_value": "t1"},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "SELECT VALUE COUNT(1) FROM c WHERE c.address.city = @param1 AND c.meta.tenant = @param2"
+	want := `SELECT VALUE COUNT(1) FROM c WHERE c["address"]["city"] = @param1 AND c["tenant"] = @param2`
 	if query != want {
 		t.Fatalf("query = %q; want %q", query, want)
 	}
@@ -413,7 +432,7 @@ func TestCosmosDBBuildCountQueryEmptySliceMatchesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "SELECT VALUE COUNT(1) FROM c WHERE false AND c.pk = @param1"
+	want := `SELECT VALUE COUNT(1) FROM c WHERE false AND c["pk"] = @param1`
 	if query != want {
 		t.Fatalf("query = %q; want %q", query, want)
 	}
@@ -425,7 +444,10 @@ func TestCosmosDBBuildCountQueryEmptySliceMatchesNothing(t *testing.T) {
 func TestCosmosDBBuildFilterEmptySliceIsFalse(t *testing.T) {
 	s := &CosmosDBAdapter{}
 	idx := 1
-	clause, params := s.buildFilter(map[string]any{"status": []string{}}, &idx)
+	clause, params, err := s.buildFilter(map[string]any{"status": []string{}}, &idx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if clause != "false" {
 		t.Fatalf("clause = %q; want %q", clause, "false")
 	}
@@ -486,5 +508,148 @@ func TestCosmosDBSumCountPagesErrors(t *testing.T) {
 				t.Fatalf("count = %d on error; want 0", n)
 			}
 		})
+	}
+}
+
+func TestCosmosDBBuildFilterQuotesKeywordFields(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	idx := 1
+	clause, _, err := s.buildFilter(map[string]any{"order": 1}, &idx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if clause != `c["order"] = @param1` {
+		t.Fatalf("clause = %q; want %q", clause, `c["order"] = @param1`)
+	}
+}
+
+func TestCosmosDBBuildFilterNilMatchesNullOrMissing(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	idx := 1
+	clause, params, err := s.buildFilter(map[string]any{"deleted_at": nil}, &idx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := `(NOT IS_DEFINED(c["deleted_at"]) OR IS_NULL(c["deleted_at"]))`
+	if clause != want {
+		t.Fatalf("clause = %q; want %q", clause, want)
+	}
+	if len(params) != 0 || idx != 1 {
+		t.Fatalf("params = %+v, idx = %d; want no params and idx unchanged", params, idx)
+	}
+}
+
+func TestCosmosDBBuildFilterRejectsUnsafeKeys(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	for _, key := range []string{`id"] OR 1=1 --`, "a b", "", "a..b"} {
+		idx := 1
+		_, _, err := s.buildFilter(map[string]any{key: "x"}, &idx)
+		if err == nil || !strings.Contains(err.Error(), "invalid filter key") {
+			t.Fatalf("key %q: err = %v; want an invalid filter key error", key, err)
+		}
+	}
+}
+
+func TestCosmosDBGetContextRejectsUnsafeKeysBeforeQuerying(t *testing.T) {
+	s := newFakeCosmosAdapter(t, func(*http.Request) (*http.Response, error) {
+		t.Fatal("GetContext sent a request for an invalid filter key")
+		return nil, nil
+	})
+	var item cosmosSampleItem
+	err := s.GetContext(context.Background(), &item, map[string]any{"a b": "x"})
+	if err == nil || !strings.Contains(err.Error(), "invalid filter key") {
+		t.Fatalf("err = %v; want an invalid filter key error", err)
+	}
+}
+
+func TestCosmosDBListContextRejectsUnsafeKeysBeforeQuerying(t *testing.T) {
+	s := newFakeCosmosAdapter(t, func(*http.Request) (*http.Response, error) {
+		t.Fatal("ListContext sent a request for an invalid filter key")
+		return nil, nil
+	})
+	var items []cosmosSampleItem
+	_, err := s.ListContext(context.Background(), &items, "id", map[string]any{"a b": "x"}, 10, "")
+	if err == nil || !strings.Contains(err.Error(), "invalid filter key") {
+		t.Fatalf("err = %v; want an invalid filter key error", err)
+	}
+}
+
+// fakeCosmosTransport sends every request to do instead of the network.
+type fakeCosmosTransport func(*http.Request) (*http.Response, error)
+
+func (f fakeCosmosTransport) Do(req *http.Request) (*http.Response, error) { return f(req) }
+
+func newFakeCosmosAdapter(t *testing.T, do fakeCosmosTransport) *CosmosDBAdapter {
+	t.Helper()
+	cred, err := azcosmos.NewKeyCredential(base64.StdEncoding.EncodeToString([]byte("test-key")))
+	if err != nil {
+		t.Fatalf("NewKeyCredential: %v", err)
+	}
+	client, err := azcosmos.NewClientWithKey("https://fake.documents.azure.com:443/", cred, &azcosmos.ClientOptions{
+		ClientOptions: azcore.ClientOptions{
+			Transport: do,
+			Retry:     policy.RetryOptions{MaxRetries: -1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClientWithKey: %v", err)
+	}
+	db, err := client.NewDatabase("db")
+	if err != nil {
+		t.Fatalf("NewDatabase: %v", err)
+	}
+	return &CosmosDBAdapter{client: client, databaseClient: db, databaseName: "db"}
+}
+
+func fakeCosmosJSON(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+}
+
+func TestCosmosDBCountContextSendsScopedQuery(t *testing.T) {
+	var gotPath, gotPK string
+	var gotBody struct {
+		Query      string `json:"query"`
+		Parameters []struct {
+			Name  string `json:"name"`
+			Value any    `json:"value"`
+		} `json:"parameters"`
+	}
+	s := newFakeCosmosAdapter(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/" {
+			// The SDK reads account properties before its first operation.
+			return fakeCosmosJSON(req, `{"id":"fake","writableLocations":[],"readableLocations":[]}`), nil
+		}
+		gotPath = req.URL.Path
+		gotPK = req.Header.Get("x-ms-documentdb-partitionkey")
+		if err := json.NewDecoder(req.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		return fakeCosmosJSON(req, `{"_rid":"x","Documents":[7],"_count":1}`), nil
+	})
+
+	n, err := s.CountContext(context.Background(), &cosmosSampleItem{}, map[string]any{"status": "active"}, cosmosCountPartition)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 7 {
+		t.Fatalf("count = %d; want 7", n)
+	}
+	if gotPath != "/dbs/db/colls/cosmos_sample_items/docs" {
+		t.Fatalf("path = %q; want the cosmos_sample_items docs feed", gotPath)
+	}
+	if gotPK != `["tenant-1"]` {
+		t.Fatalf("partition key header = %q; want %q", gotPK, `["tenant-1"]`)
+	}
+	want := `SELECT VALUE COUNT(1) FROM c WHERE c["status"] = @param1 AND c["pk"] = @param2`
+	if gotBody.Query != want {
+		t.Fatalf("query = %q; want %q", gotBody.Query, want)
+	}
+	if len(gotBody.Parameters) != 2 || gotBody.Parameters[1].Value != "tenant-1" {
+		t.Fatalf("parameters = %+v; want status then the partition value", gotBody.Parameters)
 	}
 }

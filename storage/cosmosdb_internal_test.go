@@ -925,22 +925,13 @@ func (f *sessionTokenTransport) lastQuerySession(t *testing.T) string {
 	return f.querySessions[len(f.querySessions)-1]
 }
 
+// newSessionTokenAdapter returns a fake adapter, served by transport, that
+// tracks session tokens.
 func newSessionTokenAdapter(t *testing.T, transport *sessionTokenTransport) *CosmosDBAdapter {
 	t.Helper()
-	cred, err := azcosmos.NewKeyCredential("dGVzdC1rZXk=")
-	if err != nil {
-		t.Fatalf("NewKeyCredential: %v", err)
-	}
-	client, err := azcosmos.NewClientWithKey("https://acct.documents.azure.com:443/", cred,
-		&azcosmos.ClientOptions{ClientOptions: azcore.ClientOptions{Transport: transport}})
-	if err != nil {
-		t.Fatalf("NewClientWithKey: %v", err)
-	}
-	db, err := client.NewDatabase("d")
-	if err != nil {
-		t.Fatalf("NewDatabase: %v", err)
-	}
-	return &CosmosDBAdapter{client: client, databaseClient: db, sessionTokens: newSessionTokenStore()}
+	s := newFakeCosmosAdapter(t, transport.Do)
+	s.sessionTokens = newSessionTokenStore()
+	return s
 }
 
 func TestCosmosDBReadsSendSessionTokenFromWrite(t *testing.T) {

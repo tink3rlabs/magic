@@ -576,7 +576,8 @@ func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map
 		return 0, err
 	}
 
-	containerClient, err := s.databaseClient.NewContainer(s.getContainerName(dest))
+	containerName := s.getContainerName(dest)
+	containerClient, err := s.databaseClient.NewContainer(containerName)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create container client: %w", err)
 	}
@@ -584,6 +585,7 @@ func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map
 	queryOptions := &azcosmos.QueryOptions{
 		QueryParameters: queryParams,
 	}
+	s.applySessionToken(containerName, pk, queryOptions)
 
 	pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions)
 	return sumCountPages(ctx, pager)

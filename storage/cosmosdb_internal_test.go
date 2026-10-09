@@ -879,11 +879,12 @@ func strPtr(s string) *string {
 // sessionTokenTransport answers the requests a CosmosDBAdapter makes against a
 // real azcosmos.Client, so tests can check the headers that actually go out.
 // Creates return createStatus and deletes return 204, both with the session
-// token writeToken; queries return one item and record the session token they
-// were sent.
+// token writeToken. Queries return queryDocuments (one item by default) and
+// record the session token they were sent.
 type sessionTokenTransport struct {
-	createStatus int
-	writeToken   string
+	createStatus   int
+	writeToken     string
+	queryDocuments string
 
 	mu            sync.Mutex
 	querySessions []string
@@ -900,7 +901,11 @@ func (f *sessionTokenTransport) Do(req *http.Request) (*http.Response, error) {
 		f.mu.Lock()
 		f.querySessions = append(f.querySessions, req.Header.Get("x-ms-session-token"))
 		f.mu.Unlock()
-		body = `{"_rid":"r","Documents":[{"id":"1","pk":"a"}],"_count":1}`
+		docs := f.queryDocuments
+		if docs == "" {
+			docs = `[{"id":"1","pk":"a"}]`
+		}
+		body = `{"_rid":"r","Documents":` + docs + `}`
 	case req.Method == http.MethodDelete:
 		status, body = http.StatusNoContent, ""
 		header.Set("x-ms-session-token", f.writeToken)
@@ -977,6 +982,26 @@ func TestCosmosDBReadsSendSessionTokenFromWrite(t *testing.T) {
 				t.Fatalf("List across partitions sent session token %q; want %q", got, "0:-1#42")
 			}
 		})
+	}
+}
+
+func TestCosmosDBCountSendsSessionTokenFromWrite(t *testing.T) {
+	transport := &sessionTokenTransport{createStatus: http.StatusCreated, writeToken: "0:-1#44", queryDocuments: `[1]`}
+	s := newSessionTokenAdapter(t, transport)
+	params := map[string]any{"pk_field": "pk", "pk_value": "a"}
+
+	if err := s.Create(cosmosSampleItem{Id: "1"}, params); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	n, err := s.Count(&cosmosSampleItem{}, nil, params)
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("Count = %d; want 1", n)
+	}
+	if got := transport.lastQuerySession(t); got != "0:-1#44" {
+		t.Fatalf("Count sent session token %q; want %q", got, "0:-1#44")
 	}
 }
 

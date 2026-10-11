@@ -27,7 +27,10 @@ type CosmosDBAdapter struct {
 	databaseClient *azcosmos.DatabaseClient
 	config         map[string]string
 	databaseName   string
-	sessionTokens  *sessionTokenStore
+	// sessionTokens gives reads the session token of earlier writes. nil turns
+	// tracking off, so an adapter built directly as &CosmosDBAdapter{} has it
+	// off; GetCosmosDBAdapterInstance sets it up from config.
+	sessionTokens *sessionTokenStore
 }
 
 var cosmosDBAdapterLock = &sync.Mutex{}
@@ -151,13 +154,42 @@ func (s *CosmosDBAdapter) GetProvider() StorageProviders {
 
 const cosmosSessionTokenHeader = "x-ms-session-token"
 
+// Defaults for the "session_token_ttl" and "session_token_max" config keys.
+const (
+	defaultSessionTokenTTL = 5 * time.Minute
+	defaultSessionTokenMax = 10000
+)
+
 // newCosmosSessionTokenStore returns the store that gives reads their session
 // token, or nil when the "session_tokens" config key turns tracking off.
+// "session_token_ttl" (a Go duration such as "5m") and "session_token_max" (a
+// number of container/partition pairs) override the defaults. A value for any
+// of the three that can't be parsed (or, for the last two, isn't positive)
+// logs a warning and keeps the default.
 func newCosmosSessionTokenStore(config map[string]string) *sessionTokenStore {
-	if enabled, err := strconv.ParseBool(config["session_tokens"]); err == nil && !enabled {
-		return nil
+	if v, ok := config["session_tokens"]; ok {
+		if enabled, err := strconv.ParseBool(v); err != nil {
+			slog.Warn("Invalid session_tokens, leaving session tracking on", slog.String("value", v))
+		} else if !enabled {
+			return nil
+		}
 	}
-	return newSessionTokenStore()
+	store := newSessionTokenStore()
+	if v, ok := config["session_token_ttl"]; ok {
+		if ttl, err := time.ParseDuration(v); err == nil && ttl > 0 {
+			store.ttl = ttl
+		} else {
+			slog.Warn("Invalid session_token_ttl, using the default", slog.String("value", v), slog.Duration("default", store.ttl))
+		}
+	}
+	if v, ok := config["session_token_max"]; ok {
+		if limit, err := strconv.Atoi(v); err == nil && limit > 0 {
+			store.max = limit
+		} else {
+			slog.Warn("Invalid session_token_max, using the default", slog.String("value", v), slog.Int("default", store.max))
+		}
+	}
+	return store
 }
 
 // recordSessionToken stores the session token from a write. A failed write still

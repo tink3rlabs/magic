@@ -160,9 +160,20 @@ err  = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
 The adapter keeps the session token Cosmos DB returns from each `Create` / `Update` / `Delete`, per container and partition key, and sends it on later reads, so on an account with session consistency those reads see that write. A token is also taken from a failed write's response, so after a `409 Conflict` a `Get` sees the item that already exists.
 
 - Reads with `pk_field` / `pk_value` send the token for that partition only.
-- Reads without a partition key, and every `Query`, run across partitions and send the newest token for each partition range of the container.
-- Tokens are held in memory for 5 minutes, up to 10,000 container/partition pairs per adapter, and are not shared between processes.
-- To turn this off, set `"session_tokens": "false"` in the adapter config.
+- Reads without a partition key, and every `Query`, run across partitions and send one token for each partition range of the container.
+- Tokens for the same partition range are merged per region, as the Cosmos DB SDKs do, so on an account that writes in more than one region a read still sees writes accepted in any of them.
+- Tokens are held in memory and are not shared between processes.
+
+| Config key          | Default | Meaning                                                              |
+|---------------------|---------|----------------------------------------------------------------------|
+| `session_tokens`    | `true`  | `"false"` turns read-your-writes tracking off.                       |
+| `session_token_ttl` | `5m`    | How long a token is kept after the last write to its partition (a Go duration). |
+| `session_token_max` | `10000` | Most container/partition pairs held; the least recently written is dropped first. |
+
+A value that can't be parsed or isn't positive logs a warning and keeps the default.
+
+!!! note "Known limitation: partition splits"
+    After Cosmos DB splits a partition range, a response for a write sent to the old range that arrives after one from the new range replaces the new range's token. The next read may then not see the newer write. Fixing this needs the partition-range layout, which the adapter doesn't track.
 
 ## Common patterns
 

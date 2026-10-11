@@ -9,13 +9,10 @@ import (
 	"time"
 )
 
-const (
-	defaultSessionTokenTTL = 5 * time.Minute
-	defaultSessionTokenMax = 10000
-)
-
-// sessionTokenStore keeps the newest Cosmos DB session token per container and
+// sessionTokenStore keeps the latest Cosmos DB session token per container and
 // partition key so reads issued after a write can see it (read-your-writes).
+// Tokens for the same partition range are merged per region (see
+// mergeSessionTokens), so writes accepted in different regions are all kept.
 // Entries expire after ttl and the store holds at most max of them, dropping
 // the least recently updated first.
 //
@@ -23,7 +20,7 @@ const (
 // the same ttl, that is also expiry order, so expired and evicted entries are
 // always at the front and neither needs a scan of the whole store.
 //
-// Alongside the per-partition entries, byRange keeps the newest token for each
+// Alongside the per-partition entries, byRange keeps the merged token for each
 // partition range of a container, updated on every set, so a read across
 // partitions only reads that small map. It is dropped with the container's
 // last partition entry.
@@ -75,10 +72,7 @@ func (s *sessionTokenStore) set(containerName string, pk string, token string) {
 	partitions := s.byContainer[containerName]
 	if el, ok := partitions[pk]; ok {
 		entry := el.Value.(*sessionTokenEntry)
-		if !shouldReplaceSessionToken(entry.token, token) {
-			return
-		}
-		entry.token = token
+		entry.token = nextSessionToken(entry.token, token)
 		entry.expiresAt = now.Add(s.ttl)
 		s.order.MoveToBack(el)
 		return
@@ -117,7 +111,7 @@ func (s *sessionTokenStore) get(containerName string, pk string) string {
 }
 
 // getForContainer returns a token for a query across all partitions of a
-// container: the newest token for each partition range, comma separated, which
+// container: the merged token for each partition range, comma separated, which
 // is the compound form Cosmos DB accepts. Tokens that cannot be parsed are left
 // out, since they cannot be matched to a range.
 func (s *sessionTokenStore) getForContainer(containerName string) string {
@@ -136,10 +130,9 @@ func (s *sessionTokenStore) getForContainer(containerName string) string {
 	return strings.Join(tokens, ",")
 }
 
-// setRangeLocked records token as the newest for its partition range, unless
-// the range already holds a newer one that hasn't expired.
+// setRangeLocked merges token into the token held for its partition range.
 func (s *sessionTokenStore) setRangeLocked(containerName string, token string, now time.Time) {
-	rank, ok := parseSessionToken(token)
+	parsed, ok := parseSessionToken(token)
 	if !ok {
 		return
 	}
@@ -148,10 +141,10 @@ func (s *sessionTokenStore) setRangeLocked(containerName string, token string, n
 		ranges = make(map[string]rangeSessionToken)
 		s.byRange[containerName] = ranges
 	}
-	if current, ok := ranges[rank.rangeID]; ok && current.expiresAt.After(now) && !shouldReplaceSessionToken(current.token, token) {
-		return
+	if current, ok := ranges[parsed.rangeID]; ok && current.expiresAt.After(now) {
+		token = nextSessionToken(current.token, token)
 	}
-	ranges[rank.rangeID] = rangeSessionToken{token: token, expiresAt: now.Add(s.ttl)}
+	ranges[parsed.rangeID] = rangeSessionToken{token: token, expiresAt: now.Add(s.ttl)}
 }
 
 func (s *sessionTokenStore) removeExpiredLocked(now time.Time) {
@@ -173,52 +166,123 @@ func (s *sessionTokenStore) removeLocked(el *list.Element) {
 	}
 }
 
-// sessionTokenRank is the comparable part of a Cosmos DB session token:
-// "<rangeId>:<version>#<globalLSN>[#<regionId>=<localLSN>...]". Region
-// entries are ignored; the global LSN orders writes within a range.
-type sessionTokenRank struct {
-	rangeID string
-	version int64
-	lsn     int64
+// sessionToken is a parsed Cosmos DB session token:
+// "<rangeId>:<version>#<globalLSN>[#<regionId>=<localLSN>...]". Accounts that
+// write in more than one region carry a local LSN for each write region.
+type sessionToken struct {
+	rangeID   string
+	version   int64
+	globalLSN int64
+	regions   []regionLSN // in token order
 }
 
-func parseSessionToken(token string) (sessionTokenRank, bool) {
+type regionLSN struct {
+	id  int64
+	lsn int64
+}
+
+func parseSessionToken(token string) (sessionToken, bool) {
 	rangeID, rest, ok := strings.Cut(token, ":")
 	if !ok || rangeID == "" {
-		return sessionTokenRank{}, false
+		return sessionToken{}, false
 	}
 	parts := strings.Split(rest, "#")
 	if len(parts) < 2 {
-		return sessionTokenRank{}, false
+		return sessionToken{}, false
 	}
 	version, err := strconv.ParseInt(parts[0], 10, 64) // may be -1
 	if err != nil {
-		return sessionTokenRank{}, false
+		return sessionToken{}, false
 	}
-	lsn, err := strconv.ParseInt(parts[1], 10, 64)
+	globalLSN, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return sessionTokenRank{}, false
+		return sessionToken{}, false
 	}
-	return sessionTokenRank{rangeID: rangeID, version: version, lsn: lsn}, true
+	parsed := sessionToken{rangeID: rangeID, version: version, globalLSN: globalLSN}
+	for _, part := range parts[2:] {
+		idStr, lsnStr, ok := strings.Cut(part, "=")
+		if !ok {
+			return sessionToken{}, false
+		}
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return sessionToken{}, false
+		}
+		lsn, err := strconv.ParseInt(lsnStr, 10, 64)
+		if err != nil {
+			return sessionToken{}, false
+		}
+		parsed.regions = append(parsed.regions, regionLSN{id: id, lsn: lsn})
+	}
+	return parsed, true
 }
 
-// shouldReplaceSessionToken reports whether incoming should replace current.
-// Within one partition range it keeps the newest write; after a split (a new
-// range id) it takes the incoming token, since LSNs aren't comparable across
-// ranges.
-func shouldReplaceSessionToken(current string, incoming string) bool {
+func (t sessionToken) String() string {
+	var b strings.Builder
+	b.WriteString(t.rangeID)
+	b.WriteByte(':')
+	b.WriteString(strconv.FormatInt(t.version, 10))
+	b.WriteByte('#')
+	b.WriteString(strconv.FormatInt(t.globalLSN, 10))
+	for _, r := range t.regions {
+		b.WriteByte('#')
+		b.WriteString(strconv.FormatInt(r.id, 10))
+		b.WriteByte('=')
+		b.WriteString(strconv.FormatInt(r.lsn, 10))
+	}
+	return b.String()
+}
+
+// nextSessionToken returns the token to hold once incoming arrives while
+// current is held. Tokens for the same partition range are merged. A token for
+// a different range (after a partition split) replaces current, since LSNs
+// aren't comparable across ranges; a late response from the old range can
+// therefore replace the new range's token, and the next read may not see the
+// newer write. Tokens that can't be parsed never replace one that can.
+func nextSessionToken(current string, incoming string) string {
 	cur, curOK := parseSessionToken(current)
 	inc, incOK := parseSessionToken(incoming)
 	switch {
 	case !curOK:
-		return true
+		return incoming
 	case !incOK:
-		return false
+		return current
 	case inc.rangeID != cur.rangeID:
-		return true
-	case inc.version != cur.version:
-		return inc.version > cur.version
+		return incoming
 	default:
-		return inc.lsn >= cur.lsn // equal refreshes the expiry
+		return mergeSessionTokens(cur, inc).String()
 	}
+}
+
+// mergeSessionTokens combines two tokens for the same partition range the way
+// the Cosmos DB SDKs do: the higher version wins, with the higher global LSN and
+// the higher local LSN for each region. A region found only in the
+// lower-version token is dropped; when the versions are equal, every region
+// from both is kept.
+func mergeSessionTokens(a, b sessionToken) sessionToken {
+	hi, lo := b, a
+	if a.version > b.version {
+		hi, lo = a, b
+	}
+	loLSN := make(map[int64]int64, len(lo.regions))
+	for _, r := range lo.regions {
+		loLSN[r.id] = r.lsn
+	}
+
+	merged := sessionToken{rangeID: hi.rangeID, version: hi.version, globalLSN: max(a.globalLSN, b.globalLSN)}
+	for _, r := range hi.regions {
+		if lsn, ok := loLSN[r.id]; ok {
+			r.lsn = max(r.lsn, lsn)
+			delete(loLSN, r.id)
+		}
+		merged.regions = append(merged.regions, r)
+	}
+	if a.version == b.version {
+		for _, r := range lo.regions {
+			if _, ok := loLSN[r.id]; ok {
+				merged.regions = append(merged.regions, r)
+			}
+		}
+	}
+	return merged
 }

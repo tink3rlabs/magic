@@ -1,14 +1,17 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -801,32 +804,70 @@ func TestSessionTokenStoreNewRangeReplaces(t *testing.T) {
 func TestParseSessionToken(t *testing.T) {
 	cases := []struct {
 		token string
-		want  sessionTokenRank
+		want  sessionToken
 		ok    bool
 	}{
-		{"0:-1#12", sessionTokenRank{rangeID: "0", version: -1, lsn: 12}, true},
-		{"0:1#12345#3=12340#4=12338", sessionTokenRank{rangeID: "0", version: 1, lsn: 12345}, true},
-		{"7:2#9223372036854775807", sessionTokenRank{rangeID: "7", version: 2, lsn: 9223372036854775807}, true},
-		{"bad-token", sessionTokenRank{}, false},
-		{":1#12", sessionTokenRank{}, false},
-		{"0:1", sessionTokenRank{}, false},
-		{"0:x#12", sessionTokenRank{}, false},
+		{"0:-1#12", sessionToken{rangeID: "0", version: -1, globalLSN: 12}, true},
+		{"0:1#12345#3=12340#4=12338", sessionToken{rangeID: "0", version: 1, globalLSN: 12345,
+			regions: []regionLSN{{id: 3, lsn: 12340}, {id: 4, lsn: 12338}}}, true},
+		{"7:2#9223372036854775807", sessionToken{rangeID: "7", version: 2, globalLSN: 9223372036854775807}, true},
+		{"bad-token", sessionToken{}, false},
+		{":1#12", sessionToken{}, false},
+		{"0:1", sessionToken{}, false},
+		{"0:x#12", sessionToken{}, false},
+		{"0:1#12#3", sessionToken{}, false},
+		{"0:1#12#x=5", sessionToken{}, false},
+		{"0:1#12#3=y", sessionToken{}, false},
 	}
 	for _, tc := range cases {
 		got, ok := parseSessionToken(tc.token)
-		if ok != tc.ok || got != tc.want {
+		if ok != tc.ok || !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("parseSessionToken(%q) = %+v, %v; want %+v, %v", tc.token, got, ok, tc.want, tc.ok)
+		}
+		if ok && got.String() != tc.token {
+			t.Fatalf("parseSessionToken(%q).String() = %q; want the input back", tc.token, got.String())
 		}
 	}
 }
 
-func TestSessionTokenStoreMultiRegionKeepsNewestGlobalLSN(t *testing.T) {
+func TestMergeSessionTokens(t *testing.T) {
+	cases := []struct {
+		name    string
+		current string
+		in      string
+		want    string
+	}{
+		{"single region keeps the higher global LSN", "0:-1#15", "0:-1#12", "0:-1#15"},
+		{"each token ahead in a different region", "0:1#100#1=50#2=40", "0:1#90#1=45#2=60", "0:1#100#1=50#2=60"},
+		{"higher version wins and drops regions only the lower version has", "0:1#100#1=50#2=40", "0:2#101#1=48#3=5", "0:2#101#1=50#3=5"},
+		{"higher version held, older incoming", "0:2#101#1=48#3=5", "0:1#100#1=50#2=40", "0:2#101#1=50#3=5"},
+		{"equal versions keep regions from both", "0:1#10#1=5", "0:1#12#2=7", "0:1#12#2=7#1=5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextSessionToken(tc.current, tc.in); got != tc.want {
+				t.Fatalf("nextSessionToken(%q, %q) = %q; want %q", tc.current, tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSessionTokenStoreMultiRegionMergesRegions(t *testing.T) {
 	store := newSessionTokenStore()
-	// The newer write has a higher global LSN but a lower trailing region LSN.
+	// The second write has the higher global LSN, but the first is further
+	// ahead in region 4. Both writes must stay visible.
 	store.set("orders", "tenant-a", "0:1#12340#4=12339")
 	store.set("orders", "tenant-a", "0:1#12345#3=12340#4=12338")
-	if got := store.get("orders", "tenant-a"); got != "0:1#12345#3=12340#4=12338" {
-		t.Fatalf("newer multi-region token not kept: got %q", got)
+	want := "0:1#12345#3=12340#4=12339"
+	if got := store.get("orders", "tenant-a"); got != want {
+		t.Fatalf("partition token = %q; want %q", got, want)
+	}
+
+	// Another partition in the same range, ahead in region 3 only.
+	store.set("orders", "tenant-b", "0:1#12341#3=12344#4=12300")
+	want = "0:1#12345#3=12344#4=12339"
+	if got := store.getForContainer("orders"); got != want {
+		t.Fatalf("cross-partition token = %q; want %q", got, want)
 	}
 }
 
@@ -1002,6 +1043,55 @@ func TestCosmosDBCountSendsSessionTokenFromWrite(t *testing.T) {
 	}
 	if got := transport.lastQuerySession(t); got != "0:-1#44" {
 		t.Fatalf("Count sent session token %q; want %q", got, "0:-1#44")
+	}
+}
+
+func TestCosmosDBSessionTokenStoreConfig(t *testing.T) {
+	store := newCosmosSessionTokenStore(map[string]string{})
+	if store.ttl != defaultSessionTokenTTL || store.max != defaultSessionTokenMax {
+		t.Fatalf("defaults = %v, %d; want %v, %d", store.ttl, store.max, defaultSessionTokenTTL, defaultSessionTokenMax)
+	}
+
+	store = newCosmosSessionTokenStore(map[string]string{"session_token_ttl": "90s", "session_token_max": "250"})
+	if store.ttl != 90*time.Second || store.max != 250 {
+		t.Fatalf("configured = %v, %d; want 1m30s, 250", store.ttl, store.max)
+	}
+
+	for _, bad := range []map[string]string{
+		{"session_token_ttl": "five minutes", "session_token_max": "lots"},
+		{"session_token_ttl": "0s", "session_token_max": "0"},
+		{"session_token_ttl": "-1m", "session_token_max": "-5"},
+	} {
+		store = newCosmosSessionTokenStore(bad)
+		if store.ttl != defaultSessionTokenTTL || store.max != defaultSessionTokenMax {
+			t.Fatalf("config %v = %v, %d; want the defaults", bad, store.ttl, store.max)
+		}
+	}
+}
+
+func TestCosmosDBSessionTokenStoreConfigWarnsOnInvalidValues(t *testing.T) {
+	var logs bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	for key, value := range map[string]string{
+		"session_tokens":    "flase",
+		"session_token_ttl": "five minutes",
+		"session_token_max": "0",
+	} {
+		logs.Reset()
+		if newCosmosSessionTokenStore(map[string]string{key: value}) == nil {
+			t.Fatalf("%s %q turned tracking off; want it left on", key, value)
+		}
+		if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "Invalid "+key) {
+			t.Fatalf("%s %q logged %q; want a warning naming the key", key, value, logs.String())
+		}
+	}
+
+	logs.Reset()
+	newCosmosSessionTokenStore(map[string]string{"session_tokens": "true", "session_token_ttl": "1m", "session_token_max": "5"})
+	if logs.Len() != 0 {
+		t.Fatalf("valid config logged %q; want nothing", logs.String())
 	}
 }
 

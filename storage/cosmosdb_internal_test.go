@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -783,6 +784,41 @@ func TestSessionTokenStoreKeepsNewestValidToken(t *testing.T) {
 	}
 }
 
+func TestSessionTokenStoreUnparseableTokenDoesNotExtendExpiry(t *testing.T) {
+	now := time.Unix(0, 0)
+	store := newSessionTokenStore()
+	store.ttl = 5 * time.Second
+	store.max = 2
+	store.now = func() time.Time { return now }
+
+	store.set("orders", "tenant-a", "0:-1#10")
+	now = now.Add(1 * time.Second)
+	store.set("orders", "tenant-b", "0:-1#11")
+	now = now.Add(3 * time.Second)
+	store.set("orders", "tenant-a", "bad-token") // must not refresh tenant-a
+
+	// tenant-a is still the least recently updated, so it is evicted first.
+	store.set("orders", "tenant-c", "0:-1#12")
+	if got := store.get("orders", "tenant-a"); got != "" {
+		t.Fatalf("tenant-a should be evicted before tenant-b, got %q", got)
+	}
+	if got := store.get("orders", "tenant-b"); got != "0:-1#11" {
+		t.Fatalf("tenant-b token = %q; want %q", got, "0:-1#11")
+	}
+
+	// And its expiry wasn't extended either.
+	store = newSessionTokenStore()
+	store.ttl = 5 * time.Second
+	store.now = func() time.Time { return now }
+	store.set("orders", "tenant-a", "0:-1#10")
+	now = now.Add(4 * time.Second)
+	store.set("orders", "tenant-a", "bad-token")
+	now = now.Add(2 * time.Second)
+	if got := store.get("orders", "tenant-a"); got != "" {
+		t.Fatalf("token should expire 5s after its last valid write, got %q", got)
+	}
+}
+
 func TestSessionTokenStoreOlderTokenDoesNotReplaceNewer(t *testing.T) {
 	store := newSessionTokenStore()
 	store.set("orders", "tenant-a", "0:-1#15")
@@ -845,7 +881,7 @@ func TestMergeSessionTokens(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nextSessionToken(tc.current, tc.in); got != tc.want {
+			if got, _ := nextSessionToken(tc.current, tc.in); got != tc.want {
 				t.Fatalf("nextSessionToken(%q, %q) = %q; want %q", tc.current, tc.in, got, tc.want)
 			}
 		})
@@ -1046,6 +1082,102 @@ func TestCosmosDBCountSendsSessionTokenFromWrite(t *testing.T) {
 	}
 }
 
+func TestParsePreferredRegions(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{" , ,", nil},
+		{"West US", []string{"West US"}},
+		{"West US, Central US ,East US 2", []string{"West US", "Central US", "East US 2"}},
+		{"westus,,eastus", []string{"westus", "eastus"}},
+	}
+	for _, tc := range cases {
+		if got := parsePreferredRegions(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("parsePreferredRegions(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCosmosClientOptions(t *testing.T) {
+	options := cosmosClientOptions(map[string]string{})
+	if options.PreferredRegions != nil || options.Transport != nil {
+		t.Fatalf("empty config = %+v; want no preferred regions and the default transport", options)
+	}
+
+	options = cosmosClientOptions(map[string]string{"preferred_regions": "West US, Central US", "skip_tls_verify": "true"})
+	if want := []string{"West US", "Central US"}; !reflect.DeepEqual(options.PreferredRegions, want) {
+		t.Fatalf("PreferredRegions = %q; want %q", options.PreferredRegions, want)
+	}
+	if options.Transport == nil {
+		t.Fatalf("skip_tls_verify should set a transport alongside preferred regions")
+	}
+}
+
+// TestCosmosDBPreferredRegionsRouteRequests reproduces issue #285: the client
+// is configured with a West US endpoint on an account whose first region is
+// East US. Without preferred regions, requests go to East US; with
+// "preferred_regions": "West US" they stay in West US.
+func TestCosmosDBPreferredRegionsRouteRequests(t *testing.T) {
+	const (
+		eastUS = "acct-eastus.documents.azure.com"
+		westUS = "acct-westus.documents.azure.com"
+	)
+	cases := []struct {
+		name     string
+		config   map[string]string
+		wantHost string
+	}{
+		{"no preferred regions", map[string]string{}, eastUS},
+		{"preferred West US", map[string]string{"preferred_regions": "West US"}, westUS},
+		{"preferred region name in another form", map[string]string{"preferred_regions": "westus"}, westUS},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var hosts []string
+			options := cosmosClientOptions(tc.config)
+			options.Retry = policy.RetryOptions{MaxRetries: -1}
+			options.Transport = fakeCosmosTransport(func(req *http.Request) (*http.Response, error) {
+				if req.Method == http.MethodGet && req.URL.Path == "/" {
+					locations := `[{"name":"East US","databaseAccountEndpoint":"https://` + eastUS + `:443/"},` +
+						`{"name":"West US","databaseAccountEndpoint":"https://` + westUS + `:443/"}]`
+					return fakeCosmosJSON(req, `{"id":"acct","enableMultipleWriteLocations":true,`+
+						`"writableLocations":`+locations+`,"readableLocations":`+locations+`}`), nil
+				}
+				mu.Lock()
+				hosts = append(hosts, req.URL.Hostname())
+				mu.Unlock()
+				return fakeCosmosJSON(req, `{"id":"db"}`), nil
+			})
+
+			cred, err := azcosmos.NewKeyCredential(base64.StdEncoding.EncodeToString([]byte("test-key")))
+			if err != nil {
+				t.Fatalf("NewKeyCredential: %v", err)
+			}
+			client, err := azcosmos.NewClientWithKey("https://"+westUS+":443/", cred, options)
+			if err != nil {
+				t.Fatalf("NewClientWithKey: %v", err)
+			}
+			db, err := client.NewDatabase("db")
+			if err != nil {
+				t.Fatalf("NewDatabase: %v", err)
+			}
+			s := &CosmosDBAdapter{client: client, databaseClient: db}
+
+			if err := s.Ping(); err != nil {
+				t.Fatalf("Ping: %v", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(hosts) == 0 || hosts[len(hosts)-1] != tc.wantHost {
+				t.Fatalf("Ping went to %q; want %q", hosts, tc.wantHost)
+			}
+		})
+	}
+}
+
 func TestCosmosDBSessionTokenStoreConfig(t *testing.T) {
 	store := newCosmosSessionTokenStore(map[string]string{})
 	if store.ttl != defaultSessionTokenTTL || store.max != defaultSessionTokenMax {
@@ -1071,7 +1203,14 @@ func TestCosmosDBSessionTokenStoreConfig(t *testing.T) {
 
 func TestCosmosDBSessionTokenStoreConfigWarnsOnInvalidValues(t *testing.T) {
 	var logs bytes.Buffer
-	defer slog.SetDefault(slog.Default())
+	// slog.SetDefault also redirects the log package to the new handler, and
+	// restoring the original slog logger doesn't undo that, so restore the log
+	// package's output and flags too.
+	defer func(logger *slog.Logger, w io.Writer, flags int) {
+		slog.SetDefault(logger)
+		log.SetOutput(w)
+		log.SetFlags(flags)
+	}(slog.Default(), log.Writer(), log.Flags())
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 
 	for key, value := range map[string]string{

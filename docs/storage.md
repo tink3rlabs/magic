@@ -132,8 +132,26 @@ config := map[string]string{
     "skip_tls_verify": "true",   // local testing only
 }
 
+// Regional private endpoint: route requests to the regions you can reach
+config := map[string]string{
+    "provider":          "cosmosdb",
+    "endpoint":          "https://your-account-westus.documents.azure.com:443/",
+    "key":               "...",
+    "database":          "blox",
+    "preferred_regions": "West US",   // ordered, comma-separated
+}
+
 adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, config)
 ```
+
+#### Preferred regions
+
+The Cosmos DB SDK reads the account's regions from the configured endpoint and, unless told otherwise, sends requests to the account's primary region, not the region of the endpoint you configured. A workload that can only reach one region (for example through a regional private endpoint) then fails, including the readiness `Ping`.
+
+Set `preferred_regions` to an ordered, comma-separated list of the regions the workload can reach, such as `"West US"` or `"West US, Central US"`. The adapter doesn't infer a region from the endpoint hostname.
+
+- Region names are matched ignoring case and spaces, so `West US` and `westus` are the same. A name that isn't one of the account's regions is ignored, and the adapter logs the configured list at startup to help spot typos.
+- On an account with a single write region, writes always go to that region; preferred regions only route reads. Workloads that must write through a regional endpoint need an account that writes in that region.
 
 !!! warning "CosmosDB partition key is per-call, not global"
     Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter exposes this via the variadic `params ...map[string]any` argument. If you forget, queries either fail or cross-partition-fan-out (slow and expensive). See the table and example below.

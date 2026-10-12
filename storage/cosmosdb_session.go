@@ -72,7 +72,11 @@ func (s *sessionTokenStore) set(containerName string, pk string, token string) {
 	partitions := s.byContainer[containerName]
 	if el, ok := partitions[pk]; ok {
 		entry := el.Value.(*sessionTokenEntry)
-		entry.token = nextSessionToken(entry.token, token)
+		next, ok := nextSessionToken(entry.token, token)
+		if !ok {
+			return
+		}
+		entry.token = next
 		entry.expiresAt = now.Add(s.ttl)
 		s.order.MoveToBack(el)
 		return
@@ -142,7 +146,7 @@ func (s *sessionTokenStore) setRangeLocked(containerName string, token string, n
 		s.byRange[containerName] = ranges
 	}
 	if current, ok := ranges[parsed.rangeID]; ok && current.expiresAt.After(now) {
-		token = nextSessionToken(current.token, token)
+		token, _ = nextSessionToken(current.token, token)
 	}
 	ranges[parsed.rangeID] = rangeSessionToken{token: token, expiresAt: now.Add(s.ttl)}
 }
@@ -238,19 +242,20 @@ func (t sessionToken) String() string {
 // a different range (after a partition split) replaces current, since LSNs
 // aren't comparable across ranges; a late response from the old range can
 // therefore replace the new range's token, and the next read may not see the
-// newer write. Tokens that can't be parsed never replace one that can.
-func nextSessionToken(current string, incoming string) string {
+// newer write. It returns false when incoming should be ignored: a token that
+// can't be parsed never replaces one that can, or extends its expiry.
+func nextSessionToken(current string, incoming string) (string, bool) {
 	cur, curOK := parseSessionToken(current)
 	inc, incOK := parseSessionToken(incoming)
 	switch {
 	case !curOK:
-		return incoming
+		return incoming, true
 	case !incOK:
-		return current
+		return current, false
 	case inc.rangeID != cur.rangeID:
-		return incoming
+		return incoming, true
 	default:
-		return mergeSessionTokens(cur, inc).String()
+		return mergeSessionTokens(cur, inc).String(), true
 	}
 }
 

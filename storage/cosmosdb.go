@@ -72,28 +72,9 @@ func (s *CosmosDBAdapter) OpenConnection() {
 
 	s.databaseName = databaseName
 
-	// Check if TLS verification should be skipped (for local testing)
-	skipTLS, _ := strconv.ParseBool(s.config["skip_tls_verify"])
-
 	// Create Azure Cosmos DB client
 	var err error
-	var clientOptions *azcosmos.ClientOptions
-
-	if skipTLS {
-		// Configure client to skip TLS verification
-		clientOptions = &azcosmos.ClientOptions{
-			ClientOptions: azcore.ClientOptions{
-				Transport: &http.Client{
-					Transport: &http.Transport{
-						TLSClientConfig: &tls.Config{
-							InsecureSkipVerify: true,
-						},
-					},
-				},
-			},
-		}
-		slog.Warn("TLS verification is disabled - use this only for local testing!")
-	}
+	clientOptions := cosmosClientOptions(s.config)
 
 	if key != "" {
 		// Use account key authentication
@@ -122,6 +103,50 @@ func (s *CosmosDBAdapter) OpenConnection() {
 	}
 
 	slog.Debug("Connected to CosmosDB using Azure SDK")
+}
+
+// cosmosClientOptions builds the Cosmos DB client options from config.
+//
+// "preferred_regions" is an ordered, comma-separated list of Azure regions such
+// as "West US, Central US". Since azcosmos v1.5.0 the client discovers the
+// account's regions from the endpoint and, without preferred regions, routes
+// requests to the account's primary region, which a workload behind a regional
+// private endpoint may not be able to reach. The SDK matches names ignoring
+// case and spaces, and ignores names that aren't account regions.
+//
+// "skip_tls_verify" disables TLS verification, for local testing only.
+func cosmosClientOptions(config map[string]string) *azcosmos.ClientOptions {
+	options := &azcosmos.ClientOptions{
+		PreferredRegions: parsePreferredRegions(config["preferred_regions"]),
+	}
+	if len(options.PreferredRegions) > 0 {
+		slog.Info("Routing CosmosDB requests to preferred regions", slog.Any("preferred_regions", options.PreferredRegions))
+	}
+
+	// Check if TLS verification should be skipped (for local testing)
+	if skipTLS, _ := strconv.ParseBool(config["skip_tls_verify"]); skipTLS {
+		options.Transport = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true,
+				},
+			},
+		}
+		slog.Warn("TLS verification is disabled - use this only for local testing!")
+	}
+	return options
+}
+
+// parsePreferredRegions splits a comma-separated region list, keeping its
+// order and dropping empty entries.
+func parsePreferredRegions(value string) []string {
+	var regions []string
+	for _, region := range strings.Split(value, ",") {
+		if region = strings.TrimSpace(region); region != "" {
+			regions = append(regions, region)
+		}
+	}
+	return regions
 }
 
 func (s *CosmosDBAdapter) Execute(statement string) error {
@@ -219,7 +244,7 @@ func (s *CosmosDBAdapter) setSessionToken(containerName string, pk string, token
 
 // applySessionToken sets the session token on a read. A read scoped to one
 // partition (pk != "") gets that partition's token; a read across partitions
-// gets the newest token for every partition range of the container.
+// gets the merged token for each partition range of the container.
 func (s *CosmosDBAdapter) applySessionToken(containerName string, pk string, queryOptions *azcosmos.QueryOptions) {
 	if s.sessionTokens == nil {
 		return

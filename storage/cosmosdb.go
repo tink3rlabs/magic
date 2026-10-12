@@ -49,52 +49,22 @@ func GetCosmosDBAdapterInstance(config map[string]string) *CosmosDBAdapter {
 }
 
 func (s *CosmosDBAdapter) OpenConnection() {
-	var endpoint string
-	var key string
-	var databaseName string
-
-	if connStr, exists := s.config["connection_string"]; exists {
-		// Use connection string directly
-		endpoint = connStr
-	} else {
-		// Build from individual parameters
-		endpoint = s.config["endpoint"]
-		key = s.config["key"]
-		databaseName = s.config["database"]
-		if databaseName == "" {
-			databaseName = "magic"
-		}
-
-		if endpoint == "" || key == "" {
-			logger.Fatal("CosmosDB endpoint and key are required")
-		}
-	}
-
-	s.databaseName = databaseName
-
-	// Create Azure Cosmos DB client
-	var err error
 	clientOptions := cosmosClientOptions(s.config)
-
-	if key != "" {
-		// Use account key authentication
-		keyCredential, keyErr := azcosmos.NewKeyCredential(key)
-		if keyErr != nil {
-			logger.Fatal("Failed to create key credential", slog.Any("error", keyErr.Error()))
-		}
-		s.client, err = azcosmos.NewClientWithKey(endpoint, keyCredential, clientOptions)
-	} else {
-		// Use Azure AD authentication
-		credential, credErr := azidentity.NewDefaultAzureCredential(nil)
-		if credErr != nil {
-			logger.Fatal("Failed to obtain Azure credential", slog.Any("error", credErr.Error()))
-		}
-		s.client, err = azcosmos.NewClient(endpoint, credential, clientOptions)
+	if len(clientOptions.PreferredRegions) > 0 {
+		slog.Info("Routing CosmosDB requests to preferred regions", slog.Any("preferred_regions", clientOptions.PreferredRegions))
+	}
+	if clientOptions.Transport != nil { // only set by skip_tls_verify
+		slog.Warn("TLS verification is disabled - use this only for local testing!")
 	}
 
+	client, databaseName, err := newCosmosClient(s.config, clientOptions, func() (azcore.TokenCredential, error) {
+		return azidentity.NewDefaultAzureCredential(nil)
+	})
 	if err != nil {
 		logger.Fatal("Failed to create CosmosDB client", slog.Any("error", err.Error()))
 	}
+	s.client = client
+	s.databaseName = databaseName
 
 	// Get database client
 	s.databaseClient, err = s.client.NewDatabase(databaseName)
@@ -105,6 +75,51 @@ func (s *CosmosDBAdapter) OpenConnection() {
 	slog.Debug("Connected to CosmosDB using Azure SDK")
 }
 
+// newCosmosClient creates the Cosmos DB client described by config and returns
+// it with the database name ("database", default "magic"). Authentication is
+// chosen from config:
+//
+//   - "connection_string": the account endpoint and key from the connection string
+//   - "endpoint" and "key": account key authentication
+//   - "endpoint" alone: Microsoft Entra ID, using the credential from newCredential
+//
+// options apply to every client, so preferred regions and skip_tls_verify work
+// whichever way the client authenticates.
+func newCosmosClient(config map[string]string, options *azcosmos.ClientOptions, newCredential func() (azcore.TokenCredential, error)) (*azcosmos.Client, string, error) {
+	databaseName := config["database"]
+	if databaseName == "" {
+		databaseName = "magic"
+	}
+
+	if connStr := config["connection_string"]; connStr != "" {
+		client, err := azcosmos.NewClientFromConnectionString(connStr, options)
+		return client, databaseName, err
+	}
+
+	endpoint := config["endpoint"]
+	if endpoint == "" {
+		return nil, "", fmt.Errorf("CosmosDB endpoint or connection_string is required")
+	}
+
+	if key := config["key"]; key != "" {
+		// Use account key authentication
+		keyCredential, err := azcosmos.NewKeyCredential(key)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to create key credential: %w", err)
+		}
+		client, err := azcosmos.NewClientWithKey(endpoint, keyCredential, options)
+		return client, databaseName, err
+	}
+
+	// Use Microsoft Entra ID authentication
+	credential, err := newCredential()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to obtain Azure credential: %w", err)
+	}
+	client, err := azcosmos.NewClient(endpoint, credential, options)
+	return client, databaseName, err
+}
+
 // cosmosClientOptions builds the Cosmos DB client options from config.
 //
 // "preferred_regions" is an ordered, comma-separated list of Azure regions such
@@ -112,15 +127,12 @@ func (s *CosmosDBAdapter) OpenConnection() {
 // account's regions from the endpoint and, without preferred regions, routes
 // requests to the account's primary region, which a workload behind a regional
 // private endpoint may not be able to reach. The SDK matches names ignoring
-// case and spaces, and ignores names that aren't account regions.
+// case and spaces, and silently ignores names that aren't account regions.
 //
 // "skip_tls_verify" disables TLS verification, for local testing only.
 func cosmosClientOptions(config map[string]string) *azcosmos.ClientOptions {
 	options := &azcosmos.ClientOptions{
 		PreferredRegions: parsePreferredRegions(config["preferred_regions"]),
-	}
-	if len(options.PreferredRegions) > 0 {
-		slog.Info("Routing CosmosDB requests to preferred regions", slog.Any("preferred_regions", options.PreferredRegions))
 	}
 
 	// Check if TLS verification should be skipped (for local testing)
@@ -132,7 +144,6 @@ func cosmosClientOptions(config map[string]string) *azcosmos.ClientOptions {
 				},
 			},
 		}
-		slog.Warn("TLS verification is disabled - use this only for local testing!")
 	}
 	return options
 }

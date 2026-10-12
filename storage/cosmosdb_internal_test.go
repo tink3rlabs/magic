@@ -1115,66 +1115,240 @@ func TestCosmosClientOptions(t *testing.T) {
 	}
 }
 
+// fakeTokenCredential stands in for a Microsoft Entra ID credential.
+type fakeTokenCredential struct{ err error }
+
+func (f fakeTokenCredential) GetToken(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	return azcore.AccessToken{Token: "fake-entra-token", ExpiresOn: time.Now().Add(time.Hour)}, f.err
+}
+
+// regionalRequest is one data-plane request sent to a fake regional account.
+type regionalRequest struct {
+	method, host, path, auth string
+}
+
+// fakeRegionalAccount serves a multi-write account in East US (its first
+// region) and West US, and records every request other than the account read.
+func fakeRegionalAccount(eastUS, westUS string) (fakeCosmosTransport, func() []regionalRequest) {
+	var mu sync.Mutex
+	var requests []regionalRequest
+	transport := fakeCosmosTransport(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/" {
+			locations := `[{"name":"East US","databaseAccountEndpoint":"https://` + eastUS + `:443/"},` +
+				`{"name":"West US","databaseAccountEndpoint":"https://` + westUS + `:443/"}]`
+			return fakeCosmosJSON(req, `{"id":"acct","enableMultipleWriteLocations":true,`+
+				`"writableLocations":`+locations+`,"readableLocations":`+locations+`}`), nil
+		}
+		mu.Lock()
+		requests = append(requests, regionalRequest{req.Method, req.URL.Hostname(), req.URL.Path, req.Header.Get("Authorization")})
+		mu.Unlock()
+		resp := fakeCosmosJSON(req, `{"id":"1","pk":"a"}`)
+		if req.Method == http.MethodPost {
+			resp.StatusCode = http.StatusCreated
+		}
+		return resp, nil
+	})
+	return transport, func() []regionalRequest {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]regionalRequest(nil), requests...)
+	}
+}
+
 // TestCosmosDBPreferredRegionsRouteRequests reproduces issue #285: the client
 // is configured with a West US endpoint on an account whose first region is
-// East US. Without preferred regions, requests go to East US; with
-// "preferred_regions": "West US" they stay in West US.
+// East US. Without preferred regions, reads and writes go to East US; with
+// "preferred_regions": "West US" they stay in West US, whichever way the client
+// authenticates.
 func TestCosmosDBPreferredRegionsRouteRequests(t *testing.T) {
 	const (
 		eastUS = "acct-eastus.documents.azure.com"
 		westUS = "acct-westus.documents.azure.com"
+		key    = "dGVzdC1rZXk="
 	)
+	endpoint := "https://" + westUS + ":443/"
 	cases := []struct {
 		name     string
 		config   map[string]string
 		wantHost string
+		wantAuth string // prefix of the Authorization header
 	}{
-		{"no preferred regions", map[string]string{}, eastUS},
-		{"preferred West US", map[string]string{"preferred_regions": "West US"}, westUS},
-		{"preferred region name in another form", map[string]string{"preferred_regions": "westus"}, westUS},
+		{"key, no preferred regions", map[string]string{"endpoint": endpoint, "key": key}, eastUS, "type%3Dmaster"},
+		{"key, preferred West US", map[string]string{"endpoint": endpoint, "key": key, "preferred_regions": "West US"}, westUS, "type%3Dmaster"},
+		{"key, region name in another form", map[string]string{"endpoint": endpoint, "key": key, "preferred_regions": "westus"}, westUS, "type%3Dmaster"},
+		{"Entra ID, preferred West US", map[string]string{"endpoint": endpoint, "preferred_regions": "West US"}, westUS, "type=aad"},
+		{"connection string, preferred West US", map[string]string{
+			"connection_string": "AccountEndpoint=" + endpoint + ";AccountKey=" + key + ";",
+			"preferred_regions": "West US",
+		}, westUS, "type%3Dmaster"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var hosts []string
+			transport, requests := fakeRegionalAccount(eastUS, westUS)
 			options := cosmosClientOptions(tc.config)
 			options.Retry = policy.RetryOptions{MaxRetries: -1}
-			options.Transport = fakeCosmosTransport(func(req *http.Request) (*http.Response, error) {
-				if req.Method == http.MethodGet && req.URL.Path == "/" {
-					locations := `[{"name":"East US","databaseAccountEndpoint":"https://` + eastUS + `:443/"},` +
-						`{"name":"West US","databaseAccountEndpoint":"https://` + westUS + `:443/"}]`
-					return fakeCosmosJSON(req, `{"id":"acct","enableMultipleWriteLocations":true,`+
-						`"writableLocations":`+locations+`,"readableLocations":`+locations+`}`), nil
-				}
-				mu.Lock()
-				hosts = append(hosts, req.URL.Hostname())
-				mu.Unlock()
-				return fakeCosmosJSON(req, `{"id":"db"}`), nil
-			})
+			options.Transport = transport
 
-			cred, err := azcosmos.NewKeyCredential(base64.StdEncoding.EncodeToString([]byte("test-key")))
+			client, databaseName, err := newCosmosClient(tc.config, options, func() (azcore.TokenCredential, error) {
+				return fakeTokenCredential{}, nil
+			})
 			if err != nil {
-				t.Fatalf("NewKeyCredential: %v", err)
+				t.Fatalf("newCosmosClient: %v", err)
 			}
-			client, err := azcosmos.NewClientWithKey("https://"+westUS+":443/", cred, options)
-			if err != nil {
-				t.Fatalf("NewClientWithKey: %v", err)
-			}
-			db, err := client.NewDatabase("db")
+			db, err := client.NewDatabase(databaseName)
 			if err != nil {
 				t.Fatalf("NewDatabase: %v", err)
 			}
-			s := &CosmosDBAdapter{client: client, databaseClient: db}
+			s := &CosmosDBAdapter{client: client, databaseClient: db, databaseName: databaseName}
 
 			if err := s.Ping(); err != nil {
 				t.Fatalf("Ping: %v", err)
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			if len(hosts) == 0 || hosts[len(hosts)-1] != tc.wantHost {
-				t.Fatalf("Ping went to %q; want %q", hosts, tc.wantHost)
+			if err := s.Create(cosmosSampleItem{Id: "1"}, map[string]any{"pk_field": "pk", "pk_value": "a"}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			got := requests()
+			if len(got) != 2 {
+				t.Fatalf("requests = %+v; want a read and a write", got)
+			}
+			for _, r := range got {
+				if r.host != tc.wantHost {
+					t.Errorf("%s %s went to %q; want %q", r.method, r.path, r.host, tc.wantHost)
+				}
+				if !strings.HasPrefix(r.auth, tc.wantAuth) {
+					t.Errorf("%s %s Authorization = %q; want prefix %q", r.method, r.path, r.auth, tc.wantAuth)
+				}
 			}
 		})
+	}
+}
+
+// TestCosmosDBReadSessionNotAvailable pins what happens when a read carrying a
+// session token reaches a region that doesn't have the write yet: Cosmos
+// answers 404 with substatus 1002 and the SDK retries. On a multi-write
+// account the retries stay in the preferred regions; on a single-write account
+// the SDK retries once against the write region. If every attempt fails, Get
+// returns an error rather than ErrNotFound, so callers don't mistake it for a
+// missing item.
+func TestCosmosDBReadSessionNotAvailable(t *testing.T) {
+	const (
+		eastUS = "acct-eastus.documents.azure.com"
+		westUS = "acct-westus.documents.azure.com"
+	)
+	both := `[{"name":"East US","databaseAccountEndpoint":"https://` + eastUS + `:443/"},` +
+		`{"name":"West US","databaseAccountEndpoint":"https://` + westUS + `:443/"}]`
+	eastOnly := `[{"name":"East US","databaseAccountEndpoint":"https://` + eastUS + `:443/"}]`
+
+	cases := []struct {
+		name      string
+		account   string
+		failures  int
+		wantHosts []string
+		wantErr   bool
+	}{
+		{"multi-write, catches up on retry",
+			`{"id":"acct","enableMultipleWriteLocations":true,"writableLocations":` + both + `,"readableLocations":` + both + `}`,
+			1, []string{westUS, westUS}, false},
+		{"multi-write, never catches up",
+			`{"id":"acct","enableMultipleWriteLocations":true,"writableLocations":` + both + `,"readableLocations":` + both + `}`,
+			99, []string{westUS, westUS, westUS}, true},
+		{"single write region, retried in the write region",
+			`{"id":"acct","enableMultipleWriteLocations":false,"writableLocations":` + eastOnly + `,"readableLocations":` + both + `}`,
+			1, []string{westUS, eastUS}, false},
+		{"single write region, never catches up",
+			`{"id":"acct","enableMultipleWriteLocations":false,"writableLocations":` + eastOnly + `,"readableLocations":` + both + `}`,
+			99, []string{westUS, eastUS}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hosts []string
+			transport := fakeCosmosTransport(func(req *http.Request) (*http.Response, error) {
+				if req.Method == http.MethodGet && req.URL.Path == "/" {
+					return fakeCosmosJSON(req, tc.account), nil
+				}
+				if got := req.Header.Get("x-ms-session-token"); got != "0:-1#42" {
+					t.Errorf("read sent session token %q; want %q", got, "0:-1#42")
+				}
+				hosts = append(hosts, req.URL.Hostname())
+				if len(hosts) <= tc.failures {
+					resp := fakeCosmosJSON(req, `{"code":"NotFound","message":"The read session is not available for the input session token."}`)
+					resp.StatusCode = http.StatusNotFound
+					resp.Header.Set("x-ms-substatus", "1002")
+					return resp, nil
+				}
+				return fakeCosmosJSON(req, `{"_rid":"r","Documents":[{"id":"1","pk":"a"}],"_count":1}`), nil
+			})
+
+			config := map[string]string{"endpoint": "https://" + westUS + ":443/", "key": "dGVzdC1rZXk=", "preferred_regions": "West US"}
+			options := cosmosClientOptions(config)
+			options.Retry = policy.RetryOptions{MaxRetries: -1}
+			options.Transport = transport
+			client, databaseName, err := newCosmosClient(config, options, nil)
+			if err != nil {
+				t.Fatalf("newCosmosClient: %v", err)
+			}
+			db, err := client.NewDatabase(databaseName)
+			if err != nil {
+				t.Fatalf("NewDatabase: %v", err)
+			}
+			s := &CosmosDBAdapter{client: client, databaseClient: db, sessionTokens: newSessionTokenStore()}
+			token := "0:-1#42"
+			s.setSessionToken("cosmos_sample_items", "a", &token)
+
+			var got cosmosSampleItem
+			err = s.Get(&got, map[string]any{"id": "1"}, map[string]any{"pk_field": "pk", "pk_value": "a"})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Get err = %v; want error: %v", err, tc.wantErr)
+			}
+			if errors.Is(err, ErrNotFound) {
+				t.Fatalf("Get err = %v; a session-not-available failure must not look like ErrNotFound", err)
+			}
+			if !reflect.DeepEqual(hosts, tc.wantHosts) {
+				t.Fatalf("read attempts went to %q; want %q", hosts, tc.wantHosts)
+			}
+		})
+	}
+}
+
+func TestNewCosmosClientConfig(t *testing.T) {
+	newCredential := func() (azcore.TokenCredential, error) { return fakeTokenCredential{}, nil }
+	options := &azcosmos.ClientOptions{}
+	const connStr = "AccountEndpoint=https://acct.documents.azure.com:443/;AccountKey=dGVzdC1rZXk=;"
+
+	for _, tc := range []struct {
+		name   string
+		config map[string]string
+		wantDB string
+	}{
+		{"database defaults to magic", map[string]string{"endpoint": "https://acct.documents.azure.com:443/", "key": "dGVzdC1rZXk="}, "magic"},
+		{"connection string uses database", map[string]string{"connection_string": connStr, "database": "blox"}, "blox"},
+		{"connection string defaults to magic", map[string]string{"connection_string": connStr}, "magic"},
+		{"Entra ID uses database", map[string]string{"endpoint": "https://acct.documents.azure.com:443/", "database": "blox"}, "blox"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, databaseName, err := newCosmosClient(tc.config, options, newCredential)
+			if err != nil || client == nil {
+				t.Fatalf("newCosmosClient = %v, %v; want a client", client, err)
+			}
+			if databaseName != tc.wantDB {
+				t.Fatalf("database = %q; want %q", databaseName, tc.wantDB)
+			}
+		})
+	}
+
+	if _, _, err := newCosmosClient(map[string]string{"key": "dGVzdC1rZXk="}, options, newCredential); err == nil ||
+		!strings.Contains(err.Error(), "endpoint or connection_string is required") {
+		t.Fatalf("no endpoint: err = %v; want a required error", err)
+	}
+	if _, _, err := newCosmosClient(map[string]string{"connection_string": "AccountEndpoint=https://acct.documents.azure.com:443/;"}, options, newCredential); err == nil {
+		t.Fatalf("connection string without AccountKey: want an error")
+	}
+	credErr := errors.New("no managed identity")
+	if _, _, err := newCosmosClient(map[string]string{"endpoint": "https://acct.documents.azure.com:443/"}, options, func() (azcore.TokenCredential, error) {
+		return nil, credErr
+	}); !errors.Is(err, credErr) {
+		t.Fatalf("Entra ID credential error = %v; want it wrapped", err)
 	}
 }
 

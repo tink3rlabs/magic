@@ -123,6 +123,14 @@ config := map[string]string{
     "database":          "blox",
 }
 
+// Or Microsoft Entra ID (managed identity, workload identity, Azure CLI, ...):
+// an endpoint with no key uses azidentity.NewDefaultAzureCredential
+config := map[string]string{
+    "provider": "cosmosdb",
+    "endpoint": "https://your-account.documents.azure.com:443/",
+    "database": "blox",
+}
+
 // Local emulator — disable TLS verification
 config := map[string]string{
     "provider":        "cosmosdb",
@@ -150,7 +158,8 @@ The Cosmos DB SDK reads the account's regions from the configured endpoint and, 
 
 Set `preferred_regions` to an ordered, comma-separated list of the regions the workload can reach, such as `"West US"` or `"West US, Central US"`. The adapter doesn't infer a region from the endpoint hostname.
 
-- Region names are matched ignoring case and spaces, so `West US` and `westus` are the same. A name that isn't one of the account's regions is ignored, and the adapter logs the configured list at startup to help spot typos.
+- Region names are matched ignoring case and spaces, so `West US` and `westus` are the same. A name that isn't one of the account's regions is silently ignored, and if none match, requests go to the primary region as if the key weren't set. Check the names against the account's regions in the Azure portal; the adapter logs the configured list at startup.
+- It applies whichever way the adapter authenticates: endpoint and key, connection string, or Microsoft Entra ID.
 - On an account with a single write region, writes always go to that region; preferred regions only route reads. Workloads that must write through a regional endpoint need an account that writes in that region.
 
 !!! warning "CosmosDB partition key is per-call, not global"
@@ -189,6 +198,9 @@ The adapter keeps the session token Cosmos DB returns from each `Create` / `Upda
 | `session_token_max` | `10000` | Most container/partition pairs held; the least recently written is dropped first. |
 
 A value that can't be parsed or isn't positive logs a warning and keeps the default.
+
+!!! note "Session not available"
+    A read that carries a session token can reach a region that hasn't received the write yet. Cosmos DB then answers `404` with substatus `1002` ("read session not available") instead of returning older data, and the SDK retries: on a multi-write account in your preferred regions, on a single-write account once against the write region. If every attempt fails, the read returns an error (not `ErrNotFound`). Reads and writes that go to the same region, as they do on a multi-write account with `preferred_regions` set, rarely hit this. To go back to reads without session tokens, set `"session_tokens": "false"`.
 
 !!! note "Known limitation: partition splits"
     After Cosmos DB splits a partition range, a response for a write sent to the old range that arrives after one from the new range replaces the new range's token. The next read may then not see the newer write. Fixing this needs the partition-range layout, which the adapter doesn't track.

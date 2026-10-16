@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
 	"github.com/tink3rlabs/magic/logger"
@@ -25,6 +27,10 @@ type CosmosDBAdapter struct {
 	databaseClient *azcosmos.DatabaseClient
 	config         map[string]string
 	databaseName   string
+	// sessionTokens gives reads the session token of earlier writes. nil turns
+	// tracking off, so an adapter built directly as &CosmosDBAdapter{} has it
+	// off; GetCosmosDBAdapterInstance sets it up from config.
+	sessionTokens *sessionTokenStore
 }
 
 var cosmosDBAdapterLock = &sync.Mutex{}
@@ -35,7 +41,7 @@ func GetCosmosDBAdapterInstance(config map[string]string) *CosmosDBAdapter {
 		cosmosDBAdapterLock.Lock()
 		defer cosmosDBAdapterLock.Unlock()
 		if cosmosDBAdapterInstance == nil {
-			cosmosDBAdapterInstance = &CosmosDBAdapter{config: config}
+			cosmosDBAdapterInstance = &CosmosDBAdapter{config: config, sessionTokens: newCosmosSessionTokenStore(config)}
 			cosmosDBAdapterInstance.OpenConnection()
 		}
 	}
@@ -43,71 +49,22 @@ func GetCosmosDBAdapterInstance(config map[string]string) *CosmosDBAdapter {
 }
 
 func (s *CosmosDBAdapter) OpenConnection() {
-	var endpoint string
-	var key string
-	var databaseName string
-
-	if connStr, exists := s.config["connection_string"]; exists {
-		// Use connection string directly
-		endpoint = connStr
-	} else {
-		// Build from individual parameters
-		endpoint = s.config["endpoint"]
-		key = s.config["key"]
-		databaseName = s.config["database"]
-		if databaseName == "" {
-			databaseName = "magic"
-		}
-
-		if endpoint == "" || key == "" {
-			logger.Fatal("CosmosDB endpoint and key are required")
-		}
+	clientOptions := cosmosClientOptions(s.config)
+	if len(clientOptions.PreferredRegions) > 0 {
+		slog.Info("Routing CosmosDB requests to preferred regions", slog.Any("preferred_regions", clientOptions.PreferredRegions))
 	}
-
-	s.databaseName = databaseName
-
-	// Check if TLS verification should be skipped (for local testing)
-	skipTLS, _ := strconv.ParseBool(s.config["skip_tls_verify"])
-
-	// Create Azure Cosmos DB client
-	var err error
-	var clientOptions *azcosmos.ClientOptions
-
-	if skipTLS {
-		// Configure client to skip TLS verification
-		clientOptions = &azcosmos.ClientOptions{
-			ClientOptions: azcore.ClientOptions{
-				Transport: &http.Client{
-					Transport: &http.Transport{
-						TLSClientConfig: &tls.Config{
-							InsecureSkipVerify: true,
-						},
-					},
-				},
-			},
-		}
+	if clientOptions.Transport != nil { // only set by skip_tls_verify
 		slog.Warn("TLS verification is disabled - use this only for local testing!")
 	}
 
-	if key != "" {
-		// Use account key authentication
-		keyCredential, keyErr := azcosmos.NewKeyCredential(key)
-		if keyErr != nil {
-			logger.Fatal("Failed to create key credential", slog.Any("error", keyErr.Error()))
-		}
-		s.client, err = azcosmos.NewClientWithKey(endpoint, keyCredential, clientOptions)
-	} else {
-		// Use Azure AD authentication
-		credential, credErr := azidentity.NewDefaultAzureCredential(nil)
-		if credErr != nil {
-			logger.Fatal("Failed to obtain Azure credential", slog.Any("error", credErr.Error()))
-		}
-		s.client, err = azcosmos.NewClient(endpoint, credential, clientOptions)
-	}
-
+	client, databaseName, err := newCosmosClient(s.config, clientOptions, func() (azcore.TokenCredential, error) {
+		return azidentity.NewDefaultAzureCredential(nil)
+	})
 	if err != nil {
 		logger.Fatal("Failed to create CosmosDB client", slog.Any("error", err.Error()))
 	}
+	s.client = client
+	s.databaseName = databaseName
 
 	// Get database client
 	s.databaseClient, err = s.client.NewDatabase(databaseName)
@@ -116,6 +73,91 @@ func (s *CosmosDBAdapter) OpenConnection() {
 	}
 
 	slog.Debug("Connected to CosmosDB using Azure SDK")
+}
+
+// newCosmosClient creates the Cosmos DB client described by config and returns
+// it with the database name ("database", default "magic"). Authentication is
+// chosen from config:
+//
+//   - "connection_string": the account endpoint and key from the connection string
+//   - "endpoint" and "key": account key authentication
+//   - "endpoint" alone: Microsoft Entra ID, using the credential from newCredential
+//
+// options apply to every client, so preferred regions and skip_tls_verify work
+// whichever way the client authenticates.
+func newCosmosClient(config map[string]string, options *azcosmos.ClientOptions, newCredential func() (azcore.TokenCredential, error)) (*azcosmos.Client, string, error) {
+	databaseName := config["database"]
+	if databaseName == "" {
+		databaseName = "magic"
+	}
+
+	if connStr := config["connection_string"]; connStr != "" {
+		client, err := azcosmos.NewClientFromConnectionString(connStr, options)
+		return client, databaseName, err
+	}
+
+	endpoint := config["endpoint"]
+	if endpoint == "" {
+		return nil, "", fmt.Errorf("CosmosDB endpoint or connection_string is required")
+	}
+
+	if key := config["key"]; key != "" {
+		// Use account key authentication
+		keyCredential, err := azcosmos.NewKeyCredential(key)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to create key credential: %w", err)
+		}
+		client, err := azcosmos.NewClientWithKey(endpoint, keyCredential, options)
+		return client, databaseName, err
+	}
+
+	// Use Microsoft Entra ID authentication
+	credential, err := newCredential()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to obtain Azure credential: %w", err)
+	}
+	client, err := azcosmos.NewClient(endpoint, credential, options)
+	return client, databaseName, err
+}
+
+// cosmosClientOptions builds the Cosmos DB client options from config.
+//
+// "preferred_regions" is an ordered, comma-separated list of Azure regions such
+// as "West US, Central US". Since azcosmos v1.5.0 the client discovers the
+// account's regions from the endpoint and, without preferred regions, routes
+// requests to the account's primary region, which a workload behind a regional
+// private endpoint may not be able to reach. The SDK matches names ignoring
+// case and spaces, and silently ignores names that aren't account regions.
+//
+// "skip_tls_verify" disables TLS verification, for local testing only.
+func cosmosClientOptions(config map[string]string) *azcosmos.ClientOptions {
+	options := &azcosmos.ClientOptions{
+		PreferredRegions: parsePreferredRegions(config["preferred_regions"]),
+	}
+
+	// Check if TLS verification should be skipped (for local testing)
+	if skipTLS, _ := strconv.ParseBool(config["skip_tls_verify"]); skipTLS {
+		options.Transport = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true,
+				},
+			},
+		}
+	}
+	return options
+}
+
+// parsePreferredRegions splits a comma-separated region list, keeping its
+// order and dropping empty entries.
+func parsePreferredRegions(value string) []string {
+	var regions []string
+	for _, region := range strings.Split(value, ",") {
+		if region = strings.TrimSpace(region); region != "" {
+			regions = append(regions, region)
+		}
+	}
+	return regions
 }
 
 func (s *CosmosDBAdapter) Execute(statement string) error {
@@ -144,6 +186,89 @@ func (s *CosmosDBAdapter) GetType() StorageAdapterType {
 
 func (s *CosmosDBAdapter) GetProvider() StorageProviders {
 	return COSMOSDB_PROVIDER
+}
+
+const cosmosSessionTokenHeader = "x-ms-session-token"
+
+// Defaults for the "session_token_ttl" and "session_token_max" config keys.
+const (
+	defaultSessionTokenTTL = 5 * time.Minute
+	defaultSessionTokenMax = 10000
+)
+
+// newCosmosSessionTokenStore returns the store that gives reads their session
+// token, or nil when the "session_tokens" config key turns tracking off.
+// "session_token_ttl" (a Go duration such as "5m") and "session_token_max" (a
+// number of container/partition pairs) override the defaults. A value for any
+// of the three that can't be parsed (or, for the last two, isn't positive)
+// logs a warning and keeps the default.
+func newCosmosSessionTokenStore(config map[string]string) *sessionTokenStore {
+	if v, ok := config["session_tokens"]; ok {
+		if enabled, err := strconv.ParseBool(v); err != nil {
+			slog.Warn("Invalid session_tokens, leaving session tracking on", slog.String("value", v))
+		} else if !enabled {
+			return nil
+		}
+	}
+	store := newSessionTokenStore()
+	if v, ok := config["session_token_ttl"]; ok {
+		if ttl, err := time.ParseDuration(v); err == nil && ttl > 0 {
+			store.ttl = ttl
+		} else {
+			slog.Warn("Invalid session_token_ttl, using the default", slog.String("value", v), slog.Duration("default", store.ttl))
+		}
+	}
+	if v, ok := config["session_token_max"]; ok {
+		if limit, err := strconv.Atoi(v); err == nil && limit > 0 {
+			store.max = limit
+		} else {
+			slog.Warn("Invalid session_token_max, using the default", slog.String("value", v), slog.Int("default", store.max))
+		}
+	}
+	return store
+}
+
+// recordSessionToken stores the session token from a write. A failed write still
+// carries one in its HTTP response (for example a 409 when an SDK retry collides
+// with an attempt that already landed), and that token is what lets the next read
+// see the existing item.
+func (s *CosmosDBAdapter) recordSessionToken(containerName string, pk string, token *string, err error) {
+	if token == nil && err != nil {
+		var respErr *azcore.ResponseError
+		if errors.As(err, &respErr) && respErr.RawResponse != nil {
+			if t := respErr.RawResponse.Header.Get(cosmosSessionTokenHeader); t != "" {
+				token = &t
+			}
+		}
+	}
+	s.setSessionToken(containerName, pk, token)
+}
+
+// setSessionToken stores token for the partition. The store is created with the
+// adapter; a nil store means tracking is off.
+func (s *CosmosDBAdapter) setSessionToken(containerName string, pk string, token *string) {
+	if s.sessionTokens == nil || token == nil || *token == "" {
+		return
+	}
+	s.sessionTokens.set(containerName, pk, *token)
+}
+
+// applySessionToken sets the session token on a read. A read scoped to one
+// partition (pk != "") gets that partition's token; a read across partitions
+// gets the merged token for each partition range of the container.
+func (s *CosmosDBAdapter) applySessionToken(containerName string, pk string, queryOptions *azcosmos.QueryOptions) {
+	if s.sessionTokens == nil {
+		return
+	}
+	var token string
+	if pk != "" {
+		token = s.sessionTokens.get(containerName, pk)
+	} else {
+		token = s.sessionTokens.getForContainer(containerName)
+	}
+	if token != "" {
+		queryOptions.SessionToken = &token
+	}
 }
 
 func (s *CosmosDBAdapter) GetSchemaName() string {
@@ -245,7 +370,8 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	partitionKey := azcosmos.NewPartitionKeyString(pkValue)
 
 	// Create item
-	_, err = containerClient.CreateItem(ctx, partitionKey, itemBytes, nil)
+	response, err := containerClient.CreateItem(ctx, partitionKey, itemBytes, nil)
+	s.recordSessionToken(containerName, pkValue, response.SessionToken, err)
 	if err != nil {
 		return fmt.Errorf("failed to create item: %v", err)
 	}
@@ -278,22 +404,27 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 
 	paramIndex := 1
 	for key, value := range filter {
-		paramName := fmt.Sprintf("@param%d", paramIndex)
-		conditions = append(conditions, fmt.Sprintf("c.%s = %s", key, paramName))
-		queryParams = append(queryParams, azcosmos.QueryParameter{
-			Name:  paramName,
-			Value: value,
-		})
-		paramIndex++
+		ref, err := cosmosFilterRef(key)
+		if err != nil {
+			return err
+		}
+		condition, params := cosmosEquals(ref, value, &paramIndex)
+		conditions = append(conditions, condition)
+		queryParams = append(queryParams, params...)
 	}
 
 	// Add partition key condition if provided in params
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
 		return fmt.Errorf("failed to build partition key: %v", err)
-	} else if pk != "" {
-		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+	}
+	if pk != "" {
+		pkRef, err := s.partitionKeyRef(paramMap)
+		if err != nil {
+			return err
+		}
 		paramName := fmt.Sprintf("@param%d", paramIndex)
-		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
+		conditions = append(conditions, fmt.Sprintf("%s = %s", pkRef, paramName))
 		queryParams = append(queryParams, azcosmos.QueryParameter{
 			Name:  paramName,
 			Value: pk,
@@ -309,6 +440,7 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	queryOptions := &azcosmos.QueryOptions{
 		QueryParameters: queryParams,
 	}
+	s.applySessionToken(containerName, pk, queryOptions)
 
 	// Execute query
 	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)
@@ -420,7 +552,9 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	partitionKey := azcosmos.NewPartitionKeyString(pkStr)
 
 	// Update item
-	_, err = containerClient.ReplaceItem(ctx, partitionKey, idStr, itemBytes, nil)
+	// Update item
+	response, err := containerClient.ReplaceItem(ctx, partitionKey, idStr, itemBytes, nil)
+	s.recordSessionToken(containerName, pkStr, response.SessionToken, err)
 	if err != nil {
 		return fmt.Errorf("failed to update item: %v", err)
 	}
@@ -468,7 +602,8 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 	partitionKey := azcosmos.NewPartitionKeyString(pk)
 
 	// Delete item
-	_, err = containerClient.DeleteItem(ctx, partitionKey, id.(string), nil)
+	response, err := containerClient.DeleteItem(ctx, partitionKey, id.(string), nil)
+	s.recordSessionToken(containerName, pk, response.SessionToken, err)
 	if err != nil {
 		return fmt.Errorf("failed to delete item: %v", err)
 	}
@@ -516,10 +651,103 @@ func (s *CosmosDBAdapter) Count(dest any, filter map[string]any, params ...map[s
 	return s.CountContext(context.Background(), dest, filter, params...)
 }
 
+// CountContext returns the number of documents in dest's partition that match
+// filter. It runs a server-side aggregate (SELECT VALUE COUNT(1)), so no
+// documents are transferred. An empty filter counts every document in the
+// partition.
+//
+// pk_field and pk_value must be passed through params. The azcosmos SDK does
+// not support cross-partition aggregates (the gateway rejects them), so an
+// unscoped count returns an error instead of a wrong or failing query.
 func (s *CosmosDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	// TODO Implement
+	if dest == nil {
+		return 0, fmt.Errorf("a destination is required to count resources")
+	}
+
+	// Build and validate the query before touching the client so that bad
+	// input fails without any network I/O.
+	query, queryParams, pk, err := s.buildCountQuery(filter, extractParams(params...))
+	if err != nil {
+		return 0, err
+	}
+
+	containerName := s.getContainerName(dest)
+	containerClient, err := s.databaseClient.NewContainer(containerName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create container client: %w", err)
+	}
+
+	queryOptions := &azcosmos.QueryOptions{
+		QueryParameters: queryParams,
+	}
+	s.applySessionToken(containerName, pk, queryOptions)
+
+	pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions)
+	return sumCountPages(ctx, pager)
+}
+
+// sumCountPages adds up the COUNT values from every page rather than trusting
+// the first one, so a count that is split across pages is never under-reported.
+func sumCountPages(ctx context.Context, pager *runtime.Pager[azcosmos.QueryItemsResponse]) (int64, error) {
 	var total int64
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to execute count query: %w", err)
+		}
+		for _, raw := range page.Items {
+			var n int64
+			if err := json.Unmarshal(raw, &n); err != nil {
+				return 0, fmt.Errorf("failed to parse count result: %w", err)
+			}
+			total += n
+		}
+	}
 	return total, nil
+}
+
+// buildCountQuery builds the COUNT statement and its parameters, always scoped
+// to the partition given by pk_field / pk_value, and returns the partition key
+// value to run it against.
+func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, paramMap map[string]any) (string, []azcosmos.QueryParameter, string, error) {
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
+		return "", nil, "", fmt.Errorf("failed to build partition key: %w", err)
+	}
+	if pk == "" {
+		return "", nil, "", fmt.Errorf("cosmosdb count requires a non-empty pk_field and pk_value")
+	}
+	pkRef, err := s.partitionKeyRef(paramMap)
+	if err != nil {
+		return "", nil, "", err
+	}
+
+	query := "SELECT VALUE COUNT(1) FROM c"
+	queryParams := []azcosmos.QueryParameter{}
+	conditions := []string{}
+	paramIndex := 1
+
+	if len(filter) > 0 {
+		clause, filterParams, err := s.buildFilter(filter, &paramIndex)
+		if err != nil {
+			return "", nil, "", err
+		}
+		if clause != "" {
+			conditions = append(conditions, clause)
+			queryParams = append(queryParams, filterParams...)
+		}
+	}
+
+	paramName := fmt.Sprintf("@param%d", paramIndex)
+	conditions = append(conditions, fmt.Sprintf("%s = %s", pkRef, paramName))
+	queryParams = append(queryParams, azcosmos.QueryParameter{
+		Name:  paramName,
+		Value: pk,
+	})
+
+	query += " WHERE " + strings.Join(conditions, " AND ")
+
+	return query, queryParams, pk, nil
 }
 
 func (s *CosmosDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
@@ -548,6 +776,10 @@ func (s *CosmosDBAdapter) QueryContext(ctx context.Context, dest any, statement 
 	if cursor != "" {
 		queryOptions.ContinuationToken = &cursor
 	}
+
+	// The statement always runs across partitions, so it gets the token for
+	// every partition range rather than one partition's
+	s.applySessionToken(containerName, "", queryOptions)
 
 	// Execute the custom SQL statement
 	// Cross-partition is enabled by default for custom queries
@@ -622,7 +854,10 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 
 	// Add filter conditions if provided
 	if len(filter) > 0 {
-		filterClause, filterParams := s.buildFilter(filter, &paramIndex)
+		filterClause, filterParams, err := s.buildFilter(filter, &paramIndex)
+		if err != nil {
+			return "", err
+		}
 		if filterClause != "" {
 			conditions = append(conditions, filterClause)
 			queryParams = append(queryParams, filterParams...)
@@ -630,12 +865,17 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	}
 
 	// Add partition key condition if provided in params
-	if pk, err := s.buildPartitionKey(paramMap); err != nil {
+	pk, err := s.buildPartitionKey(paramMap)
+	if err != nil {
 		return "", fmt.Errorf("failed to build partition key: %v", err)
-	} else if pk != "" {
-		pkFieldName := s.getPartitionKeyFieldName(paramMap)
+	}
+	if pk != "" {
+		pkRef, err := s.partitionKeyRef(paramMap)
+		if err != nil {
+			return "", err
+		}
 		paramName := fmt.Sprintf("@param%d", paramIndex)
-		conditions = append(conditions, fmt.Sprintf("c.%s = %s", pkFieldName, paramName))
+		conditions = append(conditions, fmt.Sprintf("%s = %s", pkRef, paramName))
 		queryParams = append(queryParams, azcosmos.QueryParameter{
 			Name:  paramName,
 			Value: pk,
@@ -650,7 +890,8 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 
 	// Add ordering - required for consistent pagination
 	if sortKey != "" {
-		query += fmt.Sprintf(" ORDER BY c.%s %s", sortKey, sortDirection)
+		sortRef, _ := cosmosFieldRef(sortKey) // validated by validateSortKey above
+		query += fmt.Sprintf(" ORDER BY %s %s", sortRef, sortDirection)
 	} else {
 		// Use id as default sort key for consistent pagination
 		query += fmt.Sprintf(" ORDER BY c.id %s", sortDirection)
@@ -666,6 +907,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	if cursor != "" {
 		queryOptions.ContinuationToken = &cursor
 	}
+	s.applySessionToken(containerName, pk, queryOptions)
 
 	// Execute query
 	page, err := s.executeQuery(ctx, containerClient, query, paramMap, queryOptions)
@@ -787,15 +1029,75 @@ func (s *CosmosDBAdapter) executeQuery(
 	return page, err
 }
 
-// buildFilter constructs WHERE clause conditions from filter map
-func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (string, []azcosmos.QueryParameter) {
+// validCosmosFieldPath matches a plain identifier or a dotted path of them
+// (e.g. "address.city"), which Cosmos resolves as a nested property.
+var validCosmosFieldPath = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
+
+// cosmosFieldRef renders a field path as a quoted property accessor
+// (c["address"]["city"]). Quoting keeps names that are Cosmos keywords, such
+// as value, order or top, valid; validating the path first keeps the quoting
+// safe, since no part can contain a quote or bracket.
+func cosmosFieldRef(path string) (string, bool) {
+	if !validCosmosFieldPath.MatchString(path) {
+		return "", false
+	}
+	return `c["` + strings.ReplaceAll(path, ".", `"]["`) + `"]`, true
+}
+
+// cosmosFilterRef is cosmosFieldRef for a filter key, with the error to return
+// when the key is not a valid path.
+func cosmosFilterRef(key string) (string, error) {
+	ref, ok := cosmosFieldRef(key)
+	if !ok {
+		return "", fmt.Errorf("invalid filter key %q: must be an identifier or dotted path of identifiers", key)
+	}
+	return ref, nil
+}
+
+// partitionKeyRef returns the property accessor for pk_field. Unlike filter
+// keys it must be a plain identifier: Create writes the partition value under
+// that literal top-level key, so a dotted path would never match it.
+func (s *CosmosDBAdapter) partitionKeyRef(paramMap map[string]any) (string, error) {
+	name := s.getPartitionKeyFieldName(paramMap)
+	if !validColumnName.MatchString(name) {
+		return "", fmt.Errorf("invalid partition key field %q: must match [a-zA-Z_][a-zA-Z0-9_]*", name)
+	}
+	ref, _ := cosmosFieldRef(name)
+	return ref, nil
+}
+
+// cosmosEquals builds an equality condition on ref. A nil value matches both
+// an explicit null and a missing property, the same rows SQL's IS NULL finds;
+// a plain "= null" would skip documents that never had the property.
+func cosmosEquals(ref string, value any, paramIndex *int) (string, []azcosmos.QueryParameter) {
+	if value == nil {
+		return fmt.Sprintf("(NOT IS_DEFINED(%s) OR IS_NULL(%s))", ref, ref), nil
+	}
+	paramName := fmt.Sprintf("@param%d", *paramIndex)
+	*paramIndex++
+	return fmt.Sprintf("%s = %s", ref, paramName), []azcosmos.QueryParameter{{Name: paramName, Value: value}}
+}
+
+// buildFilter constructs WHERE clause conditions from filter map. Keys are
+// written into the query text, so each must be a valid field path.
+func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (string, []azcosmos.QueryParameter, error) {
 	conditions := []string{}
 	queryParams := []azcosmos.QueryParameter{}
 
 	for key, value := range filter {
+		ref, err := cosmosFilterRef(key)
+		if err != nil {
+			return "", nil, err
+		}
 		if reflect.ValueOf(value).Kind() == reflect.Slice {
 			// Handle IN clause for slices
 			slice := reflect.ValueOf(value)
+			if slice.Len() == 0 {
+				// "IN ()" is a syntax error in Cosmos SQL; an empty set
+				// matches nothing.
+				conditions = append(conditions, "false")
+				continue
+			}
 			placeholders := make([]string, slice.Len())
 			for i := 0; i < slice.Len(); i++ {
 				paramName := fmt.Sprintf("@param%d", *paramIndex)
@@ -806,18 +1108,13 @@ func (s *CosmosDBAdapter) buildFilter(filter map[string]any, paramIndex *int) (s
 				})
 				*paramIndex++
 			}
-			conditions = append(conditions, fmt.Sprintf("c.%s IN (%s)", key, strings.Join(placeholders, ", ")))
+			conditions = append(conditions, fmt.Sprintf("%s IN (%s)", ref, strings.Join(placeholders, ", ")))
 		} else {
-			// Handle single value equality
-			paramName := fmt.Sprintf("@param%d", *paramIndex)
-			conditions = append(conditions, fmt.Sprintf("c.%s = %s", key, paramName))
-			queryParams = append(queryParams, azcosmos.QueryParameter{
-				Name:  paramName,
-				Value: value,
-			})
-			*paramIndex++
+			condition, params := cosmosEquals(ref, value, paramIndex)
+			conditions = append(conditions, condition)
+			queryParams = append(queryParams, params...)
 		}
 	}
 
-	return strings.Join(conditions, " AND "), queryParams
+	return strings.Join(conditions, " AND "), queryParams, nil
 }

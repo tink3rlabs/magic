@@ -123,6 +123,14 @@ config := map[string]string{
     "database":          "blox",
 }
 
+// Or Microsoft Entra ID (managed identity, workload identity, Azure CLI, ...):
+// an endpoint with no key uses azidentity.NewDefaultAzureCredential
+config := map[string]string{
+    "provider": "cosmosdb",
+    "endpoint": "https://your-account.documents.azure.com:443/",
+    "database": "blox",
+}
+
 // Local emulator — disable TLS verification
 config := map[string]string{
     "provider":        "cosmosdb",
@@ -132,8 +140,27 @@ config := map[string]string{
     "skip_tls_verify": "true",   // local testing only
 }
 
+// Regional private endpoint: route requests to the regions you can reach
+config := map[string]string{
+    "provider":          "cosmosdb",
+    "endpoint":          "https://your-account-westus.documents.azure.com:443/",
+    "key":               "...",
+    "database":          "blox",
+    "preferred_regions": "West US",   // ordered, comma-separated
+}
+
 adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, config)
 ```
+
+#### Preferred regions
+
+The Cosmos DB SDK reads the account's regions from the configured endpoint and, unless told otherwise, sends requests to the account's primary region, not the region of the endpoint you configured. A workload that can only reach one region (for example through a regional private endpoint) then fails, including the readiness `Ping`.
+
+Set `preferred_regions` to an ordered, comma-separated list of the regions the workload can reach, such as `"West US"` or `"West US, Central US"`. The adapter doesn't infer a region from the endpoint hostname.
+
+- Region names are matched ignoring case and spaces, so `West US` and `westus` are the same. A name that isn't one of the account's regions is silently ignored, and if none match, requests go to the primary region as if the key weren't set. Check the names against the account's regions in the Azure portal; the adapter logs the configured list at startup.
+- It applies whichever way the adapter authenticates: endpoint and key, connection string, or Microsoft Entra ID.
+- On an account with a single write region, writes always go to that region; preferred regions only route reads. Workloads that must write through a regional endpoint need an account that writes in that region.
 
 !!! warning "CosmosDB partition key is per-call, not global"
     Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter exposes this via the variadic `params ...map[string]any` argument. If you forget, queries either fail or cross-partition-fan-out (slow and expensive). See the table and example below.
@@ -154,6 +181,29 @@ params := map[string]any{
 err := adapter.Create(user, params)
 err  = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
 ```
+
+#### Read-your-writes
+
+The adapter keeps the session token Cosmos DB returns from each `Create` / `Update` / `Delete`, per container and partition key, and sends it on later reads, so on an account with session consistency those reads see that write. A token is also taken from a failed write's response, so after a `409 Conflict` a `Get` sees the item that already exists.
+
+- Reads with `pk_field` / `pk_value` send the token for that partition only.
+- Reads without a partition key, and every `Query`, run across partitions and send one token for each partition range of the container.
+- Tokens for the same partition range are merged per region, as the Cosmos DB SDKs do, so on an account that writes in more than one region a read still sees writes accepted in any of them.
+- Tokens are held in memory and are not shared between processes.
+
+| Config key          | Default | Meaning                                                              |
+|---------------------|---------|----------------------------------------------------------------------|
+| `session_tokens`    | `true`  | `"false"` turns read-your-writes tracking off.                       |
+| `session_token_ttl` | `5m`    | How long a token is kept after the last write to its partition (a Go duration). |
+| `session_token_max` | `10000` | Most container/partition pairs held; the least recently written is dropped first. |
+
+A value that can't be parsed or isn't positive logs a warning and keeps the default.
+
+!!! note "Session not available"
+    A read that carries a session token can reach a region that hasn't received the write yet. Cosmos DB then answers `404` with substatus `1002` ("read session not available") instead of returning older data, and the SDK retries: on a multi-write account in your preferred regions, on a single-write account once against the write region. If every attempt fails, the read returns an error (not `ErrNotFound`). Reads and writes that go to the same region, as they do on a multi-write account with `preferred_regions` set, rarely hit this. To go back to reads without session tokens, set `"session_tokens": "false"`.
+
+!!! note "Known limitation: partition splits"
+    After Cosmos DB splits a partition range, a response for a write sent to the old range that arrives after one from the new range replaces the new range's token. The next read may then not see the newer write. Fixing this needs the partition-range layout, which the adapter doesn't track.
 
 ## Common patterns
 
@@ -206,6 +256,8 @@ For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string
 ```go
 n, err := adapter.Count(&Task{}, map[string]any{"status": "in_progress"})
 ```
+
+An empty filter counts every item. On CosmosDB, `Count` runs a server-side `SELECT VALUE COUNT(1)` and requires `pk_field` and `pk_value` in `params`: the Go SDK cannot run cross-partition aggregates, so a count is always scoped to one partition and returns an error without them. On CosmosDB, `Get`, `List` and `Count` check filter keys before querying: each must be an identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) or a dotted path of them (`address.city`) for a nested property. Keys are written as quoted accessors (`c["order"]`), so property names that are Cosmos keywords, such as `value`, `order` or `top`, work. `pk_field` must be a plain identifier, because `Create` stores the partition value under that top-level key. A `nil` filter value matches documents where the property is null or missing, like SQL's `IS NULL`. An empty slice matches nothing, so the count is 0.
 
 ### Update
 

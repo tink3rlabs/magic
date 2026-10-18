@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	serviceErrors "github.com/tink3rlabs/magic/errors"
 	"github.com/tink3rlabs/magic/logger"
 	"github.com/tink3rlabs/magic/storage/search/lucene"
 )
@@ -305,7 +306,10 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 	}
 	whereClause, dynamoParams, err := parser.ParseToDynamoDBPartiQL(query)
 	if err != nil {
-		return "", err
+		// Every error from parsing and rendering comes from the query text, so
+		// report it as a client error.
+		slog.Error("Filter parsing failed", "error", err)
+		return "", &serviceErrors.BadRequest{Message: err.Error()}
 	}
 
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {

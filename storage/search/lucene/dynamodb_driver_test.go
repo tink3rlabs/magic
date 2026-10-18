@@ -832,6 +832,48 @@ func TestDynamoDBDriver_ScalarValuesBindAsFieldType(t *testing.T) {
 	}
 }
 
+// go-lucene parses tenant:(a OR b) as EQUALS(tenant, OR(...)); the base driver
+// rendered that as "tenant" = (("tenant" = ?) OR ...), which isn't PartiQL.
+func TestDynamoDBDriver_ScalarGroupedValues(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	n := func(v string) types.AttributeValue { return &types.AttributeValueMemberN{Value: v} }
+	s := func(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
+
+	tests := []struct {
+		query      string
+		wantSQL    string
+		wantParams []types.AttributeValue
+	}{
+		{"tenant:(a OR b)", `("tenant" = ? OR "tenant" = ?)`, []types.AttributeValue{s("a"), s("b")}},
+		{"tenant:(a OR b OR c)", `(("tenant" = ? OR "tenant" = ?) OR "tenant" = ?)`, []types.AttributeValue{s("a"), s("b"), s("c")}},
+		{"priority:(1 OR 2)", `("priority" = ? OR "priority" = ?)`, []types.AttributeValue{n("1"), n("2")}},
+		{"tenant:(a OR null)", `("tenant" = ? OR "tenant" IS NULL)`, []types.AttributeValue{s("a")}},
+		{"id:(abc* OR x)", `(begins_with("id", ?) OR "id" = ?)`, []types.AttributeValue{s("abc"), s("x")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			sql, params, err := p.ParseToDynamoDBPartiQL(tt.query)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", tt.query, err)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("partiql = %q; want %q", sql, tt.wantSQL)
+			}
+			if !reflect.DeepEqual(params, tt.wantParams) {
+				t.Errorf("params = %#v; want %#v", params, tt.wantParams)
+			}
+		})
+	}
+
+	if _, _, err := p.ParseToDynamoDBPartiQL("priority:(1 OR abc)"); err == nil {
+		t.Error("a mistyped value inside a group must return an error")
+	}
+}
+
 // A value that can't be stored in the field is a malformed query, not one
 // that should quietly match nothing.
 func TestDynamoDBDriver_ScalarRejectsMistypedValue(t *testing.T) {

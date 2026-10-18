@@ -105,7 +105,10 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 			}
 			return fmt.Sprintf("contains(%s, ?)", safe), []any{param}, nil
 		}
-		if !isArray && name != "" && !isGroup(e.Right) {
+		if !isArray && name != "" {
+			if group, ok := e.Right.(*expr.Expression); ok && isGroup(group) {
+				return d.renderGroupedScalarExpr(name, group)
+			}
 			return d.renderScalarComparison(name, e.Op, e.Right)
 		}
 	case expr.Wild, expr.Like:
@@ -144,6 +147,64 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 func isGroup(v any) bool {
 	e, ok := v.(*expr.Expression)
 	return ok && (e.Op == expr.Or || e.Op == expr.And)
+}
+
+// renderGroupedScalarExpr expands a grouped value list under a single-valued
+// field, e.g. tenant:(a OR b) becomes ("tenant" = ? OR "tenant" = ?).
+//
+// go-lucene parses the group as EQUALS(field, OR(EQUALS(default, a), ...)),
+// with each leaf on the parser's default field, so the field comes from the
+// caller and each leaf contributes only its operator and value.
+func (d *DynamoDBPartiQLDriver) renderGroupedScalarExpr(name string, e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := d.renderGroupedScalarLeaf(name, e.Left)
+	if err != nil {
+		return "", nil, err
+	}
+	if e.Right == nil {
+		return leftStr, leftParams, nil
+	}
+	rightStr, rightParams, err := d.renderGroupedScalarLeaf(name, e.Right)
+	if err != nil {
+		return "", nil, err
+	}
+
+	op := " OR "
+	if e.Op == expr.And {
+		op = " AND "
+	}
+	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
+}
+
+func (d *DynamoDBPartiQLDriver) renderGroupedScalarLeaf(name string, v any) (string, []any, error) {
+	e, ok := v.(*expr.Expression)
+	if !ok || e.Op == expr.Literal || e.Op == expr.Null {
+		return d.renderScalarComparison(name, expr.Equals, v)
+	}
+	switch e.Op {
+	case expr.Or, expr.And:
+		return d.renderGroupedScalarExpr(name, e)
+	case expr.Equals, expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
+		if isGroup(e.Right) {
+			return d.renderGroupedScalarLeaf(name, e.Right)
+		}
+		return d.renderScalarComparison(name, e.Op, e.Right)
+	case expr.Like, expr.Wild:
+		if e.Op == expr.Wild {
+			return d.renderScalarWildcard(name, e)
+		}
+		return d.renderScalarWildcard(name, e.Right)
+	case expr.Range:
+		return d.renderScalarRange(name, e.Right)
+	case expr.Must:
+		return d.renderGroupedScalarLeaf(name, e.Left)
+	case expr.Not, expr.MustNot:
+		inner, params, err := d.renderGroupedScalarLeaf(name, e.Left)
+		if err != nil {
+			return "", nil, err
+		}
+		return fmt.Sprintf("NOT (%s)", inner), params, nil
+	}
+	return "", nil, fmt.Errorf("unsupported operator %s in grouped values for field '%s'", e.Op, name)
 }
 
 var comparisonSymbols = map[expr.Operator]string{

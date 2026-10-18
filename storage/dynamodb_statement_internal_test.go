@@ -211,7 +211,7 @@ func TestDynamoDBListSendsOrderedFilterStatement(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	got := rec.last(t)
-	want := `SELECT * FROM "dynamo_sample_items" WHERE "id" = ? AND "name" = ? ORDER BY id ASC`
+	want := `SELECT * FROM "dynamo_sample_items" WHERE "id" = ? AND "name" = ? ORDER BY "id" ASC`
 	if got.Statement != want {
 		t.Fatalf("Statement = %q; want %q", got.Statement, want)
 	}
@@ -228,7 +228,7 @@ func TestDynamoDBListAndSearchReadFromIndex(t *testing.T) {
 	if _, err := s.List(&dest, "id", map[string]any{"name": "bob"}, 10, "", params); err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if want := `SELECT * FROM "dynamo_sample_items"."name_index" WHERE "name" = ? ORDER BY id ASC`; rec.last(t).Statement != want {
+	if want := `SELECT * FROM "dynamo_sample_items"."name_index" WHERE "name" = ? ORDER BY "id" ASC`; rec.last(t).Statement != want {
 		t.Fatalf("List Statement = %q; want %q", rec.last(t).Statement, want)
 	}
 
@@ -248,15 +248,22 @@ func TestDynamoDBListAndSearchHonourSortDirection(t *testing.T) {
 	if _, err := s.List(&dest, "id", map[string]any{"name": "bob"}, 10, "", params); err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if want := `SELECT * FROM "dynamo_sample_items" WHERE "name" = ? ORDER BY id DESC`; rec.last(t).Statement != want {
+	if want := `SELECT * FROM "dynamo_sample_items" WHERE "name" = ? ORDER BY "id" DESC`; rec.last(t).Statement != want {
 		t.Fatalf("List Statement = %q; want %q", rec.last(t).Statement, want)
 	}
 
 	if _, err := s.Search(&dest, "id", "name:bob", 10, "", params); err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if got := rec.last(t).Statement; !strings.HasSuffix(got, ` ORDER BY id DESC`) {
-		t.Fatalf("Search Statement = %q; want ORDER BY id DESC", got)
+	if got := rec.last(t).Statement; !strings.HasSuffix(got, ` ORDER BY "id" DESC`) {
+		t.Fatalf("Search Statement = %q; want ORDER BY \"id\" DESC", got)
+	}
+
+	if _, err := s.List(&dest, "name", nil, 10, ""); err != nil {
+		t.Fatalf("List by reserved sort key: %v", err)
+	}
+	if want := `SELECT * FROM "dynamo_sample_items" ORDER BY "name" ASC`; rec.last(t).Statement != want {
+		t.Fatalf("List Statement = %q; want %q", rec.last(t).Statement, want)
 	}
 }
 

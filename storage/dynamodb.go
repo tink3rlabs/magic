@@ -254,6 +254,10 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
+	from, err := s.fromClause(dest, params...)
+	if err != nil {
+		return "", err
+	}
 	where, values, err := s.buildFilter(filter)
 	if errors.Is(err, errFilterMatchesNothing) {
 		clearSlice(dest)
@@ -263,7 +267,7 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 		return "", err
 	}
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
-		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
+		query := "SELECT * FROM " + from
 
 		if where != "" {
 			input.Parameters = values
@@ -288,6 +292,11 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 		return "", err
 	}
 
+	from, err := s.fromClause(dest, params...)
+	if err != nil {
+		return "", err
+	}
+
 	destType := reflect.TypeOf(dest).Elem().Elem()
 	model := reflect.New(destType).Elem().Interface()
 	parser, err := lucene.NewParser(model)
@@ -301,7 +310,7 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Build query
-		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
+		query := "SELECT * FROM " + from
 		if whereClause != "" {
 			query += fmt.Sprintf(` WHERE %s`, whereClause)
 		}
@@ -381,6 +390,24 @@ func (s *DynamoDBAdapter) getTableName(obj any) string {
 	tableName = strings.ToLower(tableName)
 	tableName += "s"
 	return tableName
+}
+
+// validDynamoIndexName matches DynamoDB's naming rules for a secondary index.
+var validDynamoIndexName = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,255}$`)
+
+// fromClause returns the quoted table for dest, or "table"."index" when
+// IndexKey names a secondary index to read from.
+func (s *DynamoDBAdapter) fromClause(dest any, params ...map[string]any) (string, error) {
+	from := fmt.Sprintf(`"%s"`, s.getTableName(dest))
+	raw, ok := extractParams(params...)[IndexKey]
+	if !ok {
+		return from, nil
+	}
+	index, isString := raw.(string)
+	if !isString || !validDynamoIndexName.MatchString(index) {
+		return "", fmt.Errorf("invalid %s %v: must be a string matching [A-Za-z0-9_.-]{3,255}", IndexKey, raw)
+	}
+	return fmt.Sprintf(`%s."%s"`, from, index), nil
 }
 
 // errFilterMatchesNothing reports a filter that can't match any item, such as

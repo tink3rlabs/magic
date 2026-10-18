@@ -72,6 +72,11 @@ const SortDirectionKey = "sort_direction"
 // statement, as a slice in placeholder order. DynamoDB only.
 const QueryParametersKey = "parameters"
 
+// IndexKey names a secondary index for List and Search to read from.
+// DynamoDB only; other adapters ignore it, since their databases choose
+// indexes themselves.
+const IndexKey = "index"
+
 // extractParams merges all provided parameter maps into a single flat map.
 // When keys collide, later maps win.
 func extractParams(params ...map[string]any) map[string]any {

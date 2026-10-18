@@ -161,6 +161,59 @@ func TestDynamoDBQueryRejectsNonSliceParameters(t *testing.T) {
 	}
 }
 
+func TestDynamoDBListSendsOrderedFilterStatement(t *testing.T) {
+	s, rec := newRecordingDynamoAdapter(t, "")
+	var dest []dynamoSampleItem
+	if _, err := s.List(&dest, "id", map[string]any{"name": "bob", "id": "1"}, 10, ""); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := rec.last(t)
+	want := `SELECT * FROM "dynamo_sample_items" WHERE "id" = ? AND "name" = ? ORDER BY id`
+	if got.Statement != want {
+		t.Fatalf("Statement = %q; want %q", got.Statement, want)
+	}
+	if stringParam(t, got.Parameters[0]) != "1" || stringParam(t, got.Parameters[1]) != "bob" {
+		t.Fatalf("Parameters = %v; want [1, bob]", got.Parameters)
+	}
+}
+
+func TestDynamoDBListAndSearchReadFromIndex(t *testing.T) {
+	s, rec := newRecordingDynamoAdapter(t, "")
+	params := map[string]any{IndexKey: "name_index"}
+
+	var dest []dynamoSampleItem
+	if _, err := s.List(&dest, "id", map[string]any{"name": "bob"}, 10, "", params); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if want := `SELECT * FROM "dynamo_sample_items"."name_index" WHERE "name" = ? ORDER BY id`; rec.last(t).Statement != want {
+		t.Fatalf("List Statement = %q; want %q", rec.last(t).Statement, want)
+	}
+
+	if _, err := s.Search(&dest, "id", "name:bob", 10, "", params); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := rec.last(t).Statement; !strings.HasPrefix(got, `SELECT * FROM "dynamo_sample_items"."name_index" WHERE `) {
+		t.Fatalf("Search Statement = %q; want it to read from the index", got)
+	}
+}
+
+func TestDynamoDBRejectsInvalidIndexBeforeQuerying(t *testing.T) {
+	s, rec := newRecordingDynamoAdapter(t, "")
+	var dest []dynamoSampleItem
+	for _, bad := range []any{`x" WHERE "1"="1`, "ab", "name index", strings.Repeat("a", 256), 42, nil} {
+		params := map[string]any{IndexKey: bad}
+		if _, err := s.List(&dest, "id", nil, 10, "", params); err == nil {
+			t.Errorf("List with %s=%v returned no error", IndexKey, bad)
+		}
+		if _, err := s.Search(&dest, "id", "", 10, "", params); err == nil {
+			t.Errorf("Search with %s=%v returned no error", IndexKey, bad)
+		}
+	}
+	if rec.count() != 0 {
+		t.Fatalf("an invalid index must not reach DynamoDB, sent %d requests", rec.count())
+	}
+}
+
 // GetInstance wraps adapters for telemetry; the wrapper must pass params on.
 func TestDynamoDBQueryParametersPassThroughTelemetryWrapper(t *testing.T) {
 	inner, rec := newRecordingDynamoAdapter(t, "")

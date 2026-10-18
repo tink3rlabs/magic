@@ -122,7 +122,9 @@ next, err := adapter.List(&rules, "id",
 )
 ```
 
-`List` filter keys are written into the statement, so each dot-separated part must match `[A-Za-z0-9_-]+`; anything else returns an error before a request is sent. Each part is quoted, so keys that are reserved words (`status`, `name`) or contain hyphens work, and `address.city` is a nested path (`"address"."city"`). A `nil` value renders `IS NULL`, a slice renders `IN (...)`, and an empty slice returns an empty page without querying.
+`List` filter keys are written into the statement, so each dot-separated part must match `[A-Za-z0-9_-]+`; anything else returns an error before a request is sent. Each part is quoted, so keys that are reserved words (`status`, `name`) or contain hyphens work, and `address.city` is a nested path (`"address"."city"`). The `sortKey` argument is quoted the same way (`ORDER BY "name" ASC`). A `nil` value renders `IS NULL`, a slice renders `IN (...)`, and an empty slice returns an empty page without querying.
+
+Invalid filter keys, `IndexKey`, and `SortDirectionKey` return a plain error, not `*errors.BadRequest`: those values come from application code. `Search` query text is user input, so every parse error from DynamoDB `Search` is a `BadRequest` (HTTP 400).
 
 ### CosmosDB
 
@@ -268,7 +270,7 @@ The value is case-insensitive (`"asc"` and `"ASC"` are equivalent). Anything oth
 - **`List(dest, sortKey, filter, limit, cursor, params...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed. A slice value matches any of its elements on DynamoDB and CosmosDB.
 - **`Search(dest, sortKey, query, limit, cursor, params...)`** — `query` is a Lucene query string. See [Search (Lucene)](./lucene.md).
 
-For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string straight to `Search`. magic handles validation, error reporting, and parameterization.
+For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string straight to `Search`. magic handles validation, error reporting, and parameterization. On DynamoDB, `Search` reports those errors as `*errors.BadRequest`; invalid `List` filter keys do not, because the filter map is built by the service, not by the user.
 
 ### Count
 

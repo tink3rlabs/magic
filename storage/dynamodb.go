@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -251,13 +253,16 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
+	where, values, err := s.buildFilter(filter)
+	if err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
 
-		if len(filter) > 0 {
-			params, _ := s.buildParams(filter)
-			input.Parameters = params
-			query += fmt.Sprintf(` WHERE %s`, s.buildFilter(filter))
+		if where != "" {
+			input.Parameters = values
+			query += fmt.Sprintf(` WHERE %s`, where)
 		}
 
 		if sortKey != "" {
@@ -343,49 +348,38 @@ func (s *DynamoDBAdapter) getTableName(obj any) string {
 	return tableName
 }
 
-func (s *DynamoDBAdapter) buildFilter(filter map[string]any) string {
-	clauses := []string{}
-	for key, value := range filter {
-		if reflect.ValueOf(value).Kind() == reflect.Slice {
-			c := "IN ("
-			len := reflect.ValueOf(value).Len()
-			for i := 0; i < len; i++ {
-				if i < len-1 {
-					c += "?,"
-				} else {
-					c += "?)"
-				}
-			}
-			clauses = append(clauses, fmt.Sprintf("%s %s", key, c))
-		} else {
-			clauses = append(clauses, fmt.Sprintf("%s=?", key))
-		}
-	}
-	return strings.Join(clauses, " AND ")
-}
+// buildFilter renders filter as a WHERE clause and the values for its "?"
+// placeholders. PartiQL binds placeholders by position, so the clause and the
+// values are built in one pass over the keys in sorted order: two separate
+// passes over the map can visit the keys in different orders.
+func (s *DynamoDBAdapter) buildFilter(filter map[string]any) (string, []types.AttributeValue, error) {
+	keys := slices.Sorted(maps.Keys(filter))
+	clauses := make([]string, 0, len(keys))
+	values := make([]types.AttributeValue, 0, len(keys))
 
-func (s *DynamoDBAdapter) buildParams(filter map[string]any) ([]types.AttributeValue, error) {
-	values := make([]types.AttributeValue, 0, len(filter))
-
-	for _, value := range filter {
-		if reflect.ValueOf(value).Kind() == reflect.Slice {
-			len := reflect.ValueOf(value).Len()
-			for i := 0; i < len; i++ {
-				t := reflect.ValueOf(value).Index(i).Interface()
-				v, err := attributevalue.Marshal(t)
+	for _, key := range keys {
+		value := filter[key]
+		rv := reflect.ValueOf(value)
+		if rv.Kind() == reflect.Slice {
+			placeholders := make([]string, rv.Len())
+			for i := range placeholders {
+				v, err := attributevalue.Marshal(rv.Index(i).Interface())
 				if err != nil {
-					return values, err
+					return "", nil, fmt.Errorf("failed to marshal filter value for %q: %w", key, err)
 				}
+				placeholders[i] = "?"
 				values = append(values, v)
 			}
+			clauses = append(clauses, fmt.Sprintf("%s IN (%s)", key, strings.Join(placeholders, ",")))
 		} else {
 			v, err := attributevalue.Marshal(value)
 			if err != nil {
-				return values, err
+				return "", nil, fmt.Errorf("failed to marshal filter value for %q: %w", key, err)
 			}
+			clauses = append(clauses, fmt.Sprintf("%s=?", key))
 			values = append(values, v)
 		}
 	}
 
-	return values, nil
+	return strings.Join(clauses, " AND "), values, nil
 }

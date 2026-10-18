@@ -260,6 +260,10 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
+	sortDirection, err := extractSortDirection(extractParams(params...))
+	if err != nil {
+		return "", err
+	}
 	from, err := s.fromClause(dest, params...)
 	if err != nil {
 		return "", err
@@ -280,9 +284,7 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 			query += fmt.Sprintf(` WHERE %s`, where)
 		}
 
-		if sortKey != "" {
-			query += fmt.Sprintf(` ORDER BY %s`, sortKey)
-		}
+		query += dynamoOrderBy(sortKey, sortDirection)
 
 		input.Statement = aws.String(query)
 		return input
@@ -295,6 +297,10 @@ func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit i
 
 func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
+		return "", err
+	}
+	sortDirection, err := extractSortDirection(extractParams(params...))
+	if err != nil {
 		return "", err
 	}
 
@@ -323,14 +329,20 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 		if whereClause != "" {
 			query += fmt.Sprintf(` WHERE %s`, whereClause)
 		}
-		if sortKey != "" {
-			query += fmt.Sprintf(` ORDER BY %s`, sortKey)
-		}
+		query += dynamoOrderBy(sortKey, sortDirection)
 
 		input.Statement = aws.String(query)
 		input.Parameters = dynamoParams
 		return input
 	})
+}
+
+// dynamoOrderBy returns an ORDER BY clause, or "" when sortKey is empty.
+func dynamoOrderBy(sortKey string, dir SortingDirection) string {
+	if sortKey == "" {
+		return ""
+	}
+	return fmt.Sprintf(" ORDER BY %s %s", sortKey, dir)
 }
 
 func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {

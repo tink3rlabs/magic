@@ -109,6 +109,7 @@ DynamoDB takes these per-call params in the variadic `params ...map[string]any` 
 
 | Param key | Constant | Applies to | Meaning |
 |-----------|----------|------------|---------|
+| `sort_direction` | `storage.SortDirectionKey` | `List`, `Search` | `"ASC"` (default) or `"DESC"`. Same key as the other adapters. PartiQL only honours `ORDER BY` on a Query (the `WHERE` equals the partition key) against the table or index sort key. |
 | `index` | `storage.IndexKey` | `List`, `Search` | Read from this global or local secondary index (`FROM "table"."index"`) instead of the base table. Must match `[A-Za-z0-9_.-]{3,255}`. Other adapters ignore it. |
 | `parameters` | `storage.QueryParametersKey` | `Query` | Values for the statement's `?` placeholders, as a slice in placeholder order. |
 

@@ -24,6 +24,9 @@ type executeStatementRequest struct {
 	Parameters []map[string]any
 	Limit      int
 	NextToken  string
+	// HasParameters reports whether the body had a Parameters key at all;
+	// DynamoDB rejects an empty list.
+	HasParameters bool `json:"-"`
 }
 
 // statementRecorder captures the ExecuteStatement requests sent by an adapter
@@ -68,10 +71,16 @@ func newRecordingDynamoAdapter(t *testing.T, responseItems string) (*DynamoDBAda
 			return
 		}
 		var parsed executeStatementRequest
+		var keys map[string]json.RawMessage
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if err := json.Unmarshal(body, &keys); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, parsed.HasParameters = keys["Parameters"]
 		rec.mu.Lock()
 		rec.requests = append(rec.requests, parsed)
 		rec.mu.Unlock()
@@ -144,8 +153,39 @@ func TestDynamoDBQueryWithoutParametersSendsNone(t *testing.T) {
 	if _, err := s.Query(&dest, `SELECT * FROM "t"`, 10, ""); err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	if n := len(rec.last(t).Parameters); n != 0 {
-		t.Fatalf("len(Parameters) = %d; want 0", n)
+	if rec.last(t).HasParameters {
+		t.Fatal("request has a Parameters key; want none")
+	}
+}
+
+// ExecuteStatement requires Parameters to have at least one item, so a
+// statement with no placeholders must omit the key rather than send [].
+func TestDynamoDBStatementsWithoutPlaceholdersOmitParameters(t *testing.T) {
+	cases := map[string]func(s *DynamoDBAdapter, dest *[]dynamoSampleItem) error{
+		"List with a nil filter value": func(s *DynamoDBAdapter, dest *[]dynamoSampleItem) error {
+			_, err := s.List(dest, "id", map[string]any{"name": nil}, 10, "")
+			return err
+		},
+		"Search for any value": func(s *DynamoDBAdapter, dest *[]dynamoSampleItem) error {
+			_, err := s.Search(dest, "id", "id:*", 10, "")
+			return err
+		},
+		"Query with an empty parameter slice": func(s *DynamoDBAdapter, dest *[]dynamoSampleItem) error {
+			_, err := s.Query(dest, `SELECT * FROM "t"`, 10, "", map[string]any{QueryParametersKey: []any{}})
+			return err
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, rec := newRecordingDynamoAdapter(t, "")
+			var dest []dynamoSampleItem
+			if err := run(s, &dest); err != nil {
+				t.Fatal(err)
+			}
+			if got := rec.last(t); got.HasParameters {
+				t.Fatalf("statement %q sent Parameters %v; want the key omitted", got.Statement, got.Parameters)
+			}
+		})
 	}
 }
 

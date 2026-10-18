@@ -175,6 +175,9 @@ func (d *DynamoDBPartiQLDriver) renderGroupedScalarExpr(name string, e *expr.Exp
 	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
 }
 
+// renderGroupedScalarLeaf renders one member of a grouped value list against
+// field name. A member can be a bare value rather than an expression, which
+// means equality.
 func (d *DynamoDBPartiQLDriver) renderGroupedScalarLeaf(name string, v any) (string, []any, error) {
 	e, ok := v.(*expr.Expression)
 	if !ok || e.Op == expr.Literal || e.Op == expr.Null {

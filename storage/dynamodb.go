@@ -329,11 +329,41 @@ func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor st
 	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
 }
 
+// QueryContext runs a PartiQL statement. Values must be passed through
+// QueryParametersKey and referenced as "?" placeholders, never written into
+// statement.
 func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
+	values, err := dynamoQueryParameters(params...)
+	if err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		input.Statement = aws.String(statement)
+		input.Parameters = values
 		return input
 	})
+}
+
+// dynamoQueryParameters marshals the QueryParametersKey slice in order, since
+// PartiQL binds "?" placeholders by position.
+func dynamoQueryParameters(params ...map[string]any) ([]types.AttributeValue, error) {
+	raw, ok := extractParams(params...)[QueryParametersKey]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	rv := reflect.ValueOf(raw)
+	if rv.Kind() != reflect.Slice || rv.Type().Elem().Kind() == reflect.Uint8 {
+		return nil, fmt.Errorf("%s must be a slice of values, got %T", QueryParametersKey, raw)
+	}
+	values := make([]types.AttributeValue, rv.Len())
+	for i := range values {
+		v, err := attributevalue.Marshal(rv.Index(i).Interface())
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal query parameter %d: %w", i, err)
+		}
+		values[i] = v
+	}
+	return values, nil
 }
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {

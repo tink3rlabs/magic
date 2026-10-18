@@ -35,7 +35,6 @@ func NewDynamoDBDriver(fields []FieldInfo) (*DynamoDBPartiQLDriver, error) {
 		expr.MustNot:   driver.Shared[expr.MustNot],
 		expr.Wild:      driver.Shared[expr.Wild],
 		expr.Regexp:    driver.Shared[expr.Regexp],
-		expr.Like:      dynamoDBLike, // Custom LIKE for DynamoDB functions
 		expr.Greater:   driver.Shared[expr.Greater],
 		expr.GreaterEq: driver.Shared[expr.GreaterEq],
 		expr.Less:      driver.Shared[expr.Less],
@@ -109,6 +108,9 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 	case expr.Wild, expr.Like:
 		if isArray {
 			return "", nil, errArrayWildcardUnsupported(name)
+		}
+		if name != "" {
+			return d.renderScalarWildcard(name, e.Right)
 		}
 	case expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
 		if isArray {
@@ -268,10 +270,82 @@ func (d *DynamoDBPartiQLDriver) RenderPartiQL(e *expr.Expression) (string, []typ
 	return str, attrValues, nil
 }
 
-// escapePartiQLString escapes a string value for safe use in PartiQL string literals.
-// Escapes single quotes by doubling them (PartiQL standard).
-func escapePartiQLString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+// renderScalarWildcard renders a wildcard match on a single-valued field.
+// PartiQL has no LIKE, so only the patterns that map onto its functions are
+// supported:
+//
+//	field:*        -> field IS NOT MISSING
+//	field:value*   -> begins_with(field, ?)
+//	field:*value*  -> contains(field, ?)
+//
+// Anything else (an ends-with match, a wildcard inside the value, or the
+// single-character wildcard ?) is an error rather than a query that matches
+// the wrong items.
+func (d *DynamoDBPartiQLDriver) renderScalarWildcard(name string, right any) (string, []any, error) {
+	if info, known := d.fields[name]; known && derefType(info.Type).Kind() != reflect.String {
+		return "", nil, fmt.Errorf("wildcard matching is not supported on non-string field '%s'", name)
+	}
+	ref, err := quotePartiQLPath(name)
+	if err != nil {
+		return "", nil, err
+	}
+
+	pattern := wildcardPattern(right)
+	if strings.Contains(pattern, "?") {
+		return "", nil, fmt.Errorf("the single-character wildcard ? is not supported on field '%s' in DynamoDB", name)
+	}
+	leading := strings.HasPrefix(pattern, "*")
+	trailing := strings.HasSuffix(pattern, "*")
+	value := strings.TrimSuffix(strings.TrimPrefix(pattern, "*"), "*")
+	if strings.Contains(value, "*") {
+		return "", nil, fmt.Errorf("a wildcard inside a value is not supported on field '%s' in DynamoDB; use value* or *value*", name)
+	}
+
+	switch {
+	case value == "" && (leading || trailing):
+		return fmt.Sprintf("%s IS NOT MISSING", ref), nil, nil
+	case leading && trailing:
+		return fmt.Sprintf("contains(%s, ?)", ref), []any{value}, nil
+	case trailing:
+		return fmt.Sprintf("begins_with(%s, ?)", ref), []any{value}, nil
+	case leading:
+		return "", nil, fmt.Errorf("ends-with matching (*value) is not supported on field '%s' in DynamoDB; use value* or *value*", name)
+	default:
+		return fmt.Sprintf("%s = ?", ref), []any{value}, nil
+	}
+}
+
+// wildcardPattern returns the raw pattern of a Wild or Literal value.
+func wildcardPattern(v any) string {
+	if e, ok := v.(*expr.Expression); ok && (e.Op == expr.Wild || e.Op == expr.Literal) {
+		return fmt.Sprintf("%v", e.Left)
+	}
+	return extractLiteralValue(v)
+}
+
+// derefType strips pointer indirection, so *string is treated as string.
+func derefType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return reflect.TypeOf("")
+	}
+	return t
+}
+
+// quotePartiQLPath validates a field name and quotes each dot-separated
+// segment, so a nested path renders as "base"."sub" rather than as one
+// attribute named "base.sub".
+func quotePartiQLPath(name string) (string, error) {
+	segments := strings.Split(name, ".")
+	for i, segment := range segments {
+		if !partiQLIdentifierPattern.MatchString(segment) {
+			return "", fmt.Errorf("invalid field name '%s'", name)
+		}
+		segments[i] = `"` + segment + `"`
+	}
+	return strings.Join(segments, "."), nil
 }
 
 var (
@@ -287,52 +361,4 @@ func escapePartiQLIdentifier(identifier string) (string, error) {
 		return "", fmt.Errorf("invalid identifier: contains unsafe characters (only alphanumeric and underscore allowed)")
 	}
 	return identifier, nil
-}
-
-// unquotePartiQLString safely removes surrounding quotes from a PartiQL string literal.
-// Handles already-escaped quotes correctly.
-func unquotePartiQLString(s string) string {
-	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// dynamoDBLike implements LIKE using DynamoDB's begins_with and contains functions.
-func dynamoDBLike(left, right string) (string, error) {
-	// Validate and escape field name (left)
-	safeLeft, err := escapePartiQLIdentifier(left)
-	if err != nil {
-		return "", fmt.Errorf("invalid field name: %w", err)
-	}
-
-	// Extract the raw value from the right side (remove quotes if present)
-	rawValue := unquotePartiQLString(right)
-
-	// Analyze pattern for wildcards
-	hasPrefix := strings.HasPrefix(rawValue, "%")
-	hasSuffix := strings.HasSuffix(rawValue, "%")
-
-	if hasPrefix && hasSuffix {
-		// %value% -> contains(field, value)
-		value := strings.Trim(rawValue, "%")
-		escapedValue := escapePartiQLString(value)
-		return fmt.Sprintf("contains(%s, '%s')", safeLeft, escapedValue), nil
-	}
-	if !hasPrefix && hasSuffix {
-		// value% -> begins_with(field, value)
-		value := strings.TrimSuffix(rawValue, "%")
-		escapedValue := escapePartiQLString(value)
-		return fmt.Sprintf("begins_with(%s, '%s')", safeLeft, escapedValue), nil
-	}
-	if hasPrefix && !hasSuffix {
-		// %value -> contains(field, value) (DynamoDB doesn't have ends_with)
-		value := strings.TrimPrefix(rawValue, "%")
-		escapedValue := escapePartiQLString(value)
-		return fmt.Sprintf("contains(%s, '%s')", safeLeft, escapedValue), nil
-	}
-
-	// Exact match - escape the value and wrap in quotes
-	escapedValue := escapePartiQLString(rawValue)
-	return fmt.Sprintf("%s = '%s'", safeLeft, escapedValue), nil
 }

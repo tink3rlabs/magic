@@ -229,177 +229,6 @@ func TestDynamoDBDriver_RenderPartiQL(t *testing.T) {
 	}
 }
 
-func TestDynamoDBLike(t *testing.T) {
-	tests := []struct {
-		name    string
-		left    string
-		right   string
-		want    string
-		wantErr bool
-	}{
-		{
-			name:    "contains pattern %value%",
-			left:    "name",
-			right:   "'%john%'",
-			want:    "contains(name, 'john')",
-			wantErr: false,
-		},
-		{
-			name:    "begins_with pattern value%",
-			left:    "name",
-			right:   "'john%'",
-			want:    "begins_with(name, 'john')",
-			wantErr: false,
-		},
-		{
-			name:    "contains pattern %value (no ends_with)",
-			left:    "name",
-			right:   "'%john'",
-			want:    "contains(name, 'john')",
-			wantErr: false,
-		},
-		{
-			name:    "exact match (no wildcards)",
-			left:    "name",
-			right:   "'john'",
-			want:    "name = 'john'",
-			wantErr: false,
-		},
-		{
-			name:    "empty string value",
-			left:    "name",
-			right:   "''",
-			want:    "name = ''",
-			wantErr: false,
-		},
-		{
-			name:    "single % at start",
-			left:    "name",
-			right:   "'%'",
-			want:    "contains(name, '')",
-			wantErr: false,
-		},
-		{
-			name:    "single % at end",
-			left:    "name",
-			right:   "'%'",
-			want:    "contains(name, '')",
-			wantErr: false,
-		},
-		{
-			name:    "value with special characters",
-			left:    "email",
-			right:   "'test@example.com%'",
-			want:    "begins_with(email, 'test@example.com')",
-			wantErr: false,
-		},
-		{
-			name:    "value with underscores",
-			left:    "field_name",
-			right:   "'%test_value%'",
-			want:    "contains(field_name, 'test_value')",
-			wantErr: false,
-		},
-		{
-			name:    "unquoted value (no quotes in pattern)",
-			left:    "name",
-			right:   "john",
-			want:    "name = 'john'",
-			wantErr: false,
-		},
-		{
-			name:    "multiple % in middle",
-			left:    "name",
-			right:   "'%john%doe%'",
-			want:    "contains(name, 'john%doe')",
-			wantErr: false,
-		},
-		{
-			name:    "only % characters",
-			left:    "name",
-			right:   "'%%%'",
-			want:    "contains(name, '')",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote in exact match",
-			left:    "name",
-			right:   "'John's'",
-			want:    "name = 'John''s'",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote and wildcard prefix",
-			left:    "name",
-			right:   "'%test'value'",
-			want:    "contains(name, 'test''value')",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote and wildcard suffix",
-			left:    "name",
-			right:   "'test'value%'",
-			want:    "begins_with(name, 'test''value')",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote and wildcards both sides",
-			left:    "name",
-			right:   "'%test'value%'",
-			want:    "contains(name, 'test''value')",
-			wantErr: false,
-		},
-		{
-			name:    "value with multiple single quotes",
-			left:    "name",
-			right:   "'O'Brien'",
-			want:    "name = 'O''Brien'",
-			wantErr: false,
-		},
-		{
-			name:    "injection attempt: value with quote and OR (should be escaped)",
-			left:    "name",
-			right:   "'test') OR (1=1'",
-			want:    "name = 'test'') OR (1=1'",
-			wantErr: false,
-		},
-		{
-			name:    "invalid field name with special characters",
-			left:    "name; DROP TABLE users;--",
-			right:   "'test'",
-			want:    "",
-			wantErr: true,
-		},
-		{
-			name:    "invalid field name with quotes",
-			left:    "name'",
-			right:   "'test'",
-			want:    "",
-			wantErr: true,
-		},
-		{
-			name:    "invalid field name with spaces",
-			left:    "field name",
-			right:   "'test'",
-			want:    "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := dynamoDBLike(tt.left, tt.right)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("dynamoDBLike() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Errorf("dynamoDBLike() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestDynamoDBDriver_EdgeCases(t *testing.T) {
 	fields := []FieldInfo{
 		{Name: "name", Type: reflect.TypeOf("")},
@@ -857,6 +686,85 @@ func TestGormIgnoredFieldsStayFilterableOnDynamoDB(t *testing.T) {
 		t.Run(filter, func(t *testing.T) {
 			if _, _, err := p.ParseToDynamoDBPartiQL(filter); err != nil {
 				t.Errorf("ParseToDynamoDBPartiQL(%q): %v", filter, err)
+			}
+		})
+	}
+}
+
+type ddbRule struct {
+	Tenant   string   `json:"tenant"`
+	ID       string   `json:"id"`
+	Priority int      `json:"priority"`
+	Score    float64  `json:"score"`
+	Enabled  bool     `json:"enabled"`
+	Owner    *string  `json:"owner"`
+	Tags     []string `json:"tags"`
+}
+
+func ddbStringParams(t *testing.T, params []types.AttributeValue) []string {
+	t.Helper()
+	out := make([]string, len(params))
+	for i, p := range params {
+		s, ok := p.(*types.AttributeValueMemberS)
+		if !ok {
+			t.Fatalf("param %d = %#v; want a string attribute", i, p)
+		}
+		out[i] = s.Value
+	}
+	return out
+}
+
+// DynamoDB PartiQL has no SIMILAR TO or LIKE. Wildcards used to fall through
+// to go-lucene's Postgres rendering, so every wildcard search failed.
+func TestDynamoDBDriver_ScalarWildcards(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	tests := []struct {
+		query      string
+		wantSQL    string
+		wantParams []string
+	}{
+		{"id:abc*", `begins_with("id", ?)`, []string{"abc"}},
+		{"id:connector#c-42*", `begins_with("id", ?)`, []string{"connector#c-42"}},
+		{"id:*abc*", `contains("id", ?)`, []string{"abc"}},
+		{"id:*", `"id" IS NOT MISSING`, []string{}},
+		{"owner:abc*", `begins_with("owner", ?)`, []string{"abc"}},
+		{`tenant:"acme" AND id:abc*`, `("tenant" = ?) AND (begins_with("id", ?))`, []string{"acme", "abc"}},
+		{"abc*", `(begins_with("tenant", ?)) OR (begins_with("id", ?))`, []string{"abc", "abc"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			sql, params, err := p.ParseToDynamoDBPartiQL(tt.query)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", tt.query, err)
+			}
+			if !strings.Contains(sql, tt.wantSQL) {
+				t.Errorf("partiql = %q; want it to contain %q", sql, tt.wantSQL)
+			}
+			if strings.Contains(sql, "SIMILAR") || strings.Contains(sql, "LIKE") {
+				t.Errorf("partiql = %q; DynamoDB supports neither SIMILAR TO nor LIKE", sql)
+			}
+			got := ddbStringParams(t, params)
+			if strings.Join(got, "|") != strings.Join(tt.wantParams, "|") {
+				t.Errorf("params = %q; want %q", got, tt.wantParams)
+			}
+		})
+	}
+}
+
+// Patterns PartiQL can't express must fail rather than match the wrong items.
+func TestDynamoDBDriver_UnsupportedWildcardsAreErrors(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	for _, query := range []string{"id:*abc", "id:a*c", "id:a?c", "id:*a*b*", "priority:5*"} {
+		t.Run(query, func(t *testing.T) {
+			if sql, _, err := p.ParseToDynamoDBPartiQL(query); err == nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q) = %q; want an error", query, sql)
 			}
 		})
 	}

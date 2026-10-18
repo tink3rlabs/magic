@@ -211,7 +211,7 @@ func TestDynamoDBListSendsOrderedFilterStatement(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	got := rec.last(t)
-	want := `SELECT * FROM "dynamo_sample_items" WHERE "id" = ? AND "name" = ? ORDER BY id`
+	want := `SELECT * FROM "dynamo_sample_items" WHERE "id" = ? AND "name" = ? ORDER BY id ASC`
 	if got.Statement != want {
 		t.Fatalf("Statement = %q; want %q", got.Statement, want)
 	}
@@ -228,7 +228,7 @@ func TestDynamoDBListAndSearchReadFromIndex(t *testing.T) {
 	if _, err := s.List(&dest, "id", map[string]any{"name": "bob"}, 10, "", params); err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if want := `SELECT * FROM "dynamo_sample_items"."name_index" WHERE "name" = ? ORDER BY id`; rec.last(t).Statement != want {
+	if want := `SELECT * FROM "dynamo_sample_items"."name_index" WHERE "name" = ? ORDER BY id ASC`; rec.last(t).Statement != want {
 		t.Fatalf("List Statement = %q; want %q", rec.last(t).Statement, want)
 	}
 
@@ -237,6 +237,41 @@ func TestDynamoDBListAndSearchReadFromIndex(t *testing.T) {
 	}
 	if got := rec.last(t).Statement; !strings.HasPrefix(got, `SELECT * FROM "dynamo_sample_items"."name_index" WHERE `) {
 		t.Fatalf("Search Statement = %q; want it to read from the index", got)
+	}
+}
+
+func TestDynamoDBListAndSearchHonourSortDirection(t *testing.T) {
+	s, rec := newRecordingDynamoAdapter(t, "")
+	var dest []dynamoSampleItem
+	params := map[string]any{SortDirectionKey: "desc"}
+
+	if _, err := s.List(&dest, "id", map[string]any{"name": "bob"}, 10, "", params); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if want := `SELECT * FROM "dynamo_sample_items" WHERE "name" = ? ORDER BY id DESC`; rec.last(t).Statement != want {
+		t.Fatalf("List Statement = %q; want %q", rec.last(t).Statement, want)
+	}
+
+	if _, err := s.Search(&dest, "id", "name:bob", 10, "", params); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := rec.last(t).Statement; !strings.HasSuffix(got, ` ORDER BY id DESC`) {
+		t.Fatalf("Search Statement = %q; want ORDER BY id DESC", got)
+	}
+}
+
+func TestDynamoDBRejectsInvalidSortDirectionBeforeQuerying(t *testing.T) {
+	s, rec := newRecordingDynamoAdapter(t, "")
+	var dest []dynamoSampleItem
+	params := map[string]any{SortDirectionKey: "sideways"}
+	if _, err := s.List(&dest, "id", nil, 10, "", params); err == nil {
+		t.Fatal("List with an invalid sort direction returned no error")
+	}
+	if _, err := s.Search(&dest, "id", "name:bob", 10, "", params); err == nil {
+		t.Fatal("Search with an invalid sort direction returned no error")
+	}
+	if rec.count() != 0 {
+		t.Fatalf("an invalid sort direction must not reach DynamoDB, sent %d requests", rec.count())
 	}
 }
 

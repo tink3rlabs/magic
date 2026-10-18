@@ -68,6 +68,10 @@ const (
 
 const SortDirectionKey = "sort_direction"
 
+// QueryParametersKey passes the values for the "?" placeholders in a Query
+// statement, as a slice in placeholder order. DynamoDB only.
+const QueryParametersKey = "parameters"
+
 // extractParams merges all provided parameter maps into a single flat map.
 // When keys collide, later maps win.
 func extractParams(params ...map[string]any) map[string]any {

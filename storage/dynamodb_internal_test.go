@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -48,8 +49,8 @@ func TestDynamoDBBuildFilterScalar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildFilter: %v", err)
 	}
-	if got != "id=?" {
-		t.Fatalf("buildFilter scalar = %q; want %q", got, "id=?")
+	if got != `"id" = ?` {
+		t.Fatalf("buildFilter scalar = %q; want %q", got, `"id" = ?`)
 	}
 	if len(values) != 1 {
 		t.Fatalf("len(values) = %d; want 1", len(values))
@@ -62,9 +63,9 @@ func TestDynamoDBBuildFilterSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildFilter: %v", err)
 	}
-	// Slice values become IN(?,?,?) with no trailing comma.
-	if got != "id IN (?,?,?)" {
-		t.Fatalf("buildFilter slice = %q; want %q", got, "id IN (?,?,?)")
+	// Slice values become IN (?, ?, ?) with no trailing comma.
+	if got != `"id" IN (?, ?, ?)` {
+		t.Fatalf("buildFilter slice = %q; want %q", got, `"id" IN (?, ?, ?)`)
 	}
 	if len(values) != 3 {
 		t.Fatalf("len(values) = %d; want 3", len(values))
@@ -93,7 +94,7 @@ func TestDynamoDBBuildFilterValuesFollowClauseOrder(t *testing.T) {
 		"owner":  "bob",
 		"region": "eu",
 	}
-	wantClause := "kind=? AND owner=? AND region=? AND status IN (?,?) AND tenant=?"
+	wantClause := `"kind" = ? AND "owner" = ? AND "region" = ? AND "status" IN (?, ?) AND "tenant" = ?`
 	wantValues := []string{"rule", "bob", "eu", "active", "pending", "acme"}
 
 	for range 1000 {
@@ -121,6 +122,100 @@ func TestDynamoDBBuildFilterReturnsMarshalErrors(t *testing.T) {
 	unmarshallable := map[[2]int]int{{1, 2}: 1}
 	if _, _, err := s.buildFilter(map[string]any{"id": unmarshallable}); err == nil {
 		t.Fatal("buildFilter must return an error for a value that can't be marshalled")
+	}
+}
+
+// Keys are written into the statement, so anything that isn't a plain
+// attribute path must be rejected rather than passed through.
+func TestDynamoDBBuildFilterRejectsUnsafeKeys(t *testing.T) {
+	s := &DynamoDBAdapter{}
+	for _, key := range []string{
+		"tenant<>'' OR tenant",
+		`id" OR "x`,
+		"id = ? OR id",
+		"a..b",
+		".a",
+		"a.",
+		"",
+		"$or",
+		"na me",
+	} {
+		t.Run(key, func(t *testing.T) {
+			if got, _, err := s.buildFilter(map[string]any{key: "x"}); err == nil {
+				t.Fatalf("buildFilter(%q) = %q; want an error", key, got)
+			}
+		})
+	}
+}
+
+func TestDynamoDBBuildFilterQuotesKeys(t *testing.T) {
+	s := &DynamoDBAdapter{}
+	cases := map[string]string{
+		"user-id":      `"user-id" = ?`,
+		"status":       `"status" = ?`,
+		"name":         `"name" = ?`,
+		"address.city": `"address"."city" = ?`,
+		"a.b-c.d_e":    `"a"."b-c"."d_e" = ?`,
+	}
+	for key, want := range cases {
+		t.Run(key, func(t *testing.T) {
+			got, _, err := s.buildFilter(map[string]any{key: "x"})
+			if err != nil {
+				t.Fatalf("buildFilter(%q): %v", key, err)
+			}
+			if got != want {
+				t.Fatalf("buildFilter(%q) = %q; want %q", key, got, want)
+			}
+		})
+	}
+}
+
+func TestDynamoDBBuildFilterNilIsNull(t *testing.T) {
+	s := &DynamoDBAdapter{}
+	got, values, err := s.buildFilter(map[string]any{"deleted_at": nil, "id": "1"})
+	if err != nil {
+		t.Fatalf("buildFilter: %v", err)
+	}
+	if want := `"deleted_at" IS NULL AND "id" = ?`; got != want {
+		t.Fatalf("buildFilter = %q; want %q", got, want)
+	}
+	if len(values) != 1 {
+		t.Fatalf("len(values) = %d; want 1 (IS NULL binds nothing)", len(values))
+	}
+}
+
+func TestDynamoDBBuildFilterEmptySliceMatchesNothing(t *testing.T) {
+	s := &DynamoDBAdapter{}
+	_, _, err := s.buildFilter(map[string]any{"id": "1", "status": []string{}})
+	if !errors.Is(err, errFilterMatchesNothing) {
+		t.Fatalf("buildFilter(empty slice) error = %v; want errFilterMatchesNothing", err)
+	}
+}
+
+func TestDynamoDBListWithEmptySliceReturnsEmptyPageWithoutQuerying(t *testing.T) {
+	// A zero-value adapter has no client, so reaching DynamoDB would panic.
+	s := &DynamoDBAdapter{}
+	dest := []dynamoSampleItem{{Id: "stale"}}
+	next, err := s.List(&dest, "id", map[string]any{"id": []string{}}, 10, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if next != "" || len(dest) != 0 {
+		t.Fatalf("List = %q, %v; want an empty page", next, dest)
+	}
+}
+
+func TestDynamoDBBuildFilterBytesAreOneValue(t *testing.T) {
+	s := &DynamoDBAdapter{}
+	got, values, err := s.buildFilter(map[string]any{"blob": []byte("abc")})
+	if err != nil {
+		t.Fatalf("buildFilter: %v", err)
+	}
+	if got != `"blob" = ?` {
+		t.Fatalf("buildFilter = %q; want %q", got, `"blob" = ?`)
+	}
+	if _, ok := values[0].(*types.AttributeValueMemberB); !ok || len(values) != 1 {
+		t.Fatalf("values = %#v; want one binary value", values)
 	}
 }
 

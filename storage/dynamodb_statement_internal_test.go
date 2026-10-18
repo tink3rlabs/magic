@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+
+	serviceErrors "github.com/tink3rlabs/magic/errors"
 )
 
 // executeStatementRequest is the part of an ExecuteStatement request body the
@@ -211,6 +214,30 @@ func TestDynamoDBRejectsInvalidIndexBeforeQuerying(t *testing.T) {
 	}
 	if rec.count() != 0 {
 		t.Fatalf("an invalid index must not reach DynamoDB, sent %d requests", rec.count())
+	}
+}
+
+// The SQL adapter reports invalid search queries as BadRequest so HTTP
+// handlers can return 400; DynamoDB returned them as plain errors.
+func TestDynamoDBSearchReportsInvalidQueriesAsBadRequest(t *testing.T) {
+	s, rec := newRecordingDynamoAdapter(t, "")
+	var dest []dynamoSampleItem
+	for _, query := range []string{
+		"secret:x",     // unknown field
+		"name:(",       // syntax error
+		"name:*abc",    // pattern DynamoDB can't express
+		"name:a OR )(", // unbalanced parentheses
+	} {
+		t.Run(query, func(t *testing.T) {
+			_, err := s.Search(&dest, "id", query, 10, "")
+			var bad *serviceErrors.BadRequest
+			if !errors.As(err, &bad) {
+				t.Fatalf("Search(%q) error = %v (%T); want *errors.BadRequest", query, err, err)
+			}
+		})
+	}
+	if rec.count() != 0 {
+		t.Fatalf("an invalid query must not reach DynamoDB, sent %d requests", rec.count())
 	}
 }
 

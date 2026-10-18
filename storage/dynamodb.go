@@ -223,6 +223,11 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	}
 
 	input = builder(input)
+	// DynamoDB rejects an empty Parameters list (minimum 1 item); the SDK
+	// sends one for any non-nil slice.
+	if len(input.Parameters) == 0 {
+		input.Parameters = nil
+	}
 
 	response, err := s.DB.ExecuteStatement(ctx, input)
 	if err != nil {

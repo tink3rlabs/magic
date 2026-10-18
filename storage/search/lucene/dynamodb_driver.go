@@ -99,11 +99,14 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 			if err != nil {
 				return "", nil, err
 			}
-			param, err := arrayContainsParam(elem)
+			param, err := elemAttributeValue(elem)
 			if err != nil {
 				return "", nil, err
 			}
 			return fmt.Sprintf("contains(%s, ?)", safe), []any{param}, nil
+		}
+		if !isArray && name != "" && !isGroup(e.Right) {
+			return d.renderScalarComparison(name, e.Op, e.Right)
 		}
 	case expr.Wild, expr.Like:
 		if isArray {
@@ -119,6 +122,9 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 				e.Op, name, name,
 			)
 		}
+		if name != "" {
+			return d.renderScalarComparison(name, e.Op, e.Right)
+		}
 	case expr.Range:
 		if isArray {
 			return "", nil, fmt.Errorf(
@@ -126,9 +132,125 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 				name, name,
 			)
 		}
+		if name != "" {
+			return d.renderScalarRange(name, e.Right)
+		}
 	}
 
 	return d.Base.RenderParam(e)
+}
+
+// isGroup reports whether v is a grouped value list such as (a OR b).
+func isGroup(v any) bool {
+	e, ok := v.(*expr.Expression)
+	return ok && (e.Op == expr.Or || e.Op == expr.And)
+}
+
+var comparisonSymbols = map[expr.Operator]string{
+	expr.Equals:    "=",
+	expr.Greater:   ">",
+	expr.GreaterEq: ">=",
+	expr.Less:      "<",
+	expr.LessEq:    "<=",
+}
+
+// renderScalarComparison renders =, >, >=, < or <= on a single-valued field,
+// binding the value as the attribute type of the field.
+func (d *DynamoDBPartiQLDriver) renderScalarComparison(name string, op expr.Operator, right any) (string, []any, error) {
+	ref, err := quotePartiQLPath(name)
+	if err != nil {
+		return "", nil, err
+	}
+	if isNullValue(right) {
+		if op == expr.Equals {
+			return fmt.Sprintf("%s IS NULL", ref), nil, nil
+		}
+		return "", nil, fmt.Errorf("comparison operator %s cannot be used with null; use field:null for IS NULL", op)
+	}
+	param, err := d.scalarParam(name, extractLiteralValue(right))
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("%s %s ?", ref, comparisonSymbols[op]), []any{param}, nil
+}
+
+// renderScalarRange renders [a TO b], {a TO b} and their open-ended forms,
+// binding both bounds as the attribute type of the field.
+func (d *DynamoDBPartiQLDriver) renderScalarRange(name string, right any) (string, []any, error) {
+	ref, err := quotePartiQLPath(name)
+	if err != nil {
+		return "", nil, err
+	}
+	boundary, ok := right.(*expr.RangeBoundary)
+	if !ok {
+		return "", nil, fmt.Errorf("invalid range expression structure: expected *expr.RangeBoundary, got %T", right)
+	}
+	minRaw, minOpen, err := rangeBound(boundary.Min)
+	if err != nil {
+		return "", nil, err
+	}
+	maxRaw, maxOpen, err := rangeBound(boundary.Max)
+	if err != nil {
+		return "", nil, err
+	}
+	if minOpen && maxOpen {
+		return "", nil, fmt.Errorf("both range bounds cannot be wildcards")
+	}
+
+	var minParam, maxParam types.AttributeValue
+	if !minOpen {
+		if minParam, err = d.scalarParam(name, minRaw); err != nil {
+			return "", nil, err
+		}
+	}
+	if !maxOpen {
+		if maxParam, err = d.scalarParam(name, maxRaw); err != nil {
+			return "", nil, err
+		}
+	}
+
+	lower, upper := ">", "<"
+	if boundary.Inclusive {
+		lower, upper = ">=", "<="
+	}
+	switch {
+	case minOpen:
+		return fmt.Sprintf("%s %s ?", ref, upper), []any{maxParam}, nil
+	case maxOpen:
+		return fmt.Sprintf("%s %s ?", ref, lower), []any{minParam}, nil
+	case boundary.Inclusive:
+		return fmt.Sprintf("%s BETWEEN ? AND ?", ref), []any{minParam, maxParam}, nil
+	default:
+		return fmt.Sprintf("%s > ? AND %s < ?", ref, ref), []any{minParam, maxParam}, nil
+	}
+}
+
+// rangeBound returns a range bound's raw value, or open=true for *.
+func rangeBound(bound any) (raw string, open bool, err error) {
+	if isNullValue(bound) {
+		return "", false, fmt.Errorf("null is not allowed as a range bound; use field:null for IS NULL")
+	}
+	if e, ok := bound.(*expr.Expression); ok && e.Op == expr.Wild {
+		return "", true, nil
+	}
+	raw = extractLiteralValue(bound)
+	return raw, raw == "*", nil
+}
+
+// scalarParam converts raw into the attribute type the field is stored as:
+// N for numeric fields, BOOL for booleans and S for everything else,
+// including time.Time, which the SDK marshals as an RFC 3339 string. A field
+// that isn't in the model, such as a nested path, is bound as S.
+func (d *DynamoDBPartiQLDriver) scalarParam(name, raw string) (types.AttributeValue, error) {
+	info, known := d.fields[name]
+	if !known {
+		return &types.AttributeValueMemberS{Value: raw}, nil
+	}
+	elem, err := normalizeScalarValue(name, info.Type, raw)
+	if err != nil {
+		return nil, err
+	}
+	return elemAttributeValue(elem)
 }
 
 // errArrayWildcardUnsupported is the shared rejection for a wildcard against a
@@ -196,22 +318,22 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, fieldType re
 	if err != nil {
 		return "", nil, err
 	}
-	param, err := arrayContainsParam(elem)
+	param, err := elemAttributeValue(elem)
 	if err != nil {
 		return "", nil, err
 	}
 	return fmt.Sprintf("contains(%s, ?)", safe), []any{param}, nil
 }
 
-// arrayContainsParam converts a validated element into the typed
-// AttributeValue that matches how it is stored, so a numeric or boolean array
-// is compared against a number or a boolean rather than a string that can
-// never match.
+// elemAttributeValue converts a validated value into the typed
+// AttributeValue that matches how it is stored, so a numeric or boolean field
+// or array is compared against a number or a boolean rather than a string
+// that can never match.
 //
 // It switches on the value itself rather than re-deriving the type from the
 // field's reflect.Kind. Re-deriving was a second source of truth that could
 // disagree with the validation that produced the value.
-func arrayContainsParam(v elemValue) (types.AttributeValue, error) {
+func elemAttributeValue(v elemValue) (types.AttributeValue, error) {
 	switch t := v.Val.(type) {
 	case bool:
 		return &types.AttributeValueMemberBOOL{Value: t}, nil

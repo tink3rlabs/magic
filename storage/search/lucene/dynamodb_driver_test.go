@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
@@ -640,7 +641,7 @@ func TestDynamoDBDriver_TypedArrayRejectsMistypedValue(t *testing.T) {
 // never equals one bound as S. Deriving the attribute type by re-parsing a
 // canonical string was a second source of truth that could disagree with the
 // validation that produced it; elemValue carries the type directly.
-func TestArrayContainsParamFromElemValue(t *testing.T) {
+func TestElemAttributeValueFromElemValue(t *testing.T) {
 	tests := []struct {
 		name string
 		val  elemValue
@@ -659,19 +660,19 @@ func TestArrayContainsParamFromElemValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := arrayContainsParam(tt.val)
+			got, err := elemAttributeValue(tt.val)
 			if err != nil {
-				t.Fatalf("arrayContainsParam(%#v): %v", tt.val, err)
+				t.Fatalf("elemAttributeValue(%#v): %v", tt.val, err)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("arrayContainsParam(%#v) = %#v, want %#v", tt.val, got, tt.want)
+				t.Errorf("elemAttributeValue(%#v) = %#v, want %#v", tt.val, got, tt.want)
 			}
 		})
 	}
 
 	// A Val outside the closed set is a programming error, not a filter error.
-	if _, err := arrayContainsParam(elemValue{Kind: reflect.Complex64, Val: complex64(1)}); err == nil {
-		t.Error("arrayContainsParam with an unsupported Val returned no error")
+	if _, err := elemAttributeValue(elemValue{Kind: reflect.Complex64, Val: complex64(1)}); err == nil {
+		t.Error("elemAttributeValue with an unsupported Val returned no error")
 	}
 }
 
@@ -692,13 +693,17 @@ func TestGormIgnoredFieldsStayFilterableOnDynamoDB(t *testing.T) {
 }
 
 type ddbRule struct {
-	Tenant   string   `json:"tenant"`
-	ID       string   `json:"id"`
-	Priority int      `json:"priority"`
-	Score    float64  `json:"score"`
-	Enabled  bool     `json:"enabled"`
-	Owner    *string  `json:"owner"`
-	Tags     []string `json:"tags"`
+	Tenant    string            `json:"tenant"`
+	ID        string            `json:"id"`
+	Priority  int               `json:"priority"`
+	Level     uint8             `json:"level"`
+	Score     float64           `json:"score"`
+	Enabled   bool              `json:"enabled"`
+	Retries   *int              `json:"retries"`
+	Owner     *string           `json:"owner"`
+	CreatedAt time.Time         `json:"created_at"`
+	Labels    map[string]string `json:"labels"`
+	Tags      []string          `json:"tags"`
 }
 
 func ddbStringParams(t *testing.T, params []types.AttributeValue) []string {
@@ -762,6 +767,88 @@ func TestDynamoDBDriver_UnsupportedWildcardsAreErrors(t *testing.T) {
 		t.Fatalf("NewParser: %v", err)
 	}
 	for _, query := range []string{"id:*abc", "id:a*c", "id:a?c", "id:*a*b*", "priority:5*"} {
+		t.Run(query, func(t *testing.T) {
+			if sql, _, err := p.ParseToDynamoDBPartiQL(query); err == nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q) = %q; want an error", query, sql)
+			}
+		})
+	}
+}
+
+// DynamoDB never matches an N attribute against an S value, so binding every
+// scalar as a string made numeric and boolean searches silently return nothing.
+func TestDynamoDBDriver_ScalarValuesBindAsFieldType(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	n := func(v string) types.AttributeValue { return &types.AttributeValueMemberN{Value: v} }
+	s := func(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
+	b := func(v bool) types.AttributeValue { return &types.AttributeValueMemberBOOL{Value: v} }
+
+	tests := []struct {
+		query      string
+		wantSQL    string
+		wantParams []types.AttributeValue
+	}{
+		{"priority:80", `"priority" = ?`, []types.AttributeValue{n("80")}},
+		{"priority:>80", `"priority" > ?`, []types.AttributeValue{n("80")}},
+		{"priority:<=80", `"priority" <= ?`, []types.AttributeValue{n("80")}},
+		{"level:255", `"level" = ?`, []types.AttributeValue{n("255")}},
+		{"retries:3", `"retries" = ?`, []types.AttributeValue{n("3")}},
+		{"score:1.5", `"score" = ?`, []types.AttributeValue{n("1.5")}},
+		{"enabled:true", `"enabled" = ?`, []types.AttributeValue{b(true)}},
+		{"tenant:acme", `"tenant" = ?`, []types.AttributeValue{s("acme")}},
+		{"tenant:42", `"tenant" = ?`, []types.AttributeValue{s("42")}},
+		{"owner:bob", `"owner" = ?`, []types.AttributeValue{s("bob")}},
+		{`created_at:"2024-01-01T00:00:00Z"`, `"created_at" = ?`, []types.AttributeValue{s("2024-01-01T00:00:00Z")}},
+		{"priority:[50 TO 100]", `"priority" BETWEEN ? AND ?`, []types.AttributeValue{n("50"), n("100")}},
+		{"priority:{50 TO 100}", `"priority" > ? AND "priority" < ?`, []types.AttributeValue{n("50"), n("100")}},
+		{"priority:[50 TO *]", `"priority" >= ?`, []types.AttributeValue{n("50")}},
+		{"priority:{* TO 100}", `"priority" < ?`, []types.AttributeValue{n("100")}},
+		{"id:[a TO m]", `"id" BETWEEN ? AND ?`, []types.AttributeValue{s("a"), s("m")}},
+		{"priority:null", `"priority" IS NULL`, []types.AttributeValue{}},
+		{"labels.team:core", `"labels"."team" = ?`, []types.AttributeValue{s("core")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			sql, params, err := p.ParseToDynamoDBPartiQL(tt.query)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", tt.query, err)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("partiql = %q; want %q", sql, tt.wantSQL)
+			}
+			if len(params) != len(tt.wantParams) {
+				t.Fatalf("params = %#v; want %#v", params, tt.wantParams)
+			}
+			for i := range params {
+				if !reflect.DeepEqual(params[i], tt.wantParams[i]) {
+					t.Errorf("param %d = %#v; want %#v", i, params[i], tt.wantParams[i])
+				}
+			}
+		})
+	}
+}
+
+// A value that can't be stored in the field is a malformed query, not one
+// that should quietly match nothing.
+func TestDynamoDBDriver_ScalarRejectsMistypedValue(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	for _, query := range []string{
+		"priority:abc",
+		"priority:1.5",
+		"level:256",
+		"enabled:maybe",
+		"score:NaN",
+		"priority:[1 TO abc]",
+		"priority:>null",
+		"priority:[* TO *]",
+	} {
 		t.Run(query, func(t *testing.T) {
 			if sql, _, err := p.ParseToDynamoDBPartiQL(query); err == nil {
 				t.Fatalf("ParseToDynamoDBPartiQL(%q) = %q; want an error", query, sql)

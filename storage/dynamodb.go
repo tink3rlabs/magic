@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -254,6 +255,10 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 		return "", err
 	}
 	where, values, err := s.buildFilter(filter)
+	if errors.Is(err, errFilterMatchesNothing) {
+		clearSlice(dest)
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -348,19 +353,56 @@ func (s *DynamoDBAdapter) getTableName(obj any) string {
 	return tableName
 }
 
+// errFilterMatchesNothing reports a filter that can't match any item, such as
+// an empty slice: "IN ()" is a syntax error in PartiQL.
+var errFilterMatchesNothing = errors.New("filter matches nothing")
+
+// dynamoPathSegment matches one dot-separated segment of a filter key. Each
+// segment is quoted in the statement, so hyphens and reserved words are
+// allowed, but quotes, spaces and operators are not.
+var dynamoPathSegment = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// dynamoAttributePath validates a filter key and quotes each segment, so
+// "a.b" stays a nested path ("a"."b") rather than an attribute named "a.b".
+func dynamoAttributePath(key string) (string, error) {
+	segments := strings.Split(key, ".")
+	for i, segment := range segments {
+		if !dynamoPathSegment.MatchString(segment) {
+			return "", fmt.Errorf("invalid filter key %q: each dot-separated part must match [A-Za-z0-9_-]+", key)
+		}
+		segments[i] = `"` + segment + `"`
+	}
+	return strings.Join(segments, "."), nil
+}
+
 // buildFilter renders filter as a WHERE clause and the values for its "?"
 // placeholders. PartiQL binds placeholders by position, so the clause and the
 // values are built in one pass over the keys in sorted order: two separate
 // passes over the map can visit the keys in different orders.
+//
+// Keys are written into the statement, so each one is validated and quoted.
+// It returns errFilterMatchesNothing when a slice value is empty.
 func (s *DynamoDBAdapter) buildFilter(filter map[string]any) (string, []types.AttributeValue, error) {
 	keys := slices.Sorted(maps.Keys(filter))
 	clauses := make([]string, 0, len(keys))
 	values := make([]types.AttributeValue, 0, len(keys))
 
 	for _, key := range keys {
+		path, err := dynamoAttributePath(key)
+		if err != nil {
+			return "", nil, err
+		}
 		value := filter[key]
+		if value == nil {
+			clauses = append(clauses, fmt.Sprintf("%s IS NULL", path))
+			continue
+		}
 		rv := reflect.ValueOf(value)
-		if rv.Kind() == reflect.Slice {
+		// A []byte is a single binary value, not a list of values.
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() != reflect.Uint8 {
+			if rv.Len() == 0 {
+				return "", nil, errFilterMatchesNothing
+			}
 			placeholders := make([]string, rv.Len())
 			for i := range placeholders {
 				v, err := attributevalue.Marshal(rv.Index(i).Interface())
@@ -370,16 +412,25 @@ func (s *DynamoDBAdapter) buildFilter(filter map[string]any) (string, []types.At
 				placeholders[i] = "?"
 				values = append(values, v)
 			}
-			clauses = append(clauses, fmt.Sprintf("%s IN (%s)", key, strings.Join(placeholders, ",")))
-		} else {
-			v, err := attributevalue.Marshal(value)
-			if err != nil {
-				return "", nil, fmt.Errorf("failed to marshal filter value for %q: %w", key, err)
-			}
-			clauses = append(clauses, fmt.Sprintf("%s=?", key))
-			values = append(values, v)
+			clauses = append(clauses, fmt.Sprintf("%s IN (%s)", path, strings.Join(placeholders, ", ")))
+			continue
 		}
+		v, err := attributevalue.Marshal(value)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to marshal filter value for %q: %w", key, err)
+		}
+		clauses = append(clauses, fmt.Sprintf("%s = ?", path))
+		values = append(values, v)
 	}
 
 	return strings.Join(clauses, " AND "), values, nil
+}
+
+// clearSlice sets *dest to an empty slice when dest points to a slice.
+func clearSlice(dest any) {
+	rv := reflect.ValueOf(dest)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() || rv.Elem().Kind() != reflect.Slice {
+		return
+	}
+	rv.Elem().Set(reflect.MakeSlice(rv.Elem().Type(), 0, 0))
 }

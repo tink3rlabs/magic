@@ -338,11 +338,12 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 }
 
 // dynamoOrderBy returns an ORDER BY clause, or "" when sortKey is empty.
+// The key is quoted so reserved words such as status and name stay valid.
 func dynamoOrderBy(sortKey string, dir SortingDirection) string {
 	if sortKey == "" {
 		return ""
 	}
-	return fmt.Sprintf(" ORDER BY %s %s", sortKey, dir)
+	return fmt.Sprintf(` ORDER BY "%s" %s`, sortKey, dir)
 }
 
 func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {

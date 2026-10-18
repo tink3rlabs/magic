@@ -351,7 +351,7 @@ The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL ha
 
 Values are bound as the attribute type the field is stored as: `N` for integer, unsigned and float fields, `BOOL` for booleans, and `S` for everything else, including `time.Time`. A value that doesn't fit the field, such as `amount:abc` on an `int`, is a parse error.
 
-Wildcards work on string fields only, and only in the two forms PartiQL can express. Ends-with (`*foo`), a wildcard inside the value (`fo*o`) and the single-character wildcard `?` return a parse error rather than matching the wrong items.
+Wildcards work on string fields only, and only in the two forms PartiQL can express. Ends-with (`*foo`), a wildcard inside the value (`fo*o`) and the single-character wildcard `?` return a parse error rather than matching the wrong items. `time.Time` is stored as a string attribute, but a wildcard on it is still rejected; use a range instead (`created_at:[2026-01-01 TO 2026-02-01]`).
 
 `DynamoDBAdapter.Search` returns every parse error, including an unknown field, as `*errors.BadRequest`, so handlers can map it to HTTP 400 without checking for `*lucene.InvalidFieldError`.
 

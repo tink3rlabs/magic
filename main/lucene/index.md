@@ -300,7 +300,26 @@ handler.go
 partiql, attrs, err := parser.ParseToDynamoDBPartiQL("status:received AND amount:>100")
 ```
 
-The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL does not support fuzzy search, case-insensitive matching, or JSON path access the same way. Wildcards (rendered as PartiQL `begins_with`/`contains`) and equality are supported. See `storage/search/lucene/dynamodb_driver.go` for the exact mapping.
+The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL has no `LIKE`, fuzzy search or case-insensitive matching. All values are bound as parameters.
+
+| Query                 | PartiQL                               |
+| --------------------- | ------------------------------------- |
+| `status:received`     | `"status" = ?`                        |
+| `amount:>100`         | `"amount" > ?` (also `>=`, `<`, `<=`) |
+| `amount:[100 TO 500]` | `"amount" BETWEEN ? AND ?`            |
+| `amount:{100 TO 500}` | `"amount" > ? AND "amount" < ?`       |
+| `status:(a OR b)`     | `("status" = ? OR "status" = ?)`      |
+| `field:null`          | `"field" IS NULL`                     |
+| `id:connector#42*`    | `begins_with("id", ?)`                |
+| `name:*foo*`          | `contains("name", ?)`                 |
+| `field:*`             | `"field" IS NOT MISSING`              |
+| `labels.team:core`    | `"labels"."team" = ?`                 |
+
+Values are bound as the attribute type the field is stored as: `N` for integer, unsigned and float fields, `BOOL` for booleans, and `S` for everything else, including `time.Time`. A value that doesn't fit the field, such as `amount:abc` on an `int`, is a parse error.
+
+Wildcards work on string fields only, and only in the two forms PartiQL can express. Ends-with (`*foo`), a wildcard inside the value (`fo*o`) and the single-character wildcard `?` return a parse error rather than matching the wrong items. `time.Time` is stored as a string attribute, but a wildcard on it is still rejected; use a range instead (`created_at:[2026-01-01 TO 2026-02-01]`).
+
+`DynamoDBAdapter.Search` returns every parse error, including an unknown field, as `*errors.BadRequest`, so handlers can map it to HTTP 400 without checking for `*lucene.InvalidFieldError`.
 
 [Array fields](#array-multi-valued-fields) render as `contains(tags, ?)`, one per value, so `tags:(a OR b)` becomes `(contains(tags, ?) OR contains(tags, ?))` and `NOT tags:a` becomes `NOT (contains(tags, ?))`. Wildcards, ordering operators (`>`, `<`, `>=`, `<=`) and ranges on an array field are rejected with a parse error naming the field: PartiQL's `contains()` tests element membership rather than substrings, and a list attribute has no ordering.
 

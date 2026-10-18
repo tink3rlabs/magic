@@ -1385,7 +1385,60 @@ it would silently match nothing. Use containment instead.</p>
 <h2 id="dynamodb">DynamoDB<a class="headerlink" href="#dynamodb" title="Permanent link">&para;</a></h2>
 <div class="highlight"><span class="filename">handler.go</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nx">partiql</span><span class="p">,</span><span class="w"> </span><span class="nx">attrs</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">parser</span><span class="p">.</span><span class="nx">ParseToDynamoDBPartiQL</span><span class="p">(</span><span class="s">"status:received AND amount:&gt;100"</span><span class="p">)</span>
 </code></pre></div>
-<p>The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL does not support fuzzy search, case-insensitive matching, or JSON path access the same way. Wildcards (rendered as PartiQL <code>begins_with</code>/<code>contains</code>) and equality are supported. See <code>storage/search/lucene/dynamodb_driver.go</code> for the exact mapping.</p>
+<p>The DynamoDB driver is intentionally narrower than the SQL driver — PartiQL has no <code>LIKE</code>, fuzzy search or case-insensitive matching. All values are bound as parameters.</p>
+<table>
+<thead>
+<tr>
+<th>Query</th>
+<th>PartiQL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>status:received</code></td>
+<td><code>"status" = ?</code></td>
+</tr>
+<tr>
+<td><code>amount:&gt;100</code></td>
+<td><code>"amount" &gt; ?</code> (also <code>&gt;=</code>, <code>&lt;</code>, <code>&lt;=</code>)</td>
+</tr>
+<tr>
+<td><code>amount:[100 TO 500]</code></td>
+<td><code>"amount" BETWEEN ? AND ?</code></td>
+</tr>
+<tr>
+<td><code>amount:{100 TO 500}</code></td>
+<td><code>"amount" &gt; ? AND "amount" &lt; ?</code></td>
+</tr>
+<tr>
+<td><code>status:(a OR b)</code></td>
+<td><code>("status" = ? OR "status" = ?)</code></td>
+</tr>
+<tr>
+<td><code>field:null</code></td>
+<td><code>"field" IS NULL</code></td>
+</tr>
+<tr>
+<td><code>id:connector#42*</code></td>
+<td><code>begins_with("id", ?)</code></td>
+</tr>
+<tr>
+<td><code>name:*foo*</code></td>
+<td><code>contains("name", ?)</code></td>
+</tr>
+<tr>
+<td><code>field:*</code></td>
+<td><code>"field" IS NOT MISSING</code></td>
+</tr>
+<tr>
+<td><code>labels.team:core</code></td>
+<td><code>"labels"."team" = ?</code></td>
+</tr>
+</tbody>
+</table>
+<p>Values are bound as the attribute type the field is stored as: <code>N</code> for integer, unsigned and float fields, <code>BOOL</code> for booleans, and <code>S</code> for everything else, including <code>time.Time</code>. A value that doesn't fit the field, such as <code>amount:abc</code> on an <code>int</code>, is a parse error.</p>
+<p>Wildcards work on string fields only, and only in the two forms PartiQL can express. Ends-with (<code>*foo</code>), a wildcard inside the value (<code>fo*o</code>) and the single-character wildcard <code>?</code> return a parse error rather than matching the wrong items. <code>time.Time</code> is stored as a string attribute, but a wildcard on it is still rejected; use a range instead (<code>created_at:[2026-01-01 TO 2026-02-01]</code>).</p>
+<p><code>DynamoDBAdapter.Search</code> returns every parse error, including an unknown field, as <code>*errors.BadRequest</code>, so handlers can map it to HTTP 400 without checking for <code>*lucene.InvalidFieldError</code>.</p>
 <p><a href="#array-multi-valued-fields">Array fields</a> render as <code>contains(tags, ?)</code>, one per value, so <code>tags:(a OR b)</code> becomes <code>(contains(tags, ?) OR contains(tags, ?))</code> and <code>NOT tags:a</code> becomes <code>NOT (contains(tags, ?))</code>. Wildcards, ordering operators (<code>&gt;</code>, <code>&lt;</code>, <code>&gt;=</code>, <code>&lt;=</code>) and ranges on an array field are rejected with a parse error naming the field: PartiQL's <code>contains()</code> tests element membership rather than substrings, and a list attribute has no ordering.</p>
 <h2 id="full-operator-reference">Full operator reference<a class="headerlink" href="#full-operator-reference" title="Permanent link">&para;</a></h2>
 <table>

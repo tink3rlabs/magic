@@ -105,6 +105,24 @@ adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.DYNAMODB, conf
 
 When `access_key` / `secret_key` are empty, the adapter uses the standard AWS credential provider chain (env vars, IRSA, instance role).
 
+DynamoDB takes these per-call params in the variadic `params ...map[string]any` argument:
+
+| Param key | Constant | Applies to | Meaning |
+|-----------|----------|------------|---------|
+| `index` | `storage.IndexKey` | `List`, `Search` | Read from this global or local secondary index (`FROM "table"."index"`) instead of the base table. Must match `[A-Za-z0-9_.-]{3,255}`. Other adapters ignore it. |
+| `parameters` | `storage.QueryParametersKey` | `Query` | Values for the statement's `?` placeholders, as a slice in placeholder order. |
+
+```go title="index.go"
+var rules []Rule
+next, err := adapter.List(&rules, "id",
+    map[string]any{"principal": principal},
+    50, cursor,
+    map[string]any{storage.IndexKey: "principal_index"},
+)
+```
+
+`List` filter keys are written into the statement, so each dot-separated part must match `[A-Za-z0-9_-]+`; anything else returns an error before a request is sent. Each part is quoted, so keys that are reserved words (`status`, `name`) or contain hyphens work, and `address.city` is a nested path (`"address"."city"`). A `nil` value renders `IS NULL`, a slice renders `IN (...)`, and an empty slice returns an empty page without querying.
+
 ### CosmosDB
 
 ```go
@@ -246,7 +264,7 @@ The value is case-insensitive (`"asc"` and `"ASC"` are equivalent). Anything oth
 
 ### Filter vs search
 
-- **`List(dest, sortKey, filter, limit, cursor, params...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed.
+- **`List(dest, sortKey, filter, limit, cursor, params...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed. A slice value matches any of its elements on DynamoDB and CosmosDB.
 - **`Search(dest, sortKey, query, limit, cursor, params...)`** — `query` is a Lucene query string. See [Search (Lucene)](./lucene.md).
 
 For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string straight to `Search`. magic handles validation, error reporting, and parameterization.
@@ -307,12 +325,22 @@ When you need a raw query that doesn't fit the interface, use:
 - `adapter.Execute(statement)` — fire-and-forget DDL/DML.
 - `adapter.Query(dest, statement, limit, cursor, params...)` — **not implemented on the SQL adapter** (returns a "not implemented yet" error today).
 
-These bypass the Lucene layer entirely. **You are responsible for parameter binding.** Prefer `List` / `Search` whenever possible.
+These bypass the Lucene layer entirely. **You are responsible for parameter binding.** Prefer `List` / `Search` whenever possible: `Query` statements are written in the adapter's own query language, so code that uses them doesn't port to other adapters.
+
+On DynamoDB, pass values for the statement's `?` placeholders under `storage.QueryParametersKey`, in order. Never write values into `statement`:
+
+```go title="query.go"
+next, err := adapter.Query(&rules,
+    `SELECT * FROM "rules" WHERE "tenant" = ? AND ("principal" = ? OR "status" = ?)`,
+    50, cursor,
+    map[string]any{storage.QueryParametersKey: []any{tenant, principal, "escalated"}},
+)
+```
 
 ## Adapter-specific limitations
 
 - **Memory** — an in-memory SQLite database: data lost on restart, single process only, and SQLite's limitations (below) apply.
 - **SQLite** — no `pg_trgm`, so fuzzy Lucene search is unsupported (returns an explanatory error). Use wildcards instead.
 - **MySQL** — fuzzy search uses `SOUNDEX`, which ignores the distance hint (`~2`) and works only on ASCII pronunciations.
-- **DynamoDB** — the Lucene compiler targets PartiQL; fuzzy search and JSON path access are intentionally not implemented. Equality, range, wildcards (rendered as `begins_with`/`contains`), and boolean composition work.
+- **DynamoDB** — the Lucene compiler targets PartiQL; fuzzy search is not supported. Equality, comparisons, ranges, `value*` and `*value*` wildcards (rendered as `begins_with`/`contains`), and boolean composition work. Ends-with (`*value`) and `?` wildcards return an error. See [Search (Lucene)](./lucene.md#dynamodb).
 - **CosmosDB** — see [`storage/cosmosdb.go`](https://github.com/tink3rlabs/magic/blob/main/storage/cosmosdb.go) for the supported subset and partition-key handling.

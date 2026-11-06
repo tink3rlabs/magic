@@ -680,12 +680,12 @@ func isImplicitTerm(token string) bool {
 // '"Living Room"' → '(name:"Living Room" OR description:"Living Room")'
 func (p *Parser) expandImplicitTerms(query string) string {
 	implicitFields := p.getImplicitSearchFields()
-	if len(implicitFields) == 0 {
-		return query
-	}
 
 	// Tokenize the query while preserving structure
 	tokens := tokenizeQuery(query)
+	if len(implicitFields) == 0 {
+		return joinWithImplicitAnd(tokens)
+	}
 	var result []string
 
 	for _, token := range tokens {
@@ -729,7 +729,47 @@ func (p *Parser) expandImplicitTerms(query string) string {
 		}
 	}
 
-	return strings.Join(result, " ")
+	return joinWithImplicitAnd(result)
+}
+
+// joinWithImplicitAnd joins tokens with spaces and writes out the AND that
+// Lucene implies between two clauses that have no operator between them.
+// go-lucene injects that AND between two plain terms, but not before a
+// parenthesised group, and every expanded implicit term is one. Without it
+// "kitchen fixtures" and "status:open kitchen" fail to parse.
+func joinWithImplicitAnd(tokens []string) string {
+	var b strings.Builder
+	prev := ""
+	for _, token := range tokens {
+		if b.Len() > 0 {
+			if endsClause(prev) && startsClause(token) {
+				b.WriteString(" AND")
+			}
+			b.WriteByte(' ')
+		}
+		b.WriteString(token)
+		prev = token
+	}
+	return b.String()
+}
+
+// endsClause reports whether a clause can end at token: anything but an
+// opening parenthesis or an operator.
+func endsClause(token string) bool {
+	return token != "(" && !isOperatorToken(token)
+}
+
+// startsClause reports whether a new clause can start at token: anything but
+// a closing parenthesis or a binary operator. NOT starts a clause.
+func startsClause(token string) bool {
+	if token == ")" {
+		return false
+	}
+	return !isOperatorToken(token) || strings.EqualFold(token, "NOT") || token == "!"
+}
+
+func isOperatorToken(token string) bool {
+	return booleanOperators.MatchString(token) || token == "&&" || token == "||" || token == "!"
 }
 
 // tokenizeQuery splits query into tokens, preserving quoted strings, range brackets,

@@ -1439,3 +1439,43 @@ func TestIsArrayField(t *testing.T) {
 		})
 	}
 }
+
+// Two clauses with no operator between them are an AND. go-lucene injects it
+// between plain terms but not before a parenthesised group, and every implicit
+// term expands to one, so any two bare words failed to parse.
+func TestImplicitAndBetweenClauses(t *testing.T) {
+	parser := createParser(t, TextModel{})
+
+	tests := []struct {
+		name       string
+		query      string
+		wantParams []any
+	}{
+		{"two words", "kitchen fixtures", []any{"%kitchen%", "%kitchen%", "%kitchen%", "%fixtures%", "%fixtures%", "%fixtures%"}},
+		{"two non-ASCII words", "синя боя", []any{"%синя%", "%синя%", "%синя%", "%боя%", "%боя%", "%боя%"}},
+		{"a field then a word", "name:john kitchen", []any{"john", "%kitchen%", "%kitchen%", "%kitchen%"}},
+		{"two groups", "(name:john) (name:jane)", []any{"john", "jane"}},
+		{"a word then NOT", "kitchen NOT name:john", []any{"%kitchen%", "%kitchen%", "%kitchen%", "john"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q): %v", tt.query, err)
+			}
+			if !strings.Contains(sql, " AND ") {
+				t.Errorf("ParseToSQL(%q) = %s, want the clauses joined by AND", tt.query, sql)
+			}
+			if !reflect.DeepEqual(params, tt.wantParams) {
+				t.Errorf("params = %v, want %v", params, tt.wantParams)
+			}
+		})
+	}
+
+	// Where an operator is written, no AND is added.
+	for _, q := range []string{"kitchen OR fixtures", "kitchen AND fixtures", "name:john OR (name:jane AND kitchen)", "(name:john) OR name:jane"} {
+		if got := joinWithImplicitAnd(tokenizeQuery(q)); strings.Count(got, "AND") != strings.Count(q, "AND") {
+			t.Errorf("joinWithImplicitAnd(%q) = %q, want no AND added", q, got)
+		}
+	}
+}

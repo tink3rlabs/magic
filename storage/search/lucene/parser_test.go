@@ -1456,6 +1456,8 @@ func TestImplicitAndBetweenClauses(t *testing.T) {
 		{"a field then a word", "name:john kitchen", []any{"john", "%kitchen%", "%kitchen%", "%kitchen%"}},
 		{"two groups", "(name:john) (name:jane)", []any{"john", "jane"}},
 		{"a word then NOT", "kitchen NOT name:john", []any{"%kitchen%", "%kitchen%", "%kitchen%", "john"}},
+		{"a word then a negated word", "kitchen -fixtures", []any{"%kitchen%", "%kitchen%", "%kitchen%", "%fixtures%", "%fixtures%", "%fixtures%"}},
+		{"a word then a required word", "kitchen +fixtures", []any{"%kitchen%", "%kitchen%", "%kitchen%", "%fixtures%", "%fixtures%", "%fixtures%"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1468,6 +1470,9 @@ func TestImplicitAndBetweenClauses(t *testing.T) {
 			}
 			if !reflect.DeepEqual(params, tt.wantParams) {
 				t.Errorf("params = %v, want %v", params, tt.wantParams)
+			}
+			if negated := strings.Contains(tt.query, "NOT ") || strings.Contains(tt.query, " -"); negated != strings.Contains(sql, "NOT") {
+				t.Errorf("ParseToSQL(%q) = %s, want the second clause negated: %v", tt.query, sql, negated)
 			}
 		})
 	}

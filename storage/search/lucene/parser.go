@@ -639,8 +639,8 @@ func isImplicitTerm(token string) bool {
 		return false
 	}
 
-	// Check if it starts with + or - (required/prohibited operators)
-	if strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") {
+	// Check if it starts with +, - or ! (required/prohibited operators)
+	if hasPrefixOperator(token) {
 		// Remove the prefix and check the rest
 		rest := token[1:]
 		if fieldValuePattern.MatchString(rest) {
@@ -680,20 +680,21 @@ func isImplicitTerm(token string) bool {
 // '"Living Room"' → '(name:"Living Room" OR description:"Living Room")'
 func (p *Parser) expandImplicitTerms(query string) string {
 	implicitFields := p.getImplicitSearchFields()
+	if len(implicitFields) == 0 {
+		return query
+	}
 
 	// Tokenize the query while preserving structure
 	tokens := tokenizeQuery(query)
-	if len(implicitFields) == 0 {
-		return joinWithImplicitAnd(tokens)
-	}
 	var result []string
+	groups := map[int]bool{}
 
 	for _, token := range tokens {
 		if isImplicitTerm(token) {
-			// Check if it has a +/- prefix
+			// Check if it has a +, - or ! prefix
 			prefix := ""
 			term := token
-			if strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") {
+			if hasPrefixOperator(token) {
 				prefix = string(token[0])
 				term = token[1:]
 			}
@@ -721,6 +722,8 @@ func (p *Parser) expandImplicitTerms(query string) string {
 				expanded := "(" + strings.Join(fieldTerms, " OR ") + ")"
 				if prefix != "" {
 					expanded = prefix + expanded
+				} else {
+					groups[len(result)] = true
 				}
 				result = append(result, expanded)
 			}
@@ -729,47 +732,44 @@ func (p *Parser) expandImplicitTerms(query string) string {
 		}
 	}
 
-	return joinWithImplicitAnd(result)
+	return joinWithImplicitAnd(result, groups)
 }
 
-// joinWithImplicitAnd joins tokens with spaces and writes out the AND that
-// Lucene implies between two clauses that have no operator between them.
-// go-lucene injects that AND between two plain terms, but not before a
-// parenthesised group, and every expanded implicit term is one. Without it
-// "kitchen fixtures" and "status:open kitchen" fail to parse.
-func joinWithImplicitAnd(tokens []string) string {
+// joinWithImplicitAnd joins tokens with spaces. Before an expanded implicit
+// term it writes out the AND that Lucene implies when no operator is given:
+// go-lucene injects that AND before a plain term but not before a
+// parenthesised group, and an expanded term is one, so "kitchen fixtures" and
+// "status:open kitchen" failed to parse. Every other junction is left to the
+// parser as written.
+func joinWithImplicitAnd(tokens []string, expanded map[int]bool) string {
 	var b strings.Builder
-	prev := ""
-	for _, token := range tokens {
-		if b.Len() > 0 {
-			if endsClause(prev) && startsClause(token) {
+	for i, token := range tokens {
+		if i > 0 {
+			if expanded[i] && endsClause(tokens[i-1]) {
 				b.WriteString(" AND")
 			}
 			b.WriteByte(' ')
 		}
 		b.WriteString(token)
-		prev = token
 	}
 	return b.String()
 }
 
-// endsClause reports whether a clause can end at token: anything but an
-// opening parenthesis or an operator.
-func endsClause(token string) bool {
-	return token != "(" && !isOperatorToken(token)
+// hasPrefixOperator reports whether token starts with a required (+) or
+// prohibited (-, !) operator.
+func hasPrefixOperator(token string) bool {
+	return strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") || strings.HasPrefix(token, "!")
 }
 
-// startsClause reports whether a new clause can start at token: anything but
-// a closing parenthesis or a binary operator. NOT starts a clause.
-func startsClause(token string) bool {
-	if token == ")" {
+// endsClause reports whether a clause ends at token, so a clause that follows
+// it with no operator between them is an implicit AND. A token that opens a
+// group, is an operator, or still waits for its value ("status:", "n:>") ends
+// no clause.
+func endsClause(token string) bool {
+	if token == "(" || token == "!" || booleanOperators.MatchString(token) {
 		return false
 	}
-	return !isOperatorToken(token) || strings.EqualFold(token, "NOT") || token == "!"
-}
-
-func isOperatorToken(token string) bool {
-	return booleanOperators.MatchString(token) || token == "&&" || token == "||" || token == "!"
+	return !strings.HasSuffix(token, ":") && !strings.ContainsAny(token[len(token)-1:], "<>=^~")
 }
 
 // tokenizeQuery splits query into tokens, preserving quoted strings, range brackets,

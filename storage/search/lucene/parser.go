@@ -687,7 +687,6 @@ func (p *Parser) expandImplicitTerms(query string) string {
 	// Tokenize the query while preserving structure
 	tokens := tokenizeQuery(query)
 	var result []string
-	groups := map[int]bool{}
 
 	for _, token := range tokens {
 		if isImplicitTerm(token) {
@@ -722,8 +721,6 @@ func (p *Parser) expandImplicitTerms(query string) string {
 				expanded := "(" + strings.Join(fieldTerms, " OR ") + ")"
 				if prefix != "" {
 					expanded = prefix + expanded
-				} else {
-					groups[len(result)] = true
 				}
 				result = append(result, expanded)
 			}
@@ -732,44 +729,13 @@ func (p *Parser) expandImplicitTerms(query string) string {
 		}
 	}
 
-	return joinWithImplicitAnd(result, groups)
-}
-
-// joinWithImplicitAnd joins tokens with spaces. Before an expanded implicit
-// term it writes out the AND that Lucene implies when no operator is given:
-// go-lucene injects that AND before a plain term but not before a
-// parenthesised group, and an expanded term is one, so "kitchen fixtures" and
-// "status:open kitchen" failed to parse. Every other junction is left to the
-// parser as written.
-func joinWithImplicitAnd(tokens []string, expanded map[int]bool) string {
-	var b strings.Builder
-	for i, token := range tokens {
-		if i > 0 {
-			if expanded[i] && endsClause(tokens[i-1]) {
-				b.WriteString(" AND")
-			}
-			b.WriteByte(' ')
-		}
-		b.WriteString(token)
-	}
-	return b.String()
+	return strings.Join(result, " ")
 }
 
 // hasPrefixOperator reports whether token starts with a required (+) or
 // prohibited (-, !) operator.
 func hasPrefixOperator(token string) bool {
 	return strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") || strings.HasPrefix(token, "!")
-}
-
-// endsClause reports whether a clause ends at token, so a clause that follows
-// it with no operator between them is an implicit AND. A token that opens a
-// group, is an operator, or still waits for its value ("status:", "n:>") ends
-// no clause.
-func endsClause(token string) bool {
-	if token == "(" || token == "!" || booleanOperators.MatchString(token) {
-		return false
-	}
-	return !strings.HasSuffix(token, ":") && !strings.ContainsAny(token[len(token)-1:], "<>=^~")
 }
 
 // tokenizeQuery splits query into tokens, preserving quoted strings, range brackets,

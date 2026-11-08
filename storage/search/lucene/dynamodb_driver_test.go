@@ -852,7 +852,8 @@ func TestDynamoDBDriver_ScalarGroupedValues(t *testing.T) {
 		{"tenant:(a OR b OR c)", `(("tenant" = ? OR "tenant" = ?) OR "tenant" = ?)`, []types.AttributeValue{s("a"), s("b"), s("c")}},
 		{"priority:(1 OR 2)", `("priority" = ? OR "priority" = ?)`, []types.AttributeValue{n("1"), n("2")}},
 		{"tenant:(a OR null)", `("tenant" = ? OR "tenant" IS NULL)`, []types.AttributeValue{s("a")}},
-		{"id:(abc* OR x)", `(begins_with("id", ?) OR "id" = ?)`, []types.AttributeValue{s("abc"), s("x")}},
+		// go-lucene splits a group that mixes a wildcard into one clause per term.
+		{"id:(abc* OR x)", `(begins_with("id", ?)) OR ("id" = ?)`, []types.AttributeValue{s("abc"), s("x")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {

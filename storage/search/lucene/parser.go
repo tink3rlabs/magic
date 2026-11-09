@@ -646,7 +646,7 @@ func isImplicitTerm(token string) bool {
 		if fieldValuePattern.MatchString(rest) {
 			return false // It's a +field:value or -field:value
 		}
-		// Otherwise it's an implicit term with +/- modifier
+		// Otherwise it's an implicit term with a +, - or ! modifier
 		return true
 	}
 

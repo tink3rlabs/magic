@@ -234,7 +234,7 @@ var (
 	// Extracts field name from field:value pattern
 	fieldExtractPattern = regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?):`)
 	// Matches boolean operators (case-insensitive)
-	booleanOperators = regexp.MustCompile(`(?i)^(AND|OR|NOT|\+|-)$`)
+	booleanOperators = regexp.MustCompile(`(?i)^(AND|OR|NOT|\+|-|!)$`)
 	// Matches range syntax
 	rangePattern = regexp.MustCompile(`^\[.*\s+TO\s+.*\]$|^\{.*\s+TO\s+.*\}$`)
 )

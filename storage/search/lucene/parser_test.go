@@ -1472,10 +1472,30 @@ func TestImplicitAndBeforeAnExpandedTerm(t *testing.T) {
 			if !reflect.DeepEqual(params, tt.wantParams) {
 				t.Errorf("params = %v, want %v", params, tt.wantParams)
 			}
-			if got := strings.Contains(sql, "NOT"); got != tt.negated {
+			if got := strings.Contains(sql, "NOT ("); got != tt.negated {
 				t.Errorf("ParseToSQL(%q) = %s, negated = %v, want %v", tt.query, sql, got, tt.negated)
 			}
 		})
+	}
+}
+
+// A bare ! before a group negates the group, as NOT and - do. It must not
+// expand into an implicit term of its own.
+func TestBangNegatesAGroup(t *testing.T) {
+	parser := createParser(t, TextModel{})
+
+	want, wantParams, err := parser.ParseToSQL("NOT (name:john)", "postgresql")
+	if err != nil {
+		t.Fatalf("ParseToSQL(NOT (name:john)): %v", err)
+	}
+	for _, query := range []string{"!(name:john)", "-(name:john)"} {
+		sql, params, err := parser.ParseToSQL(query, "postgresql")
+		if err != nil {
+			t.Fatalf("ParseToSQL(%q): %v", query, err)
+		}
+		if sql != want || !reflect.DeepEqual(params, wantParams) {
+			t.Errorf("ParseToSQL(%q) = %s %v, want %s %v", query, sql, params, want, wantParams)
+		}
 	}
 }
 

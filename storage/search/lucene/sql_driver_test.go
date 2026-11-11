@@ -773,8 +773,8 @@ func TestSQLDriver_RenderBinary_NonExpressionOperandFallback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("renderBinary() error = %v", err)
 		}
-		if !strings.Contains(sql, "NOT") || !strings.Contains(sql, "?") {
-			t.Errorf("renderBinary() sql = %q, want NOT (...?...)", sql)
+		if !strings.Contains(sql, "IS NOT TRUE") || !strings.Contains(sql, "?") {
+			t.Errorf("renderBinary() sql = %q, want (...?...) IS NOT TRUE", sql)
 		}
 		if len(params) != 1 || params[0] != 42 {
 			t.Errorf("renderBinary() params = %v, want [42]", params)
@@ -2245,7 +2245,7 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "postgres wildcard",
 			provider: "postgresql",
 			filter:   "NOT tags:*go*",
-			wantSQL:  []string{"NOT (", "EXISTS", `unnest("tags")`, "ILIKE ?"},
+			wantSQL:  []string{"IS NOT TRUE", "EXISTS", `unnest("tags")`, "ILIKE ?"},
 			notSQL:   []string{"SIMILAR TO", `"tags" = ?`},
 		},
 		{
@@ -2259,7 +2259,7 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "mysql wildcard",
 			provider: "mysql",
 			filter:   "NOT tags:*go*",
-			wantSQL:  []string{"NOT (", "JSON_SEARCH", "`tags`"},
+			wantSQL:  []string{"IS NOT TRUE", "JSON_SEARCH", "`tags`"},
 			notSQL:   []string{"`tags` = ?"},
 		},
 		{
@@ -2273,7 +2273,7 @@ func TestSQLDriver_NotKeywordOnArrayField(t *testing.T) {
 			name:     "sqlite wildcard",
 			provider: "sqlite",
 			filter:   "NOT tags:*go*",
-			wantSQL:  []string{"NOT (", "json_each", "value LIKE ?"},
+			wantSQL:  []string{"IS NOT TRUE", "json_each", "value LIKE ?"},
 			notSQL:   []string{`"tags" = ?`},
 		},
 		{

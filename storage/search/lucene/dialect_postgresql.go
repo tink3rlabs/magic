@@ -61,7 +61,7 @@ func (postgresDialect) Fuzzy(col, term string) (string, error) {
 // A NULL column yields NULL here rather than false, which is already correct
 // for a positive match (NULL is not true, so the row is excluded). Negation is
 // where the difference would matter, and renderBinary handles it by wrapping
-// the whole negated subtree in IS NOT TRUE — see subtreeHasArrayContainment.
+// every negated subtree in IS NOT TRUE.
 func (postgresDialect) ArrayContains(col string) string {
 	return fmt.Sprintf("%s @> ?", col)
 }

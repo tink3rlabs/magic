@@ -107,6 +107,8 @@ deleted_at:*         # any value (matches non-null)
 
 `field:null` compiles to `"field" IS NULL`. The empty-wildcard `field:*` is a wildcard match against everything — it compiles to the same form as any other wildcard (`"field"::text ILIKE ?` on Postgres, `LIKE` elsewhere) with `%` as the bound parameter. Since `NULL` never matches `LIKE`/`ILIKE`, this effectively selects rows where the field has a value.
 
+A negation keeps the rows where the field is NULL, as in Lucene: `-status:closed` matches every row whose status is not `closed`, including rows with no status, and `-deleted_at:*` matches the rows with no `deleted_at`. On SQL it renders as `(...) IS NOT TRUE`, because a plain `NOT` over a NULL comparison is NULL and would drop the row. To require a value as well, add it: `status:* -status:closed`. `NOT field:null` stays `"field" IS NOT NULL`.
+
 Comparison operators (`>`, `<`, `>=`, `<=`) with `null` return a parse error — they are meaningless.
 
 ### Comparison
@@ -368,8 +370,8 @@ Wildcards work on string fields only, and only in the two forms PartiQL can expr
 |-----------------------|----------------------------------|--------------------------------------------|-------------------------------------------------------|---------------------------------------|
 | Equality              | `status:received`                | `"status" = ?`                             | `"status" = ?`                                        | `"status" = ?`                        |
 | Boolean               | `a:1 AND b:2`, `a:1 OR b:2`      | `(...) AND (...)`                          | same                                                  | same                                  |
-| Negation              | `NOT status:cancelled`           | `NOT (...)`                                | same                                                  | same                                  |
-| Prefix negation       | `-status:cancelled`, `!status:cancelled` | `NOT (...)`                        | same                                                  | same                                  |
+| Negation              | `NOT status:cancelled`           | `(...) IS NOT TRUE`                        | same                                                  | same                                  |
+| Prefix negation       | `-status:cancelled`, `!status:cancelled` | `(...) IS NOT TRUE`                | same                                                  | same                                  |
 | Implicit AND          | `a:1 b:2`                        | `(...) AND (...)`                          | same                                                  | same                                  |
 | Inclusive range       | `amount:[100 TO 500]`            | `BETWEEN ? AND ?`                          | same                                                  | same                                  |
 | Exclusive range       | `amount:{100 TO 500}`            | `> ? AND < ?`                              | same                                                  | same                                  |

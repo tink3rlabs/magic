@@ -1472,7 +1472,7 @@ func TestImplicitAndBeforeAnExpandedTerm(t *testing.T) {
 			if !reflect.DeepEqual(params, tt.wantParams) {
 				t.Errorf("params = %v, want %v", params, tt.wantParams)
 			}
-			if got := strings.Contains(sql, "NOT ("); got != tt.negated {
+			if got := strings.Contains(sql, "IS NOT TRUE"); got != tt.negated {
 				t.Errorf("ParseToSQL(%q) = %s, negated = %v, want %v", tt.query, sql, got, tt.negated)
 			}
 		})

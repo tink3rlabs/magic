@@ -1052,7 +1052,9 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>status:received AND counterparty_id:abc123
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>status:received OR status:pending
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>status:received AND NOT status:cancelled
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>status:received -status:cancelled
 </code></pre></div>
+<p>Two clauses with no operator between them are joined with <code>AND</code>, so <code>status:received counterparty_id:abc123</code> is the same as the first line. A <code>-</code> or <code>!</code> prefix negates a clause like <code>NOT</code>, so the last line is the same as the third. A <code>+</code> prefix marks a required clause, which is the same as the default <code>AND</code>.</p>
 <p>Operators are case-sensitive (<code>AND</code> / <code>OR</code> / <code>NOT</code>). Parentheses group: <code>(a OR b) AND c</code>. Within a single field, group with <code>field:(a OR b)</code> — magic re-renders the inner leaves with the outer field name correctly, so <code>tenant_id:(abc OR null)</code> becomes <code>("tenant_id" = ? OR "tenant_id" IS NULL)</code>, not the broken form some Lucene libraries produce.</p>
 <h3 id="range">Range<a class="headerlink" href="#range" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>amount:[100 TO 500]      # inclusive
@@ -1307,6 +1309,7 @@ it would silently match nothing. Use containment instead.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>foundation
 </code></pre></div>
 <p>This is rewritten to a contains-match across those fields — <code>(name:*foundation* OR description:*foundation*)</code> — before being parsed (each bare term is wrapped in <code>*…*</code> unless it is quoted or already contains wildcards). Non-string fields are never included in implicit search — the user must reference them explicitly.</p>
+<p>Each bare term expands on its own, and the terms are joined with <code>AND</code>: <code>kitchen fixtures</code> finds rows that contain both words, each in any implicit search field. Write <code>kitchen OR fixtures</code> to find rows with either word, and <code>kitchen -fixtures</code> to exclude the second.</p>
 <h2 id="a-full-http-handler">A full HTTP handler<a class="headerlink" href="#a-full-http-handler" title="Permanent link">&para;</a></h2>
 <p>In practice you almost never call <code>ParseToSQL</code> yourself — the storage adapter's <code>Search</code> method does it for you. A complete list-with-filter endpoint:</p>
 <div class="highlight"><span class="filename">routes/tasks.go</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kd">func</span><span class="w"> </span><span class="p">(</span><span class="nx">h</span><span class="w"> </span><span class="o">*</span><span class="nx">TasksHandler</span><span class="p">)</span><span class="w"> </span><span class="nx">List</span><span class="p">(</span><span class="nx">w</span><span class="w"> </span><span class="nx">http</span><span class="p">.</span><span class="nx">ResponseWriter</span><span class="p">,</span><span class="w"> </span><span class="nx">r</span><span class="w"> </span><span class="o">*</span><span class="nx">http</span><span class="p">.</span><span class="nx">Request</span><span class="p">)</span><span class="w"> </span><span class="kt">error</span><span class="w"> </span><span class="p">{</span>
@@ -1470,6 +1473,20 @@ it would silently match nothing. Use containment instead.</p>
 <td>Negation</td>
 <td><code>NOT status:cancelled</code></td>
 <td><code>NOT (...)</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Prefix negation</td>
+<td><code>-status:cancelled</code>, <code>!status:cancelled</code></td>
+<td><code>NOT (...)</code></td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>Implicit AND</td>
+<td><code>a:1 b:2</code></td>
+<td><code>(...) AND (...)</code></td>
 <td>same</td>
 <td>same</td>
 </tr>

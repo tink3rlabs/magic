@@ -49,7 +49,10 @@ Compiles to `"status" = ?`. Values may be unquoted (`foo`), quoted (`"foo bar"`)
 status:received AND counterparty_id:abc123
 status:received OR status:pending
 status:received AND NOT status:cancelled
+status:received -status:cancelled
 ```
+
+Two clauses with no operator between them are joined with `AND`, so `status:received counterparty_id:abc123` is the same as the first line. A `-` or `!` prefix negates a clause like `NOT`, so the last line is the same as the third. A `+` prefix marks a required clause, which is the same as the default `AND`.
 
 Operators are case-sensitive (`AND` / `OR` / `NOT`). Parentheses group: `(a OR b) AND c`. Within a single field, group with `field:(a OR b)` — magic re-renders the inner leaves with the outer field name correctly, so `tenant_id:(abc OR null)` becomes `("tenant_id" = ? OR "tenant_id" IS NULL)`, not the broken form some Lucene libraries produce.
 
@@ -218,6 +221,8 @@ foundation
 
 This is rewritten to a contains-match across those fields — `(name:*foundation* OR description:*foundation*)` — before being parsed (each bare term is wrapped in `*…*` unless it is quoted or already contains wildcards). Non-string fields are never included in implicit search — the user must reference them explicitly.
 
+Each bare term expands on its own, and the terms are joined with `AND`: `kitchen fixtures` finds rows that contain both words, each in any implicit search field. Write `kitchen OR fixtures` to find rows with either word, and `kitchen -fixtures` to exclude the second.
+
 ## A full HTTP handler
 
 In practice you almost never call `ParseToSQL` yourself — the storage adapter's `Search` method does it for you. A complete list-with-filter endpoint:
@@ -325,24 +330,26 @@ Wildcards work on string fields only, and only in the two forms PartiQL can expr
 
 ## Full operator reference
 
-| Operator             | Example                     | Postgres                                                           | MySQL                                                                       | SQLite                                                        |
-| -------------------- | --------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| Equality             | `status:received`           | `"status" = ?`                                                     | `"status" = ?`                                                              | `"status" = ?`                                                |
-| Boolean              | `a:1 AND b:2`, `a:1 OR b:2` | `(...) AND (...)`                                                  | same                                                                        | same                                                          |
-| Negation             | `NOT status:cancelled`      | `NOT (...)`                                                        | same                                                                        | same                                                          |
-| Inclusive range      | `amount:[100 TO 500]`       | `BETWEEN ? AND ?`                                                  | same                                                                        | same                                                          |
-| Exclusive range      | `amount:{100 TO 500}`       | `> ? AND < ?`                                                      | same                                                                        | same                                                          |
-| Comparison           | `amount:>100`               | `"amount" > ?`                                                     | same                                                                        | same                                                          |
-| Wildcard (scalar)    | `name:foo*`                 | `"name"::text ILIKE ?`                                             | `` LOWER(`name`) LIKE LOWER(?) ``                                           | `"name" LIKE ?`                                               |
-| Fuzzy                | `name:foo~2`                | `similarity("name"::text, ?) > 0.3`                                | `` SOUNDEX(`name`) = SOUNDEX(?) ``                                          | **error** — use wildcards                                     |
-| Null                 | `field:null`                | `"field" IS NULL`                                                  | same                                                                        | same                                                          |
-| Has value (scalar)   | `field:*`                   | `"field"::text ILIKE ?` (param `%`)                                | `` LOWER(`field`) LIKE LOWER(?) ``                                          | `"field" LIKE ?`                                              |
-| JSON sub-field       | `metadata.tier:gold`        | `metadata->>'tier' = ?`                                            | `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?`                        | `JSON_EXTRACT(metadata, '$.tier') = ?`                        |
-| Array containment    | `tags:golang`               | `"tags" @> ?`                                                      | `` JSON_CONTAINS(`tags`, ?) ``                                              | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)`    |
-| Array wildcard       | `tags:*go*`                 | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(LOWER(CAST(`tags` AS CHAR)), 'one', LOWER(?)) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
-| Array has value      | `tags:*`                    | `"tags" IS NOT NULL`                                               | same                                                                        | same                                                          |
-| Grouped field        | `tenant_id:(a OR null)`     | `("tenant_id" = ? OR "tenant_id" IS NULL)`                         | same                                                                        | same                                                          |
-| Implicit (unfielded) | `foo`                       | OR across all `ImplicitSearch=true` fields                         | same                                                                        | same                                                          |
+| Operator             | Example                                  | Postgres                                                           | MySQL                                                                       | SQLite                                                        |
+| -------------------- | ---------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Equality             | `status:received`                        | `"status" = ?`                                                     | `"status" = ?`                                                              | `"status" = ?`                                                |
+| Boolean              | `a:1 AND b:2`, `a:1 OR b:2`              | `(...) AND (...)`                                                  | same                                                                        | same                                                          |
+| Negation             | `NOT status:cancelled`                   | `NOT (...)`                                                        | same                                                                        | same                                                          |
+| Prefix negation      | `-status:cancelled`, `!status:cancelled` | `NOT (...)`                                                        | same                                                                        | same                                                          |
+| Implicit AND         | `a:1 b:2`                                | `(...) AND (...)`                                                  | same                                                                        | same                                                          |
+| Inclusive range      | `amount:[100 TO 500]`                    | `BETWEEN ? AND ?`                                                  | same                                                                        | same                                                          |
+| Exclusive range      | `amount:{100 TO 500}`                    | `> ? AND < ?`                                                      | same                                                                        | same                                                          |
+| Comparison           | `amount:>100`                            | `"amount" > ?`                                                     | same                                                                        | same                                                          |
+| Wildcard (scalar)    | `name:foo*`                              | `"name"::text ILIKE ?`                                             | `` LOWER(`name`) LIKE LOWER(?) ``                                           | `"name" LIKE ?`                                               |
+| Fuzzy                | `name:foo~2`                             | `similarity("name"::text, ?) > 0.3`                                | `` SOUNDEX(`name`) = SOUNDEX(?) ``                                          | **error** — use wildcards                                     |
+| Null                 | `field:null`                             | `"field" IS NULL`                                                  | same                                                                        | same                                                          |
+| Has value (scalar)   | `field:*`                                | `"field"::text ILIKE ?` (param `%`)                                | `` LOWER(`field`) LIKE LOWER(?) ``                                          | `"field" LIKE ?`                                              |
+| JSON sub-field       | `metadata.tier:gold`                     | `metadata->>'tier' = ?`                                            | `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.tier')) = ?`                        | `JSON_EXTRACT(metadata, '$.tier') = ?`                        |
+| Array containment    | `tags:golang`                            | `"tags" @> ?`                                                      | `` JSON_CONTAINS(`tags`, ?) ``                                              | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value = ?)`    |
+| Array wildcard       | `tags:*go*`                              | `EXISTS (SELECT 1 FROM unnest("tags") AS elem WHERE elem ILIKE ?)` | `` JSON_SEARCH(LOWER(CAST(`tags` AS CHAR)), 'one', LOWER(?)) IS NOT NULL `` | `EXISTS (SELECT 1 FROM json_each("tags") WHERE value LIKE ?)` |
+| Array has value      | `tags:*`                                 | `"tags" IS NOT NULL`                                               | same                                                                        | same                                                          |
+| Grouped field        | `tenant_id:(a OR null)`                  | `("tenant_id" = ? OR "tenant_id" IS NULL)`                         | same                                                                        | same                                                          |
+| Implicit (unfielded) | `foo`                                    | OR across all `ImplicitSearch=true` fields                         | same                                                                        | same                                                          |
 
 ## Adding a database
 

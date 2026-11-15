@@ -1125,6 +1125,7 @@
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>deleted_at:*         # any value (matches non-null)
 </code></pre></div>
 <p><code>field:null</code> compiles to <code>"field" IS NULL</code>. The empty-wildcard <code>field:*</code> is a wildcard match against everything — it compiles to the same form as any other wildcard (<code>"field"::text ILIKE ?</code> on Postgres, <code>LIKE</code> elsewhere) with <code>%</code> as the bound parameter. Since <code>NULL</code> never matches <code>LIKE</code>/<code>ILIKE</code>, this effectively selects rows where the field has a value.</p>
+<p>A negation keeps the rows where the field is NULL, as in Lucene: <code>-status:closed</code> matches every row whose status is not <code>closed</code>, including rows with no status, and <code>-deleted_at:*</code> matches the rows with no <code>deleted_at</code>. On SQL it renders as <code>(...) IS NOT TRUE</code>, because a plain <code>NOT</code> over a NULL comparison is NULL and would drop the row. To require a value as well, add it: <code>status:* -status:closed</code>. <code>NOT field:null</code> stays <code>"field" IS NOT NULL</code>.</p>
 <p>Comparison operators (<code>&gt;</code>, <code>&lt;</code>, <code>&gt;=</code>, <code>&lt;=</code>) with <code>null</code> return a parse error — they are meaningless.</p>
 <h3 id="comparison">Comparison<a class="headerlink" href="#comparison" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>amount:&gt;100
@@ -1472,14 +1473,14 @@ it would silently match nothing. Use containment instead.</p>
 <tr>
 <td>Negation</td>
 <td><code>NOT status:cancelled</code></td>
-<td><code>NOT (...)</code></td>
+<td><code>(...) IS NOT TRUE</code></td>
 <td>same</td>
 <td>same</td>
 </tr>
 <tr>
 <td>Prefix negation</td>
 <td><code>-status:cancelled</code>, <code>!status:cancelled</code></td>
-<td><code>NOT (...)</code></td>
+<td><code>(...) IS NOT TRUE</code></td>
 <td>same</td>
 <td>same</td>
 </tr>

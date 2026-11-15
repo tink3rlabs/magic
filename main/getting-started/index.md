@@ -2,7 +2,7 @@
 
 You'll have magic's in-memory adapter creating, fetching, listing, and searching records in under a minute. The same code runs against Postgres, MySQL, SQLite, DynamoDB, or CosmosDB by swapping one constant — see [Storage Adapters](https://tink3rlabs.github.io/magic/main/storage/index.md).
 
-Requires Go 1.25 or newer.
+Requires Go 1.26 or newer.
 
 ## Install
 

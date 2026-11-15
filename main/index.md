@@ -56,4 +56,4 @@ Swap `storage.MEMORY` for `storage.SQL` (with a config map) and the same code ru
 
 `errors`, `health`, `leadership`, `logger`, `middlewares`, `mql`, `observability`, `pubsub`, `storage`, `telemetry`, `types`, `utils`. The headline packages have dedicated guides above; the rest are documented on [pkg.go.dev](https://pkg.go.dev/github.com/tink3rlabs/magic).
 
-Requires Go 1.25 or newer. Pre-v1.0: the API may change in minor releases.
+Requires Go 1.26 or newer. Pre-v1.0: the API may change in minor releases.

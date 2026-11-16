@@ -561,8 +561,8 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 	if pk == "" {
 		if filterPk, exists := filter["pk"]; exists {
 			pkStr, ok := filterPk.(string)
-			if !ok || pkStr == "" {
-				return errors.New("delete filter pk must be a non-empty string")
+			if !ok {
+				return errors.New("delete filter pk must be a string")
 			}
 			pk = pkStr
 		} else {

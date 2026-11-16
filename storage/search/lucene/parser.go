@@ -234,7 +234,7 @@ var (
 	// Extracts field name from field:value pattern
 	fieldExtractPattern = regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?):`)
 	// Matches boolean operators (case-insensitive)
-	booleanOperators = regexp.MustCompile(`(?i)^(AND|OR|NOT|\+|-)$`)
+	booleanOperators = regexp.MustCompile(`(?i)^(AND|OR|NOT|\+|-|!)$`)
 	// Matches range syntax
 	rangePattern = regexp.MustCompile(`^\[.*\s+TO\s+.*\]$|^\{.*\s+TO\s+.*\}$`)
 )
@@ -639,14 +639,14 @@ func isImplicitTerm(token string) bool {
 		return false
 	}
 
-	// Check if it starts with + or - (required/prohibited operators)
-	if strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") {
+	// Check if it starts with +, - or ! (required/prohibited operators)
+	if hasPrefixOperator(token) {
 		// Remove the prefix and check the rest
 		rest := token[1:]
 		if fieldValuePattern.MatchString(rest) {
 			return false // It's a +field:value or -field:value
 		}
-		// Otherwise it's an implicit term with +/- modifier
+		// Otherwise it's an implicit term with a +, - or ! modifier
 		return true
 	}
 
@@ -690,10 +690,10 @@ func (p *Parser) expandImplicitTerms(query string) string {
 
 	for _, token := range tokens {
 		if isImplicitTerm(token) {
-			// Check if it has a +/- prefix
+			// Check if it has a +, - or ! prefix
 			prefix := ""
 			term := token
-			if strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") {
+			if hasPrefixOperator(token) {
 				prefix = string(token[0])
 				term = token[1:]
 			}
@@ -730,6 +730,12 @@ func (p *Parser) expandImplicitTerms(query string) string {
 	}
 
 	return strings.Join(result, " ")
+}
+
+// hasPrefixOperator reports whether token starts with a required (+) or
+// prohibited (-, !) operator.
+func hasPrefixOperator(token string) bool {
+	return strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") || strings.HasPrefix(token, "!")
 }
 
 // tokenizeQuery splits query into tokens, preserving quoted strings, range brackets,
@@ -857,7 +863,44 @@ func (p *Parser) parseWithImplicitSearch(query string) (*expr.Expression, error)
 		fallbackField = p.Fields[0].Name
 	}
 
-	return lucene.Parse(expandedQuery, lucene.WithDefaultField(fallbackField))
+	e, err := lucene.Parse(expandedQuery, lucene.WithDefaultField(fallbackField))
+	if err != nil {
+		return nil, err
+	}
+	return inListsAsGroups(e), nil
+}
+
+// inListsAsGroups rewrites each field:(a OR b) that go-lucene parses as
+// IN(field, LIST(a, b)) into EQUALS(field, OR(a, b)), the grouped form the SQL
+// and DynamoDB drivers render. Each value then goes through the same leaf
+// rendering as field:a: containment on an array field, the field's type
+// check, and IS NULL for null. The ORs nest to the left, as (a OR b) OR c.
+func inListsAsGroups(e *expr.Expression) *expr.Expression {
+	if e == nil {
+		return nil
+	}
+	if left, ok := e.Left.(*expr.Expression); ok {
+		e.Left = inListsAsGroups(left)
+	}
+	if right, ok := e.Right.(*expr.Expression); ok {
+		e.Right = inListsAsGroups(right)
+	}
+	if e.Op != expr.In {
+		return e
+	}
+	list, ok := e.Right.(*expr.Expression)
+	if !ok || list.Op != expr.List {
+		return e
+	}
+	items, ok := list.Left.([]*expr.Expression)
+	if !ok || len(items) == 0 {
+		return e
+	}
+	group := items[0]
+	for _, item := range items[1:] {
+		group = &expr.Expression{Op: expr.Or, Left: group, Right: item}
+	}
+	return &expr.Expression{Op: expr.Equals, Left: e.Left, Right: group}
 }
 
 // exprToMap converts expression to map format (legacy, kept for backward compatibility).

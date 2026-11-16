@@ -1,6 +1,6 @@
 {
 	"name": "Go",
-	"image": "mcr.microsoft.com/devcontainers/go:1.25-bookworm",
+	"image": "mcr.microsoft.com/devcontainers/go:1.26-bookworm",
 	"runArgs": [
 		"--add-host=host.docker.internal:host-gateway"
 	],

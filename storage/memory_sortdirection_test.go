@@ -57,3 +57,40 @@ func TestMemoryAdapterForwardsSortDirection(t *testing.T) {
 		t.Fatalf("invalid sort direction returned no error; want error")
 	}
 }
+
+type indexKeyRow struct {
+	ID string `json:"id"`
+}
+
+func (indexKeyRow) TableName() string { return "memtest_indexkey" }
+
+// IndexKey is a DynamoDB hint. Other adapters must ignore it so the same
+// calling code works on every adapter.
+func TestMemoryAdapterIgnoresIndexKey(t *testing.T) {
+	adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, nil)
+	if err != nil {
+		t.Fatalf("GetInstance(MEMORY): %v", err)
+	}
+	if err := adapter.Execute(`CREATE TABLE IF NOT EXISTS memtest_indexkey (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Execute(`DROP TABLE IF EXISTS memtest_indexkey`) })
+	if err := adapter.Create(indexKeyRow{ID: "1"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	params := map[string]any{storage.IndexKey: "any_index"}
+	var rows []indexKeyRow
+	if _, err := adapter.List(&rows, "id", map[string]any{"id": "1"}, 10, "", params); err != nil {
+		t.Fatalf("List with IndexKey: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("List with IndexKey returned %d rows, want 1", len(rows))
+	}
+	if _, err := adapter.Search(&rows, "id", "id:1", 10, "", params); err != nil {
+		t.Fatalf("Search with IndexKey: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Search with IndexKey returned %d rows, want 1", len(rows))
+	}
+}

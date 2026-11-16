@@ -361,9 +361,9 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	if !exists {
 		return fmt.Errorf("partition key field '%s' not found in item", pkFieldName)
 	}
-	pkValue, err := nonEmptyString(pk, "partition key")
-	if err != nil {
-		return err
+	pkValue, ok := pk.(string)
+	if !ok {
+		return fmt.Errorf("partition key must be a string")
 	}
 
 	// Create partition key
@@ -543,15 +543,14 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	if err != nil {
 		return err
 	}
-	pkStr, err := nonEmptyString(pk, "partition key")
-	if err != nil {
-		return err
+	pkStr, ok := pk.(string)
+	if !ok {
+		return fmt.Errorf("partition key must be a string")
 	}
 
 	// Create partition key
 	partitionKey := azcosmos.NewPartitionKeyString(pkStr)
 
-	// Update item
 	// Update item
 	response, err := containerClient.ReplaceItem(ctx, partitionKey, idStr, itemBytes, nil)
 	s.recordSessionToken(containerName, pkStr, response.SessionToken, err)

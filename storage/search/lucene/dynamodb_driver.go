@@ -35,7 +35,6 @@ func NewDynamoDBDriver(fields []FieldInfo) (*DynamoDBPartiQLDriver, error) {
 		expr.MustNot:   driver.Shared[expr.MustNot],
 		expr.Wild:      driver.Shared[expr.Wild],
 		expr.Regexp:    driver.Shared[expr.Regexp],
-		expr.Like:      dynamoDBLike, // Custom LIKE for DynamoDB functions
 		expr.Greater:   driver.Shared[expr.Greater],
 		expr.GreaterEq: driver.Shared[expr.GreaterEq],
 		expr.Less:      driver.Shared[expr.Less],
@@ -100,15 +99,24 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 			if err != nil {
 				return "", nil, err
 			}
-			param, err := arrayContainsParam(elem)
+			param, err := elemAttributeValue(elem)
 			if err != nil {
 				return "", nil, err
 			}
 			return fmt.Sprintf("contains(%s, ?)", safe), []any{param}, nil
 		}
+		if !isArray && name != "" {
+			if group, ok := e.Right.(*expr.Expression); ok && isGroup(group) {
+				return d.renderGroupedScalarExpr(name, group)
+			}
+			return d.renderScalarComparison(name, e.Op, e.Right)
+		}
 	case expr.Wild, expr.Like:
 		if isArray {
 			return "", nil, errArrayWildcardUnsupported(name)
+		}
+		if name != "" {
+			return d.renderScalarWildcard(name, e.Right)
 		}
 	case expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
 		if isArray {
@@ -117,6 +125,9 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 				e.Op, name, name,
 			)
 		}
+		if name != "" {
+			return d.renderScalarComparison(name, e.Op, e.Right)
+		}
 	case expr.Range:
 		if isArray {
 			return "", nil, fmt.Errorf(
@@ -124,9 +135,186 @@ func (d *DynamoDBPartiQLDriver) renderNode(e *expr.Expression) (string, []any, e
 				name, name,
 			)
 		}
+		if name != "" {
+			return d.renderScalarRange(name, e.Right)
+		}
 	}
 
 	return d.Base.RenderParam(e)
+}
+
+// isGroup reports whether v is a grouped value list such as (a OR b).
+func isGroup(v any) bool {
+	e, ok := v.(*expr.Expression)
+	return ok && (e.Op == expr.Or || e.Op == expr.And)
+}
+
+// renderGroupedScalarExpr expands a grouped value list under a single-valued
+// field, e.g. tenant:(a OR b) becomes ("tenant" = ? OR "tenant" = ?).
+//
+// go-lucene parses the group as EQUALS(field, OR(EQUALS(default, a), ...)),
+// with each leaf on the parser's default field, so the field comes from the
+// caller and each leaf contributes only its operator and value.
+func (d *DynamoDBPartiQLDriver) renderGroupedScalarExpr(name string, e *expr.Expression) (string, []any, error) {
+	leftStr, leftParams, err := d.renderGroupedScalarLeaf(name, e.Left)
+	if err != nil {
+		return "", nil, err
+	}
+	if e.Right == nil {
+		return leftStr, leftParams, nil
+	}
+	rightStr, rightParams, err := d.renderGroupedScalarLeaf(name, e.Right)
+	if err != nil {
+		return "", nil, err
+	}
+
+	op := " OR "
+	if e.Op == expr.And {
+		op = " AND "
+	}
+	return fmt.Sprintf("(%s%s%s)", leftStr, op, rightStr), append(leftParams, rightParams...), nil
+}
+
+// renderGroupedScalarLeaf renders one member of a grouped value list against
+// field name. A member can be a bare value rather than an expression, which
+// means equality.
+func (d *DynamoDBPartiQLDriver) renderGroupedScalarLeaf(name string, v any) (string, []any, error) {
+	e, ok := v.(*expr.Expression)
+	if !ok || e.Op == expr.Literal || e.Op == expr.Null {
+		return d.renderScalarComparison(name, expr.Equals, v)
+	}
+	switch e.Op {
+	case expr.Or, expr.And:
+		return d.renderGroupedScalarExpr(name, e)
+	case expr.Equals, expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
+		if isGroup(e.Right) {
+			return d.renderGroupedScalarLeaf(name, e.Right)
+		}
+		return d.renderScalarComparison(name, e.Op, e.Right)
+	case expr.Like, expr.Wild:
+		if e.Op == expr.Wild {
+			return d.renderScalarWildcard(name, e)
+		}
+		return d.renderScalarWildcard(name, e.Right)
+	case expr.Range:
+		return d.renderScalarRange(name, e.Right)
+	case expr.Must:
+		return d.renderGroupedScalarLeaf(name, e.Left)
+	case expr.Not, expr.MustNot:
+		inner, params, err := d.renderGroupedScalarLeaf(name, e.Left)
+		if err != nil {
+			return "", nil, err
+		}
+		return fmt.Sprintf("NOT (%s)", inner), params, nil
+	}
+	return "", nil, fmt.Errorf("unsupported operator %s in grouped values for field '%s'", e.Op, name)
+}
+
+var comparisonSymbols = map[expr.Operator]string{
+	expr.Equals:    "=",
+	expr.Greater:   ">",
+	expr.GreaterEq: ">=",
+	expr.Less:      "<",
+	expr.LessEq:    "<=",
+}
+
+// renderScalarComparison renders =, >, >=, < or <= on a single-valued field,
+// binding the value as the attribute type of the field.
+func (d *DynamoDBPartiQLDriver) renderScalarComparison(name string, op expr.Operator, right any) (string, []any, error) {
+	ref, err := quotePartiQLPath(name)
+	if err != nil {
+		return "", nil, err
+	}
+	if isNullValue(right) {
+		if op == expr.Equals {
+			return fmt.Sprintf("%s IS NULL", ref), nil, nil
+		}
+		return "", nil, fmt.Errorf("comparison operator %s cannot be used with null; use field:null for IS NULL", op)
+	}
+	param, err := d.scalarParam(name, extractLiteralValue(right))
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("%s %s ?", ref, comparisonSymbols[op]), []any{param}, nil
+}
+
+// renderScalarRange renders [a TO b], {a TO b} and their open-ended forms,
+// binding both bounds as the attribute type of the field.
+func (d *DynamoDBPartiQLDriver) renderScalarRange(name string, right any) (string, []any, error) {
+	ref, err := quotePartiQLPath(name)
+	if err != nil {
+		return "", nil, err
+	}
+	boundary, ok := right.(*expr.RangeBoundary)
+	if !ok {
+		return "", nil, fmt.Errorf("invalid range expression structure: expected *expr.RangeBoundary, got %T", right)
+	}
+	minRaw, minOpen, err := rangeBound(boundary.Min)
+	if err != nil {
+		return "", nil, err
+	}
+	maxRaw, maxOpen, err := rangeBound(boundary.Max)
+	if err != nil {
+		return "", nil, err
+	}
+	if minOpen && maxOpen {
+		return "", nil, fmt.Errorf("both range bounds cannot be wildcards")
+	}
+
+	var minParam, maxParam types.AttributeValue
+	if !minOpen {
+		if minParam, err = d.scalarParam(name, minRaw); err != nil {
+			return "", nil, err
+		}
+	}
+	if !maxOpen {
+		if maxParam, err = d.scalarParam(name, maxRaw); err != nil {
+			return "", nil, err
+		}
+	}
+
+	lower, upper := ">", "<"
+	if boundary.Inclusive {
+		lower, upper = ">=", "<="
+	}
+	switch {
+	case minOpen:
+		return fmt.Sprintf("%s %s ?", ref, upper), []any{maxParam}, nil
+	case maxOpen:
+		return fmt.Sprintf("%s %s ?", ref, lower), []any{minParam}, nil
+	case boundary.Inclusive:
+		return fmt.Sprintf("%s BETWEEN ? AND ?", ref), []any{minParam, maxParam}, nil
+	default:
+		return fmt.Sprintf("%s > ? AND %s < ?", ref, ref), []any{minParam, maxParam}, nil
+	}
+}
+
+// rangeBound returns a range bound's raw value, or open=true for *.
+func rangeBound(bound any) (raw string, open bool, err error) {
+	if isNullValue(bound) {
+		return "", false, fmt.Errorf("null is not allowed as a range bound; use field:null for IS NULL")
+	}
+	if e, ok := bound.(*expr.Expression); ok && e.Op == expr.Wild {
+		return "", true, nil
+	}
+	raw = extractLiteralValue(bound)
+	return raw, raw == "*", nil
+}
+
+// scalarParam converts raw into the attribute type the field is stored as:
+// N for numeric fields, BOOL for booleans and S for everything else,
+// including time.Time, which the SDK marshals as an RFC 3339 string. A field
+// that isn't in the model, such as a nested path, is bound as S.
+func (d *DynamoDBPartiQLDriver) scalarParam(name, raw string) (types.AttributeValue, error) {
+	info, known := d.fields[name]
+	if !known {
+		return &types.AttributeValueMemberS{Value: raw}, nil
+	}
+	elem, err := normalizeScalarValue(name, info.Type, raw)
+	if err != nil {
+		return nil, err
+	}
+	return elemAttributeValue(elem)
 }
 
 // errArrayWildcardUnsupported is the shared rejection for a wildcard against a
@@ -194,22 +382,22 @@ func (d *DynamoDBPartiQLDriver) renderGroupedArrayLeaf(name string, fieldType re
 	if err != nil {
 		return "", nil, err
 	}
-	param, err := arrayContainsParam(elem)
+	param, err := elemAttributeValue(elem)
 	if err != nil {
 		return "", nil, err
 	}
 	return fmt.Sprintf("contains(%s, ?)", safe), []any{param}, nil
 }
 
-// arrayContainsParam converts a validated element into the typed
-// AttributeValue that matches how it is stored, so a numeric or boolean array
-// is compared against a number or a boolean rather than a string that can
-// never match.
+// elemAttributeValue converts a validated value into the typed
+// AttributeValue that matches how it is stored, so a numeric or boolean field
+// or array is compared against a number or a boolean rather than a string
+// that can never match.
 //
 // It switches on the value itself rather than re-deriving the type from the
 // field's reflect.Kind. Re-deriving was a second source of truth that could
 // disagree with the validation that produced the value.
-func arrayContainsParam(v elemValue) (types.AttributeValue, error) {
+func elemAttributeValue(v elemValue) (types.AttributeValue, error) {
 	switch t := v.Val.(type) {
 	case bool:
 		return &types.AttributeValueMemberBOOL{Value: t}, nil
@@ -268,10 +456,82 @@ func (d *DynamoDBPartiQLDriver) RenderPartiQL(e *expr.Expression) (string, []typ
 	return str, attrValues, nil
 }
 
-// escapePartiQLString escapes a string value for safe use in PartiQL string literals.
-// Escapes single quotes by doubling them (PartiQL standard).
-func escapePartiQLString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+// renderScalarWildcard renders a wildcard match on a single-valued field.
+// PartiQL has no LIKE, so only the patterns that map onto its functions are
+// supported:
+//
+//	field:*        -> field IS NOT MISSING
+//	field:value*   -> begins_with(field, ?)
+//	field:*value*  -> contains(field, ?)
+//
+// Anything else (an ends-with match, a wildcard inside the value, or the
+// single-character wildcard ?) is an error rather than a query that matches
+// the wrong items.
+func (d *DynamoDBPartiQLDriver) renderScalarWildcard(name string, right any) (string, []any, error) {
+	if info, known := d.fields[name]; known && derefType(info.Type).Kind() != reflect.String {
+		return "", nil, fmt.Errorf("wildcard matching is not supported on non-string field '%s'", name)
+	}
+	ref, err := quotePartiQLPath(name)
+	if err != nil {
+		return "", nil, err
+	}
+
+	pattern := wildcardPattern(right)
+	if strings.Contains(pattern, "?") {
+		return "", nil, fmt.Errorf("the single-character wildcard ? is not supported on field '%s' in DynamoDB", name)
+	}
+	leading := strings.HasPrefix(pattern, "*")
+	trailing := strings.HasSuffix(pattern, "*")
+	value := strings.TrimSuffix(strings.TrimPrefix(pattern, "*"), "*")
+	if strings.Contains(value, "*") {
+		return "", nil, fmt.Errorf("a wildcard inside a value is not supported on field '%s' in DynamoDB; use value* or *value*", name)
+	}
+
+	switch {
+	case value == "" && (leading || trailing):
+		return fmt.Sprintf("%s IS NOT MISSING", ref), nil, nil
+	case leading && trailing:
+		return fmt.Sprintf("contains(%s, ?)", ref), []any{value}, nil
+	case trailing:
+		return fmt.Sprintf("begins_with(%s, ?)", ref), []any{value}, nil
+	case leading:
+		return "", nil, fmt.Errorf("ends-with matching (*value) is not supported on field '%s' in DynamoDB; use value* or *value*", name)
+	default:
+		return fmt.Sprintf("%s = ?", ref), []any{value}, nil
+	}
+}
+
+// wildcardPattern returns the raw pattern of a Wild or Literal value.
+func wildcardPattern(v any) string {
+	if e, ok := v.(*expr.Expression); ok && (e.Op == expr.Wild || e.Op == expr.Literal) {
+		return fmt.Sprintf("%v", e.Left)
+	}
+	return extractLiteralValue(v)
+}
+
+// derefType strips pointer indirection, so *string is treated as string.
+func derefType(t reflect.Type) reflect.Type {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return reflect.TypeOf("")
+	}
+	return t
+}
+
+// quotePartiQLPath validates a field name and quotes each dot-separated
+// segment, so a nested path renders as "base"."sub" rather than as one
+// attribute named "base.sub".
+func quotePartiQLPath(name string) (string, error) {
+	segments := strings.Split(name, ".")
+	for i, segment := range segments {
+		if !partiQLIdentifierPattern.MatchString(segment) {
+			return "", fmt.Errorf("invalid field name '%s'", name)
+		}
+		segments[i] = `"` + segment + `"`
+	}
+	return strings.Join(segments, "."), nil
 }
 
 var (
@@ -287,52 +547,4 @@ func escapePartiQLIdentifier(identifier string) (string, error) {
 		return "", fmt.Errorf("invalid identifier: contains unsafe characters (only alphanumeric and underscore allowed)")
 	}
 	return identifier, nil
-}
-
-// unquotePartiQLString safely removes surrounding quotes from a PartiQL string literal.
-// Handles already-escaped quotes correctly.
-func unquotePartiQLString(s string) string {
-	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// dynamoDBLike implements LIKE using DynamoDB's begins_with and contains functions.
-func dynamoDBLike(left, right string) (string, error) {
-	// Validate and escape field name (left)
-	safeLeft, err := escapePartiQLIdentifier(left)
-	if err != nil {
-		return "", fmt.Errorf("invalid field name: %w", err)
-	}
-
-	// Extract the raw value from the right side (remove quotes if present)
-	rawValue := unquotePartiQLString(right)
-
-	// Analyze pattern for wildcards
-	hasPrefix := strings.HasPrefix(rawValue, "%")
-	hasSuffix := strings.HasSuffix(rawValue, "%")
-
-	if hasPrefix && hasSuffix {
-		// %value% -> contains(field, value)
-		value := strings.Trim(rawValue, "%")
-		escapedValue := escapePartiQLString(value)
-		return fmt.Sprintf("contains(%s, '%s')", safeLeft, escapedValue), nil
-	}
-	if !hasPrefix && hasSuffix {
-		// value% -> begins_with(field, value)
-		value := strings.TrimSuffix(rawValue, "%")
-		escapedValue := escapePartiQLString(value)
-		return fmt.Sprintf("begins_with(%s, '%s')", safeLeft, escapedValue), nil
-	}
-	if hasPrefix && !hasSuffix {
-		// %value -> contains(field, value) (DynamoDB doesn't have ends_with)
-		value := strings.TrimPrefix(rawValue, "%")
-		escapedValue := escapePartiQLString(value)
-		return fmt.Sprintf("contains(%s, '%s')", safeLeft, escapedValue), nil
-	}
-
-	// Exact match - escape the value and wrap in quotes
-	escapedValue := escapePartiQLString(rawValue)
-	return fmt.Sprintf("%s = '%s'", safeLeft, escapedValue), nil
 }

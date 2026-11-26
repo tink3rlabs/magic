@@ -1439,3 +1439,96 @@ func TestIsArrayField(t *testing.T) {
 		})
 	}
 }
+
+// Two clauses with no operator between them are an AND. go-lucene injects it
+// before a plain term but not before a parenthesised group, and every implicit
+// term expands to one, so any two bare words failed to parse.
+func TestImplicitAndBeforeAnExpandedTerm(t *testing.T) {
+	parser := createParser(t, TextModel{})
+
+	tests := []struct {
+		name       string
+		query      string
+		wantParams []any
+		negated    bool
+	}{
+		{"two words", "kitchen fixtures", []any{"%kitchen%", "%kitchen%", "%kitchen%", "%fixtures%", "%fixtures%", "%fixtures%"}, false},
+		{"two non-ASCII words", "синя боя", []any{"%синя%", "%синя%", "%синя%", "%боя%", "%боя%", "%боя%"}, false},
+		{"a field then a word", "name:john kitchen", []any{"john", "%kitchen%", "%kitchen%", "%kitchen%"}, false},
+		{"a word then NOT a field", "kitchen NOT name:john", []any{"%kitchen%", "%kitchen%", "%kitchen%", "john"}, true},
+		{"a word then a prohibited word", "kitchen -fixtures", []any{"%kitchen%", "%kitchen%", "%kitchen%", "%fixtures%", "%fixtures%", "%fixtures%"}, true},
+		{"a word then a required word", "kitchen +fixtures", []any{"%kitchen%", "%kitchen%", "%kitchen%", "%fixtures%", "%fixtures%", "%fixtures%"}, false},
+		{"a field then a prohibited field", "name:john !name:jane", []any{"john", "jane"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sql, params, err := parser.ParseToSQL(tt.query, "postgresql")
+			if err != nil {
+				t.Fatalf("ParseToSQL(%q): %v", tt.query, err)
+			}
+			if !strings.Contains(sql, " AND ") {
+				t.Errorf("ParseToSQL(%q) = %s, want the clauses joined by AND", tt.query, sql)
+			}
+			if !reflect.DeepEqual(params, tt.wantParams) {
+				t.Errorf("params = %v, want %v", params, tt.wantParams)
+			}
+			if got := strings.Contains(sql, "IS NOT TRUE"); got != tt.negated {
+				t.Errorf("ParseToSQL(%q) = %s, negated = %v, want %v", tt.query, sql, got, tt.negated)
+			}
+		})
+	}
+}
+
+// A bare ! before a group negates the group, as NOT and - do. It must not
+// expand into an implicit term of its own.
+func TestBangNegatesAGroup(t *testing.T) {
+	parser := createParser(t, TextModel{})
+
+	want, wantParams, err := parser.ParseToSQL("NOT (name:john)", "postgresql")
+	if err != nil {
+		t.Fatalf("ParseToSQL(NOT (name:john)): %v", err)
+	}
+	for _, query := range []string{"!(name:john)", "-(name:john)"} {
+		sql, params, err := parser.ParseToSQL(query, "postgresql")
+		if err != nil {
+			t.Fatalf("ParseToSQL(%q): %v", query, err)
+		}
+		if sql != want || !reflect.DeepEqual(params, wantParams) {
+			t.Errorf("ParseToSQL(%q) = %s %v, want %s %v", query, sql, params, want, wantParams)
+		}
+	}
+}
+
+// The AND goes only before an expanded term. A value that follows its field
+// after a space, and every query of a model with no text field, parse as they
+// did before.
+func TestImplicitAndLeavesOtherQueriesAlone(t *testing.T) {
+	type countModel struct {
+		Age    int  `json:"age"`
+		Active bool `json:"active"`
+	}
+	text := createParser(t, TextModel{})
+	plain := createParser(t, countModel{})
+
+	tests := []struct {
+		name   string
+		parser *Parser
+		query  string
+	}{
+		{"a space after the colon", text, "name: john"},
+		{"a group after the colon", text, "name: (john OR jane)"},
+		{"no text field, a space after the colon", plain, "age: 5"},
+		{"no text field, a range after a space", plain, "age: [1 TO 5]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, err := tt.parser.ParseToSQL(tt.query, "postgresql"); err != nil {
+				t.Errorf("ParseToSQL(%q): %v", tt.query, err)
+			}
+		})
+	}
+
+	if got := text.expandImplicitTerms("name:john OR (name:jane AND kitchen)"); strings.Count(got, " AND ") != 1 {
+		t.Errorf("expandImplicitTerms wrote an AND where an operator is given: %q", got)
+	}
+}

@@ -105,6 +105,27 @@ adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.DYNAMODB, conf
 
 When `access_key` / `secret_key` are empty, the adapter uses the standard AWS credential provider chain (env vars, IRSA, instance role).
 
+DynamoDB reads these [options](#options):
+
+| Option | Applies to | Meaning |
+|--------|------------|---------|
+| `WithSortDirection(dir)` | `List`, `Search` | `storage.Ascending` (default) or `storage.Descending`. PartiQL only honours `ORDER BY` on a Query (the `WHERE` equals the partition key) against the table or index sort key, and rejects `ORDER BY` without a `WHERE`. |
+| `WithIndex(name)` | `List`, `Search` | Read from this global or local secondary index (`FROM "table"."index"`) instead of the base table. Must match `[A-Za-z0-9_.-]{3,255}`. Other adapters ignore it. |
+| `WithQueryParameters(v...)` | `Query` | Values for the statement's `?` placeholders, in placeholder order. |
+
+```go title="index.go"
+var rules []Rule
+next, err := adapter.List(&rules, "id",
+    map[string]any{"principal": principal},
+    50, cursor,
+    storage.WithIndex("principal_index"),
+)
+```
+
+`List` filter keys are written into the statement, so each dot-separated part must match `[A-Za-z0-9_-]+`; anything else returns an error before a request is sent. Each part is quoted, so keys that are reserved words (`status`, `name`) or contain hyphens work, and `address.city` is a nested path (`"address"."city"`). The `sortKey` argument is quoted the same way (`ORDER BY "name" ASC`). A `nil` value renders `IS NULL`, a slice renders `IN (...)`, and an empty slice returns an empty page without querying.
+
+Invalid filter keys, index names and sort directions return a plain error, not `*errors.BadRequest`: those values come from application code. `Search` query text is user input, so every parse error from DynamoDB `Search` is a `BadRequest` (HTTP 400).
+
 ### CosmosDB
 
 ```go
@@ -123,6 +144,14 @@ config := map[string]string{
     "database":          "blox",
 }
 
+// Or Microsoft Entra ID (managed identity, workload identity, Azure CLI, ...):
+// an endpoint with no key uses azidentity.NewDefaultAzureCredential
+config := map[string]string{
+    "provider": "cosmosdb",
+    "endpoint": "https://your-account.documents.azure.com:443/",
+    "database": "blox",
+}
+
 // Local emulator — disable TLS verification
 config := map[string]string{
     "provider":        "cosmosdb",
@@ -132,8 +161,27 @@ config := map[string]string{
     "skip_tls_verify": "true",   // local testing only
 }
 
+// Regional private endpoint: route requests to the regions you can reach
+config := map[string]string{
+    "provider":          "cosmosdb",
+    "endpoint":          "https://your-account-westus.documents.azure.com:443/",
+    "key":               "...",
+    "database":          "blox",
+    "preferred_regions": "West US",   // ordered, comma-separated
+}
+
 adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.COSMOSDB, config)
 ```
+
+#### Preferred regions
+
+The Cosmos DB SDK reads the account's regions from the configured endpoint and, unless told otherwise, sends requests to the account's primary region, not the region of the endpoint you configured. A workload that can only reach one region (for example through a regional private endpoint) then fails, including the readiness `Ping`.
+
+Set `preferred_regions` to an ordered, comma-separated list of the regions the workload can reach, such as `"West US"` or `"West US, Central US"`. The adapter doesn't infer a region from the endpoint hostname.
+
+- Region names are matched ignoring case and spaces, so `West US` and `westus` are the same. A name that isn't one of the account's regions is silently ignored, and if none match, requests go to the primary region as if the key weren't set. Check the names against the account's regions in the Azure portal; the adapter logs the configured list at startup.
+- It applies whichever way the adapter authenticates: endpoint and key, connection string, or Microsoft Entra ID.
+- On an account with a single write region, writes always go to that region; preferred regions only route reads. Workloads that must write through a regional endpoint need an account that writes in that region.
 
 !!! warning "CosmosDB partition key is per-call, not global"
     Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter takes it as an option. If you forget, queries either fail or cross-partition-fan-out (slow and expensive).
@@ -150,6 +198,29 @@ err  = adapter.Get(&user, map[string]any{"id": "user-123"}, pk)
 `WithPartitionKeyField` names the field and leaves the adapter to read the value
 off the item; the field defaults to `"pk"` when neither is given.
 
+#### Read-your-writes
+
+The adapter keeps the session token Cosmos DB returns from each `Create` / `Update` / `Delete`, per container and partition key, and sends it on later reads, so on an account with session consistency those reads see that write. A token is also taken from a failed write's response, so after a `409 Conflict` a `Get` sees the item that already exists.
+
+- Reads with `WithPartitionKey` send the token for that partition only.
+- Reads without a partition key, and every `Query`, run across partitions and send one token for each partition range of the container.
+- Tokens for the same partition range are merged per region, as the Cosmos DB SDKs do, so on an account that writes in more than one region a read still sees writes accepted in any of them.
+- Tokens are held in memory and are not shared between processes.
+
+| Config key          | Default | Meaning                                                              |
+|---------------------|---------|----------------------------------------------------------------------|
+| `session_tokens`    | `true`  | `"false"` turns read-your-writes tracking off.                       |
+| `session_token_ttl` | `5m`    | How long a token is kept after the last write to its partition (a Go duration). |
+| `session_token_max` | `10000` | Most container/partition pairs held; the least recently written is dropped first. |
+
+A value that can't be parsed or isn't positive logs a warning and keeps the default.
+
+!!! note "Session not available"
+    A read that carries a session token can reach a region that hasn't received the write yet. Cosmos DB then answers `404` with substatus `1002` ("read session not available") instead of returning older data, and the SDK retries: on a multi-write account in your preferred regions, on a single-write account once against the write region. If every attempt fails, the read returns an error (not `ErrNotFound`). Reads and writes that go to the same region, as they do on a multi-write account with `preferred_regions` set, rarely hit this. To go back to reads without session tokens, set `"session_tokens": "false"`.
+
+!!! note "Known limitation: partition splits"
+    After Cosmos DB splits a partition range, a response for a write sent to the old range that arrives after one from the new range replaces the new range's token. The next read may then not see the newer write. Fixing this needs the partition-range layout, which the adapter doesn't track.
+
 ## Options
 
 Every operation takes a variadic `...storage.Option`. Options are uniform across
@@ -158,9 +229,11 @@ adapters: one an operation or adapter has no use for is accepted and ignored.
 | Option                      | Read by            | Meaning                                              |
 |-----------------------------|--------------------|------------------------------------------------------|
 | `WithSortDirection(dir)`    | `List`, `Search`   | `storage.Ascending` (default) or `storage.Descending`. |
-| `WithFields(fields...)`     | `Update`           | Write only these fields. Default is every field.      |
+| `WithFields(fields...)`     | `Update` (SQL, Memory, DynamoDB) | Write only these fields. Default is every field. CosmosDB rejects it. |
 | `WithPartitionKey(f, v)`    | CosmosDB           | Address a partition by field and value.               |
 | `WithPartitionKeyField(f)`  | CosmosDB           | Name the field; the value is read off the item.       |
+| `WithIndex(name)`           | DynamoDB `List`, `Search` | Read from this secondary index.               |
+| `WithQueryParameters(v...)` | DynamoDB `Query`   | Values for the statement's `?` placeholders, in order. |
 
 ## Common patterns
 
@@ -203,16 +276,18 @@ Anything other than `storage.Ascending` or `storage.Descending` returns an error
 
 ### Filter vs search
 
-- **`List(dest, sortKey, filter, limit, cursor, opts...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed.
+- **`List(dest, sortKey, filter, limit, cursor, opts...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed. A slice value matches any of its elements on DynamoDB and CosmosDB.
 - **`Search(dest, sortKey, query, limit, cursor, opts...)`** — `query` is a Lucene query string. See [Search (Lucene)](./lucene.md).
 
-For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string straight to `Search`. magic handles validation, error reporting, and parameterization.
+For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string straight to `Search`. magic handles validation, error reporting, and parameterization. On DynamoDB, `Search` reports those errors as `*errors.BadRequest`; invalid `List` filter keys do not, because the filter map is built by the service, not by the user.
 
 ### Count
 
 ```go
 n, err := adapter.Count(&Task{}, map[string]any{"status": "in_progress"})
 ```
+
+An empty filter counts every item. On CosmosDB, `Count` runs a server-side `SELECT VALUE COUNT(1)` and requires `WithPartitionKey`: the Go SDK cannot run cross-partition aggregates, so a count is always scoped to one partition and returns an error without them. On CosmosDB, `Get`, `List` and `Count` check filter keys before querying: each must be an identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) or a dotted path of them (`address.city`) for a nested property. Keys are written as quoted accessors (`c["order"]`), so property names that are Cosmos keywords, such as `value`, `order` or `top`, work. The partition key field must be a plain identifier, because `Create` stores the partition value under that top-level key. A `nil` filter value matches documents where the property is null or missing, like SQL's `IS NULL`. An empty slice matches nothing, so the count is 0.
 
 ### Update
 
@@ -276,12 +351,22 @@ When you need a raw query that doesn't fit the interface, use:
 - `adapter.Execute(statement)` — fire-and-forget DDL/DML.
 - `adapter.Query(dest, statement, limit, cursor, opts...)` — **not implemented on the SQL adapter** (returns a "not implemented yet" error today).
 
-These bypass the Lucene layer entirely. **You are responsible for parameter binding.** Prefer `List` / `Search` whenever possible.
+These bypass the Lucene layer entirely. **You are responsible for parameter binding.** Prefer `List` / `Search` whenever possible: `Query` statements are written in the adapter's own query language, so code that uses them doesn't port to other adapters.
+
+On DynamoDB, pass values for the statement's `?` placeholders with `storage.WithQueryParameters`, in order. Never write values into `statement`:
+
+```go title="query.go"
+next, err := adapter.Query(&rules,
+    `SELECT * FROM "rules" WHERE "tenant" = ? AND ("principal" = ? OR "status" = ?)`,
+    50, cursor,
+    storage.WithQueryParameters(tenant, principal, "escalated"),
+)
+```
 
 ## Adapter-specific limitations
 
 - **Memory** — an in-memory SQLite database: data lost on restart, single process only, and SQLite's limitations (below) apply.
 - **SQLite** — no `pg_trgm`, so fuzzy Lucene search is unsupported (returns an explanatory error). Use wildcards instead.
 - **MySQL** — fuzzy search uses `SOUNDEX`, which ignores the distance hint (`~2`) and works only on ASCII pronunciations.
-- **DynamoDB** — the Lucene compiler targets PartiQL; fuzzy search and JSON path access are intentionally not implemented. Equality, range, wildcards (rendered as `begins_with`/`contains`), and boolean composition work.
+- **DynamoDB** — the Lucene compiler targets PartiQL; fuzzy search is not supported. Equality, comparisons, ranges, `value*` and `*value*` wildcards (rendered as `begins_with`/`contains`), and boolean composition work. Ends-with (`*value`) and `?` wildcards return an error. See [Search (Lucene)](./lucene.md#dynamodb).
 - **CosmosDB** — see [`storage/cosmosdb.go`](https://github.com/tink3rlabs/magic/blob/main/storage/cosmosdb.go) for the supported subset and partition-key handling.

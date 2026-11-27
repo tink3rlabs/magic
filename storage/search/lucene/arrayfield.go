@@ -121,27 +121,50 @@ func isStringArray(fieldType reflect.Type) bool {
 // fieldType is the FIELD's type (e.g. []int), not the element's.
 func normalizeArrayElemValue(fieldName string, fieldType reflect.Type, raw string) (elemValue, error) {
 	k := arrayElemKind(fieldType)
-	bits := arrayElemBits[k]
+	return normalizeKindValue(fieldName, "array field", k, arrayElemBits[k], raw)
+}
 
+// normalizeScalarValue validates a value against a single-valued field's
+// type, the scalar counterpart of normalizeArrayElemValue.
+func normalizeScalarValue(fieldName string, fieldType reflect.Type, raw string) (elemValue, error) {
+	for fieldType != nil && fieldType.Kind() == reflect.Pointer {
+		fieldType = fieldType.Elem()
+	}
+	if fieldType == nil {
+		return elemValue{Kind: reflect.String, Val: raw}, nil
+	}
+	k := fieldType.Kind()
+	bits := arrayElemBits[k]
+	// A uint8 can't be an array element (byte slices are blobs), so the shared
+	// table has no width for it.
+	if k == reflect.Uint8 {
+		bits = 8
+	}
+	return normalizeKindValue(fieldName, "field", k, bits, raw)
+}
+
+// normalizeKindValue parses raw as a value of kind k, range-checked to bits.
+// desc names the kind of field in error messages ("field" or "array field").
+func normalizeKindValue(fieldName, desc string, k reflect.Kind, bits int, raw string) (elemValue, error) {
 	switch k {
 	case reflect.Bool:
 		b, err := strconv.ParseBool(raw)
 		if err != nil {
-			return elemValue{}, fmt.Errorf("invalid value %q for boolean array field '%s'", raw, fieldName)
+			return elemValue{}, fmt.Errorf("invalid value %q for boolean %s '%s'", raw, desc, fieldName)
 		}
 		return elemValue{Kind: k, Val: b}, nil
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(raw, 10, bits)
 		if err != nil {
-			return elemValue{}, fmt.Errorf("invalid value %q for integer array field '%s'", raw, fieldName)
+			return elemValue{}, fmt.Errorf("invalid value %q for integer %s '%s'", raw, desc, fieldName)
 		}
 		return elemValue{Kind: k, Val: n}, nil
 
-	case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, err := strconv.ParseUint(raw, 10, bits)
 		if err != nil {
-			return elemValue{}, fmt.Errorf("invalid value %q for unsigned integer array field '%s'", raw, fieldName)
+			return elemValue{}, fmt.Errorf("invalid value %q for unsigned integer %s '%s'", raw, desc, fieldName)
 		}
 		// Range-checked to at most 63 bits above, so int64 cannot overflow.
 		return elemValue{Kind: k, Val: int64(n)}, nil
@@ -149,14 +172,14 @@ func normalizeArrayElemValue(fieldName string, fieldType reflect.Type, raw strin
 	case reflect.Float32, reflect.Float64:
 		f, err := strconv.ParseFloat(raw, bits)
 		if err != nil {
-			return elemValue{}, fmt.Errorf("invalid value %q for float array field '%s'", raw, fieldName)
+			return elemValue{}, fmt.Errorf("invalid value %q for float %s '%s'", raw, desc, fieldName)
 		}
 		// ParseFloat accepts "NaN", "Inf" and "Infinity", none of them JSON
 		// numbers. MySQL rejects the containment (ERROR 3141) and DynamoDB will
 		// not accept them as an N attribute, so a filter that can never match
 		// becomes a 500 on two of the four providers.
 		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return elemValue{}, fmt.Errorf("invalid value %q for float array field '%s'", raw, fieldName)
+			return elemValue{}, fmt.Errorf("invalid value %q for float %s '%s'", raw, desc, fieldName)
 		}
 		return elemValue{Kind: k, Val: f}, nil
 

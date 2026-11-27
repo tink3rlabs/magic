@@ -408,20 +408,19 @@ func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
 			return fmt.Sprintf("%s IS NOT NULL", ref.sql), ref.params, nil
 		}
 
-		// Array containment yields NULL for a NULL column, so a plain NOT would
-		// drop those rows instead of complementing them. IS NOT TRUE maps both
-		// NULL and false to true, which is the complement we want.
+		// A negation keeps every row its operand does not match. A comparison
+		// against a NULL column is NULL, and plain NOT keeps it NULL, so the
+		// row was dropped: -status:closed lost the rows with no status, and a
+		// negated word, which searches every text column, lost any row with
+		// one NULL column. IS NOT TRUE maps both NULL and false to true, which
+		// is the complement we want.
 		//
 		// The leaf cannot do this itself with COALESCE: that wrapper is opaque
-		// to the Postgres planner and costs the GIN index (13.8ms sequential
-		// scan versus 0.036ms bitmap index scan on 300k rows). Applying it only
-		// here keeps the positive path — the common one — indexable, and a
-		// negation could not use the index either way.
-		//
-		// Scalar comparisons keep plain NOT, so their NULL handling is
-		// unchanged; only a subtree that actually contains array containment
-		// takes this path.
-		if child, ok := e.Left.(*expr.Expression); ok && s.subtreeHasArrayContainment(child) {
+		// to the Postgres planner and costs the index on the positive path
+		// (13.8ms sequential scan versus 0.036ms bitmap index scan on 300k
+		// rows for array containment). Applying it only here keeps the positive
+		// path indexable, and a negation could not use the index either way.
+		if child, ok := e.Left.(*expr.Expression); ok {
 			inner, params, err := s.renderParamInternal(child)
 			if err != nil {
 				return "", nil, err
@@ -448,7 +447,7 @@ func (s *SQLDriver) renderBinary(e *expr.Expression) (string, []any, error) {
 			}
 			if err == nil {
 				if e.Op == expr.MustNot {
-					return fmt.Sprintf("NOT (%s)", str), params, nil
+					return fmt.Sprintf("(%s) IS NOT TRUE", str), params, nil
 				}
 				return str, params, nil
 			}
@@ -477,7 +476,16 @@ func (s *SQLDriver) quoteColumn(colStr string) string {
 	if isJSONSyntax(colStr) {
 		return colStr
 	}
-	return s.dialect.QuoteIdent(colStr)
+	return s.dialect.QuoteIdent(s.column(colStr))
+}
+
+// column maps a field name to the SQL column it is stored in. Lookups into
+// s.fields stay keyed by field name; only the emitted identifier changes.
+func (s *SQLDriver) column(name string) string {
+	if field, ok := s.fields[name]; ok && field.Column != "" {
+		return field.Column
+	}
+	return name
 }
 
 func (s *SQLDriver) serializeColumn(in any) (string, []any, error) {
@@ -646,7 +654,7 @@ func (s *SQLDriver) formatFieldName(fieldName string) expr.Column {
 			// through untouched — this is the only chance to quote it. Left
 			// bare, a mixed-case column folds on Postgres ("column \"mixed\"
 			// does not exist") and a reserved word is a syntax error on MySQL.
-			return expr.Column(s.dialect.JSONExtract(s.dialect.QuoteIdent(baseField), subField))
+			return expr.Column(s.dialect.JSONExtract(s.dialect.QuoteIdent(s.column(baseField)), subField))
 		}
 	}
 	return expr.Column(fieldName)
@@ -812,28 +820,3 @@ func convertToPostgresPlaceholders(query string) string {
 	return result.String()
 }
 
-// subtreeHasArrayContainment reports whether any Equals node under e resolves
-// to a multi-valued field, i.e. whether rendering e produces at least one
-// containment expression whose NULL handling needs the IS NOT TRUE treatment.
-//
-// It walks the expression tree rather than inspecting rendered SQL, so it
-// cannot be fooled by a column or value that happens to contain an operator.
-func (s *SQLDriver) subtreeHasArrayContainment(e *expr.Expression) bool {
-	if e == nil {
-		return false
-	}
-
-	if e.Op == expr.Equals && !isNullValue(e.Right) {
-		if ref, err := s.resolveField(e.Left); err == nil && ref.isArray() {
-			return true
-		}
-	}
-
-	if left, ok := e.Left.(*expr.Expression); ok && s.subtreeHasArrayContainment(left) {
-		return true
-	}
-	if right, ok := e.Right.(*expr.Expression); ok && s.subtreeHasArrayContainment(right) {
-		return true
-	}
-	return false
-}

@@ -287,7 +287,7 @@ Every adapter implements the `Context` variants as the primary methods. The non-
 
 ```go
 func (a *sqlAdapter) Get(dest any, filter map[string]any, opts ...Option) error {
-    return a.GetContext(context.Background(), dest, filter, params...)
+    return a.GetContext(context.Background(), dest, filter, opts...)
 }
 
 func (a *sqlAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error {

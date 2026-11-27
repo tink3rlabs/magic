@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
@@ -224,177 +225,6 @@ func TestDynamoDBDriver_RenderPartiQL(t *testing.T) {
 				if _, ok := attr.(*types.AttributeValueMemberS); !ok {
 					t.Errorf("RenderPartiQL() attrs[%v] type = %T, want *types.AttributeValueMemberS", i, attr)
 				}
-			}
-		})
-	}
-}
-
-func TestDynamoDBLike(t *testing.T) {
-	tests := []struct {
-		name    string
-		left    string
-		right   string
-		want    string
-		wantErr bool
-	}{
-		{
-			name:    "contains pattern %value%",
-			left:    "name",
-			right:   "'%john%'",
-			want:    "contains(name, 'john')",
-			wantErr: false,
-		},
-		{
-			name:    "begins_with pattern value%",
-			left:    "name",
-			right:   "'john%'",
-			want:    "begins_with(name, 'john')",
-			wantErr: false,
-		},
-		{
-			name:    "contains pattern %value (no ends_with)",
-			left:    "name",
-			right:   "'%john'",
-			want:    "contains(name, 'john')",
-			wantErr: false,
-		},
-		{
-			name:    "exact match (no wildcards)",
-			left:    "name",
-			right:   "'john'",
-			want:    "name = 'john'",
-			wantErr: false,
-		},
-		{
-			name:    "empty string value",
-			left:    "name",
-			right:   "''",
-			want:    "name = ''",
-			wantErr: false,
-		},
-		{
-			name:    "single % at start",
-			left:    "name",
-			right:   "'%'",
-			want:    "contains(name, '')",
-			wantErr: false,
-		},
-		{
-			name:    "single % at end",
-			left:    "name",
-			right:   "'%'",
-			want:    "contains(name, '')",
-			wantErr: false,
-		},
-		{
-			name:    "value with special characters",
-			left:    "email",
-			right:   "'test@example.com%'",
-			want:    "begins_with(email, 'test@example.com')",
-			wantErr: false,
-		},
-		{
-			name:    "value with underscores",
-			left:    "field_name",
-			right:   "'%test_value%'",
-			want:    "contains(field_name, 'test_value')",
-			wantErr: false,
-		},
-		{
-			name:    "unquoted value (no quotes in pattern)",
-			left:    "name",
-			right:   "john",
-			want:    "name = 'john'",
-			wantErr: false,
-		},
-		{
-			name:    "multiple % in middle",
-			left:    "name",
-			right:   "'%john%doe%'",
-			want:    "contains(name, 'john%doe')",
-			wantErr: false,
-		},
-		{
-			name:    "only % characters",
-			left:    "name",
-			right:   "'%%%'",
-			want:    "contains(name, '')",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote in exact match",
-			left:    "name",
-			right:   "'John's'",
-			want:    "name = 'John''s'",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote and wildcard prefix",
-			left:    "name",
-			right:   "'%test'value'",
-			want:    "contains(name, 'test''value')",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote and wildcard suffix",
-			left:    "name",
-			right:   "'test'value%'",
-			want:    "begins_with(name, 'test''value')",
-			wantErr: false,
-		},
-		{
-			name:    "value with single quote and wildcards both sides",
-			left:    "name",
-			right:   "'%test'value%'",
-			want:    "contains(name, 'test''value')",
-			wantErr: false,
-		},
-		{
-			name:    "value with multiple single quotes",
-			left:    "name",
-			right:   "'O'Brien'",
-			want:    "name = 'O''Brien'",
-			wantErr: false,
-		},
-		{
-			name:    "injection attempt: value with quote and OR (should be escaped)",
-			left:    "name",
-			right:   "'test') OR (1=1'",
-			want:    "name = 'test'') OR (1=1'",
-			wantErr: false,
-		},
-		{
-			name:    "invalid field name with special characters",
-			left:    "name; DROP TABLE users;--",
-			right:   "'test'",
-			want:    "",
-			wantErr: true,
-		},
-		{
-			name:    "invalid field name with quotes",
-			left:    "name'",
-			right:   "'test'",
-			want:    "",
-			wantErr: true,
-		},
-		{
-			name:    "invalid field name with spaces",
-			left:    "field name",
-			right:   "'test'",
-			want:    "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := dynamoDBLike(tt.left, tt.right)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("dynamoDBLike() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Errorf("dynamoDBLike() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -811,7 +641,7 @@ func TestDynamoDBDriver_TypedArrayRejectsMistypedValue(t *testing.T) {
 // never equals one bound as S. Deriving the attribute type by re-parsing a
 // canonical string was a second source of truth that could disagree with the
 // validation that produced it; elemValue carries the type directly.
-func TestArrayContainsParamFromElemValue(t *testing.T) {
+func TestElemAttributeValueFromElemValue(t *testing.T) {
 	tests := []struct {
 		name string
 		val  elemValue
@@ -830,18 +660,242 @@ func TestArrayContainsParamFromElemValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := arrayContainsParam(tt.val)
+			got, err := elemAttributeValue(tt.val)
 			if err != nil {
-				t.Fatalf("arrayContainsParam(%#v): %v", tt.val, err)
+				t.Fatalf("elemAttributeValue(%#v): %v", tt.val, err)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("arrayContainsParam(%#v) = %#v, want %#v", tt.val, got, tt.want)
+				t.Errorf("elemAttributeValue(%#v) = %#v, want %#v", tt.val, got, tt.want)
 			}
 		})
 	}
 
 	// A Val outside the closed set is a programming error, not a filter error.
-	if _, err := arrayContainsParam(elemValue{Kind: reflect.Complex64, Val: complex64(1)}); err == nil {
-		t.Error("arrayContainsParam with an unsupported Val returned no error")
+	if _, err := elemAttributeValue(elemValue{Kind: reflect.Complex64, Val: complex64(1)}); err == nil {
+		t.Error("elemAttributeValue with an unsupported Val returned no error")
+	}
+}
+
+// gorm tags describe SQL storage only: DynamoDB keeps every json-tagged field.
+func TestGormIgnoredFieldsStayFilterableOnDynamoDB(t *testing.T) {
+	p, err := NewParser(Order{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	for _, filter := range []string{"note:x", "summary:x"} {
+		t.Run(filter, func(t *testing.T) {
+			if _, _, err := p.ParseToDynamoDBPartiQL(filter); err != nil {
+				t.Errorf("ParseToDynamoDBPartiQL(%q): %v", filter, err)
+			}
+		})
+	}
+}
+
+type ddbRule struct {
+	Tenant    string            `json:"tenant"`
+	ID        string            `json:"id"`
+	Priority  int               `json:"priority"`
+	Level     uint8             `json:"level"`
+	Score     float64           `json:"score"`
+	Enabled   bool              `json:"enabled"`
+	Retries   *int              `json:"retries"`
+	Owner     *string           `json:"owner"`
+	CreatedAt time.Time         `json:"created_at"`
+	Labels    map[string]string `json:"labels"`
+	Tags      []string          `json:"tags"`
+}
+
+func ddbStringParams(t *testing.T, params []types.AttributeValue) []string {
+	t.Helper()
+	out := make([]string, len(params))
+	for i, p := range params {
+		s, ok := p.(*types.AttributeValueMemberS)
+		if !ok {
+			t.Fatalf("param %d = %#v; want a string attribute", i, p)
+		}
+		out[i] = s.Value
+	}
+	return out
+}
+
+// DynamoDB PartiQL has no SIMILAR TO or LIKE. Wildcards used to fall through
+// to go-lucene's Postgres rendering, so every wildcard search failed.
+func TestDynamoDBDriver_ScalarWildcards(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	tests := []struct {
+		query      string
+		wantSQL    string
+		wantParams []string
+	}{
+		{"id:abc*", `begins_with("id", ?)`, []string{"abc"}},
+		{"id:connector#c-42*", `begins_with("id", ?)`, []string{"connector#c-42"}},
+		{"id:*abc*", `contains("id", ?)`, []string{"abc"}},
+		{"id:*", `"id" IS NOT MISSING`, []string{}},
+		{"owner:abc*", `begins_with("owner", ?)`, []string{"abc"}},
+		{`tenant:"acme" AND id:abc*`, `("tenant" = ?) AND (begins_with("id", ?))`, []string{"acme", "abc"}},
+		{"abc*", `(begins_with("tenant", ?)) OR (begins_with("id", ?))`, []string{"abc", "abc"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			sql, params, err := p.ParseToDynamoDBPartiQL(tt.query)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", tt.query, err)
+			}
+			if !strings.Contains(sql, tt.wantSQL) {
+				t.Errorf("partiql = %q; want it to contain %q", sql, tt.wantSQL)
+			}
+			if strings.Contains(sql, "SIMILAR") || strings.Contains(sql, "LIKE") {
+				t.Errorf("partiql = %q; DynamoDB supports neither SIMILAR TO nor LIKE", sql)
+			}
+			got := ddbStringParams(t, params)
+			if strings.Join(got, "|") != strings.Join(tt.wantParams, "|") {
+				t.Errorf("params = %q; want %q", got, tt.wantParams)
+			}
+		})
+	}
+}
+
+// Patterns PartiQL can't express must fail rather than match the wrong items.
+func TestDynamoDBDriver_UnsupportedWildcardsAreErrors(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	for _, query := range []string{"id:*abc", "id:a*c", "id:a?c", "id:*a*b*", "priority:5*"} {
+		t.Run(query, func(t *testing.T) {
+			if sql, _, err := p.ParseToDynamoDBPartiQL(query); err == nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q) = %q; want an error", query, sql)
+			}
+		})
+	}
+}
+
+// DynamoDB never matches an N attribute against an S value, so binding every
+// scalar as a string made numeric and boolean searches silently return nothing.
+func TestDynamoDBDriver_ScalarValuesBindAsFieldType(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	n := func(v string) types.AttributeValue { return &types.AttributeValueMemberN{Value: v} }
+	s := func(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
+	b := func(v bool) types.AttributeValue { return &types.AttributeValueMemberBOOL{Value: v} }
+
+	tests := []struct {
+		query      string
+		wantSQL    string
+		wantParams []types.AttributeValue
+	}{
+		{"priority:80", `"priority" = ?`, []types.AttributeValue{n("80")}},
+		{"priority:>80", `"priority" > ?`, []types.AttributeValue{n("80")}},
+		{"priority:<=80", `"priority" <= ?`, []types.AttributeValue{n("80")}},
+		{"level:255", `"level" = ?`, []types.AttributeValue{n("255")}},
+		{"retries:3", `"retries" = ?`, []types.AttributeValue{n("3")}},
+		{"score:1.5", `"score" = ?`, []types.AttributeValue{n("1.5")}},
+		{"enabled:true", `"enabled" = ?`, []types.AttributeValue{b(true)}},
+		{"tenant:acme", `"tenant" = ?`, []types.AttributeValue{s("acme")}},
+		{"tenant:42", `"tenant" = ?`, []types.AttributeValue{s("42")}},
+		{"owner:bob", `"owner" = ?`, []types.AttributeValue{s("bob")}},
+		{`created_at:"2024-01-01T00:00:00Z"`, `"created_at" = ?`, []types.AttributeValue{s("2024-01-01T00:00:00Z")}},
+		{"priority:[50 TO 100]", `"priority" BETWEEN ? AND ?`, []types.AttributeValue{n("50"), n("100")}},
+		{"priority:{50 TO 100}", `"priority" > ? AND "priority" < ?`, []types.AttributeValue{n("50"), n("100")}},
+		{"priority:[50 TO *]", `"priority" >= ?`, []types.AttributeValue{n("50")}},
+		{"priority:{* TO 100}", `"priority" < ?`, []types.AttributeValue{n("100")}},
+		{"id:[a TO m]", `"id" BETWEEN ? AND ?`, []types.AttributeValue{s("a"), s("m")}},
+		{"priority:null", `"priority" IS NULL`, []types.AttributeValue{}},
+		{"labels.team:core", `"labels"."team" = ?`, []types.AttributeValue{s("core")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			sql, params, err := p.ParseToDynamoDBPartiQL(tt.query)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", tt.query, err)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("partiql = %q; want %q", sql, tt.wantSQL)
+			}
+			if len(params) != len(tt.wantParams) {
+				t.Fatalf("params = %#v; want %#v", params, tt.wantParams)
+			}
+			for i := range params {
+				if !reflect.DeepEqual(params[i], tt.wantParams[i]) {
+					t.Errorf("param %d = %#v; want %#v", i, params[i], tt.wantParams[i])
+				}
+			}
+		})
+	}
+}
+
+// go-lucene parses tenant:(a OR b) as EQUALS(tenant, OR(...)); the base driver
+// rendered that as "tenant" = (("tenant" = ?) OR ...), which isn't PartiQL.
+func TestDynamoDBDriver_ScalarGroupedValues(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+
+	n := func(v string) types.AttributeValue { return &types.AttributeValueMemberN{Value: v} }
+	s := func(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
+
+	tests := []struct {
+		query      string
+		wantSQL    string
+		wantParams []types.AttributeValue
+	}{
+		{"tenant:(a OR b)", `("tenant" = ? OR "tenant" = ?)`, []types.AttributeValue{s("a"), s("b")}},
+		{"tenant:(a OR b OR c)", `(("tenant" = ? OR "tenant" = ?) OR "tenant" = ?)`, []types.AttributeValue{s("a"), s("b"), s("c")}},
+		{"priority:(1 OR 2)", `("priority" = ? OR "priority" = ?)`, []types.AttributeValue{n("1"), n("2")}},
+		{"tenant:(a OR null)", `("tenant" = ? OR "tenant" IS NULL)`, []types.AttributeValue{s("a")}},
+		// go-lucene splits a group that mixes a wildcard into one clause per term.
+		{"id:(abc* OR x)", `(begins_with("id", ?)) OR ("id" = ?)`, []types.AttributeValue{s("abc"), s("x")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			sql, params, err := p.ParseToDynamoDBPartiQL(tt.query)
+			if err != nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q): %v", tt.query, err)
+			}
+			if sql != tt.wantSQL {
+				t.Errorf("partiql = %q; want %q", sql, tt.wantSQL)
+			}
+			if !reflect.DeepEqual(params, tt.wantParams) {
+				t.Errorf("params = %#v; want %#v", params, tt.wantParams)
+			}
+		})
+	}
+
+	if _, _, err := p.ParseToDynamoDBPartiQL("priority:(1 OR abc)"); err == nil {
+		t.Error("a mistyped value inside a group must return an error")
+	}
+}
+
+// A value that can't be stored in the field is a malformed query, not one
+// that should quietly match nothing.
+func TestDynamoDBDriver_ScalarRejectsMistypedValue(t *testing.T) {
+	p, err := NewParser(ddbRule{})
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	for _, query := range []string{
+		"priority:abc",
+		"priority:1.5",
+		"level:256",
+		"enabled:maybe",
+		"score:NaN",
+		"priority:[1 TO abc]",
+		"priority:>null",
+		"priority:[* TO *]",
+	} {
+		t.Run(query, func(t *testing.T) {
+			if sql, _, err := p.ParseToDynamoDBPartiQL(query); err == nil {
+				t.Fatalf("ParseToDynamoDBPartiQL(%q) = %q; want an error", query, sql)
+			}
+		})
 	}
 }

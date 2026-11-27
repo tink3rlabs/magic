@@ -4,11 +4,9 @@ import "fmt"
 
 // Option configures a single storage operation.
 //
-// One option set serves every operation and every adapter, which is what the
-// former `params ...map[string]any` provided — but typed, so the compiler
-// checks the value and godoc lists what is available. An option an operation
-// or adapter has no use for is accepted and ignored; each option's doc comment
-// names the operations that read it.
+// One option set serves every operation and every adapter. An option an
+// operation or adapter has no use for is accepted and ignored; each option's
+// doc comment names the operations that read it.
 type Option func(*Options)
 
 // Options is the resolved configuration for one storage call. Adapters read it;
@@ -32,6 +30,14 @@ type Options struct {
 	// the item. Both are read by the CosmosDB adapter.
 	PartitionKeyField string
 	PartitionKeyValue any
+
+	// Index names a secondary index to read from. Read by List and Search on
+	// DynamoDB; other databases choose indexes themselves.
+	Index string
+
+	// QueryParameters are the values for the "?" placeholders of a Query
+	// statement, in placeholder order. Read by Query on DynamoDB.
+	QueryParameters []any
 }
 
 // WithSortDirection orders List and Search results. An unrecognized direction
@@ -72,6 +78,18 @@ func WithPartitionKey(field string, value any) Option {
 // key, leaving the adapter to read the value off the item.
 func WithPartitionKeyField(field string) Option {
 	return func(o *Options) { o.PartitionKeyField = field }
+}
+
+// WithIndex makes DynamoDB List and Search read from the named secondary
+// index.
+func WithIndex(name string) Option {
+	return func(o *Options) { o.Index = name }
+}
+
+// WithQueryParameters binds values to the "?" placeholders of a DynamoDB Query
+// statement, in order. Values never go into the statement text.
+func WithQueryParameters(values ...any) Option {
+	return func(o *Options) { o.QueryParameters = values }
 }
 
 // ResolveOptions applies opts over the defaults and validates the result.

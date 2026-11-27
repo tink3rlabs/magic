@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"regexp"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	serviceErrors "github.com/tink3rlabs/magic/errors"
 	"github.com/tink3rlabs/magic/logger"
 	"github.com/tink3rlabs/magic/storage/search/lucene"
 )
@@ -376,6 +378,11 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	}
 
 	input = builder(input)
+	// DynamoDB rejects an empty Parameters list (minimum 1 item); the SDK
+	// sends one for any non-nil slice.
+	if len(input.Parameters) == 0 {
+		input.Parameters = nil
+	}
 
 	response, err := s.DB.ExecuteStatement(ctx, input)
 	if err != nil {
@@ -412,21 +419,30 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 	if err != nil {
 		return "", fmt.Errorf("failed to list: %w", err)
 	}
-	if err := requireFilterWhenOrdering(sortKey, len(filter) > 0); err != nil {
+	from, err := s.fromClause(dest, options)
+	if err != nil {
+		return "", err
+	}
+	where, values, err := s.buildFilter(filter)
+	if errors.Is(err, errFilterMatchesNothing) {
+		clearSlice(dest)
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := requireFilterWhenOrdering(sortKey, where != ""); err != nil {
 		return "", err
 	}
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
-		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
+		query := "SELECT * FROM " + from
 
-		if len(filter) > 0 {
-			params, _ := s.buildParams(filter)
-			input.Parameters = params
-			query += fmt.Sprintf(` WHERE %s`, s.buildFilter(filter))
+		if where != "" {
+			input.Parameters = values
+			query += fmt.Sprintf(` WHERE %s`, where)
 		}
 
-		if sortKey != "" {
-			query += fmt.Sprintf(` ORDER BY %s %s`, sortKey, options.SortDirection)
-		}
+		query += dynamoOrderBy(sortKey, options.SortDirection)
 
 		input.Statement = aws.String(query)
 		return input
@@ -452,6 +468,15 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return "", fmt.Errorf("failed to search: %w", err)
+	}
+
+	from, err := s.fromClause(dest, options)
+	if err != nil {
+		return "", err
+	}
 
 	destType := reflect.TypeOf(dest).Elem().Elem()
 	model := reflect.New(destType).Elem().Interface()
@@ -461,11 +486,10 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 	}
 	whereClause, dynamoParams, err := parser.ParseToDynamoDBPartiQL(query)
 	if err != nil {
-		return "", err
-	}
-	options, err := ResolveOptions(opts...)
-	if err != nil {
-		return "", fmt.Errorf("failed to search: %w", err)
+		// Every error from parsing and rendering comes from the query text, so
+		// report it as a client error.
+		slog.Error("Filter parsing failed", "error", err)
+		return "", &serviceErrors.BadRequest{Message: err.Error()}
 	}
 	if err := requireFilterWhenOrdering(sortKey, whereClause != ""); err != nil {
 		return "", err
@@ -473,18 +497,25 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Build query
-		query := fmt.Sprintf(`SELECT * FROM "%s"`, s.getTableName(dest))
+		query := "SELECT * FROM " + from
 		if whereClause != "" {
 			query += fmt.Sprintf(` WHERE %s`, whereClause)
 		}
-		if sortKey != "" {
-			query += fmt.Sprintf(` ORDER BY %s %s`, sortKey, options.SortDirection)
-		}
+		query += dynamoOrderBy(sortKey, options.SortDirection)
 
 		input.Statement = aws.String(query)
 		input.Parameters = dynamoParams
 		return input
 	})
+}
+
+// dynamoOrderBy returns an ORDER BY clause, or "" when sortKey is empty.
+// The key is quoted so reserved words such as status and name stay valid.
+func dynamoOrderBy(sortKey string, dir SortingDirection) string {
+	if sortKey == "" {
+		return ""
+	}
+	return fmt.Sprintf(` ORDER BY "%s" %s`, sortKey, dir)
 }
 
 func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, opts ...Option) (int64, error) {
@@ -501,11 +532,40 @@ func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor st
 	return s.QueryContext(context.Background(), dest, statement, limit, cursor, opts...)
 }
 
+// QueryContext runs a PartiQL statement. Values must be passed with
+// WithQueryParameters and referenced as "?" placeholders, never written into
+// statement.
 func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return "", fmt.Errorf("failed to query: %w", err)
+	}
+	values, err := dynamoQueryParameters(options.QueryParameters)
+	if err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		input.Statement = aws.String(statement)
+		input.Parameters = values
 		return input
 	})
+}
+
+// dynamoQueryParameters marshals the WithQueryParameters values in order,
+// since PartiQL binds "?" placeholders by position.
+func dynamoQueryParameters(raw []any) ([]types.AttributeValue, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	values := make([]types.AttributeValue, len(raw))
+	for i, value := range raw {
+		v, err := attributevalue.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal query parameter %d: %w", i, err)
+		}
+		values[i] = v
+	}
+	return values, nil
 }
 
 func (s *DynamoDBAdapter) getTableName(obj any) string {
@@ -525,49 +585,100 @@ func (s *DynamoDBAdapter) getTableName(obj any) string {
 	return tableName
 }
 
-func (s *DynamoDBAdapter) buildFilter(filter map[string]any) string {
-	clauses := []string{}
-	for key, value := range filter {
-		if reflect.ValueOf(value).Kind() == reflect.Slice {
-			c := "IN ("
-			len := reflect.ValueOf(value).Len()
-			for i := 0; i < len; i++ {
-				if i < len-1 {
-					c += "?,"
-				} else {
-					c += "?)"
-				}
-			}
-			clauses = append(clauses, fmt.Sprintf("%s %s", key, c))
-		} else {
-			clauses = append(clauses, fmt.Sprintf("%s=?", key))
-		}
+// validDynamoIndexName matches DynamoDB's naming rules for a secondary index.
+var validDynamoIndexName = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,255}$`)
+
+// fromClause returns the quoted table for dest, or "table"."index" when
+// WithIndex names a secondary index to read from.
+func (s *DynamoDBAdapter) fromClause(dest any, options Options) (string, error) {
+	from := fmt.Sprintf(`"%s"`, s.getTableName(dest))
+	if options.Index == "" {
+		return from, nil
 	}
-	return strings.Join(clauses, " AND ")
+	if !validDynamoIndexName.MatchString(options.Index) {
+		return "", fmt.Errorf("invalid index %q: must match [A-Za-z0-9_.-]{3,255}", options.Index)
+	}
+	return fmt.Sprintf(`%s."%s"`, from, options.Index), nil
 }
 
-func (s *DynamoDBAdapter) buildParams(filter map[string]any) ([]types.AttributeValue, error) {
-	values := make([]types.AttributeValue, 0, len(filter))
+// errFilterMatchesNothing reports a filter that can't match any item, such as
+// an empty slice: "IN ()" is a syntax error in PartiQL.
+var errFilterMatchesNothing = errors.New("filter matches nothing")
 
-	for _, value := range filter {
-		if reflect.ValueOf(value).Kind() == reflect.Slice {
-			len := reflect.ValueOf(value).Len()
-			for i := 0; i < len; i++ {
-				t := reflect.ValueOf(value).Index(i).Interface()
-				v, err := attributevalue.Marshal(t)
+// dynamoPathSegment matches one dot-separated segment of a filter key. Each
+// segment is quoted in the statement, so hyphens and reserved words are
+// allowed, but quotes, spaces and operators are not.
+var dynamoPathSegment = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// dynamoAttributePath validates a filter key and quotes each segment, so
+// "a.b" stays a nested path ("a"."b") rather than an attribute named "a.b".
+func dynamoAttributePath(key string) (string, error) {
+	segments := strings.Split(key, ".")
+	for i, segment := range segments {
+		if !dynamoPathSegment.MatchString(segment) {
+			return "", fmt.Errorf("invalid filter key %q: each dot-separated part must match [A-Za-z0-9_-]+", key)
+		}
+		segments[i] = `"` + segment + `"`
+	}
+	return strings.Join(segments, "."), nil
+}
+
+// buildFilter renders filter as a WHERE clause and the values for its "?"
+// placeholders. PartiQL binds placeholders by position, so the clause and the
+// values are built in one pass over the keys in sorted order: two separate
+// passes over the map can visit the keys in different orders.
+//
+// Keys are written into the statement, so each one is validated and quoted.
+// It returns errFilterMatchesNothing when a slice value is empty.
+func (s *DynamoDBAdapter) buildFilter(filter map[string]any) (string, []types.AttributeValue, error) {
+	keys := slices.Sorted(maps.Keys(filter))
+	clauses := make([]string, 0, len(keys))
+	values := make([]types.AttributeValue, 0, len(keys))
+
+	for _, key := range keys {
+		path, err := dynamoAttributePath(key)
+		if err != nil {
+			return "", nil, err
+		}
+		value := filter[key]
+		if value == nil {
+			clauses = append(clauses, fmt.Sprintf("%s IS NULL", path))
+			continue
+		}
+		rv := reflect.ValueOf(value)
+		// A []byte is a single binary value, not a list of values.
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() != reflect.Uint8 {
+			if rv.Len() == 0 {
+				return "", nil, errFilterMatchesNothing
+			}
+			placeholders := make([]string, rv.Len())
+			for i := range placeholders {
+				v, err := attributevalue.Marshal(rv.Index(i).Interface())
 				if err != nil {
-					return values, err
+					return "", nil, fmt.Errorf("failed to marshal filter value for %q: %w", key, err)
 				}
+				placeholders[i] = "?"
 				values = append(values, v)
 			}
-		} else {
-			v, err := attributevalue.Marshal(value)
-			if err != nil {
-				return values, err
-			}
-			values = append(values, v)
+			clauses = append(clauses, fmt.Sprintf("%s IN (%s)", path, strings.Join(placeholders, ", ")))
+			continue
 		}
+		v, err := attributevalue.Marshal(value)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to marshal filter value for %q: %w", key, err)
+		}
+		clauses = append(clauses, fmt.Sprintf("%s = ?", path))
+		values = append(values, v)
 	}
 
-	return values, nil
+	return strings.Join(clauses, " AND "), values, nil
+}
+
+// clearSlice sets *dest to an empty slice when dest points to a slice.
+func clearSlice(dest any) {
+	rv := reflect.ValueOf(dest)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() || rv.Elem().Kind() != reflect.Slice {
+		return
+	}
+	rv.Elem().Set(reflect.MakeSlice(rv.Elem().Type(), 0, 0))
 }

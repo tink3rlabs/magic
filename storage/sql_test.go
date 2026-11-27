@@ -475,3 +475,18 @@ func TestMemoryAdapterDelegatesNonContextCountAndQuery(t *testing.T) {
 		t.Fatalf("expected memory.Query to propagate not-implemented error")
 	}
 }
+
+// A malformed query is the caller's mistake, so Search reports every parse
+// error as BadRequest, the same as the DynamoDB adapter.
+func TestSQLSearchQueryErrorsAreBadRequest(t *testing.T) {
+	_, s := setupSQLCoverage(t)
+
+	for _, query := range []string{"name:/ro.m/", "name:x^2", "nope:x"} {
+		var out []sqlCoverageItem
+		_, err := s.Search(&out, "id", query, 10, "")
+		var badRequest *magicerrors.BadRequest
+		if !errors.As(err, &badRequest) {
+			t.Errorf("Search(%q) error = %T %v, want *errors.BadRequest", query, err, err)
+		}
+	}
+}

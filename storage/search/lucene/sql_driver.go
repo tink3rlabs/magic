@@ -819,4 +819,3 @@ func convertToPostgresPlaceholders(query string) string {
 	}
 	return result.String()
 }
-

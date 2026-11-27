@@ -288,7 +288,32 @@ func (p *Parser) parseQueryCommon(query string, queryType string) (*expr.Express
 		return nil, err
 	}
 
+	if containsRegexp(e) {
+		return nil, errRegexpUnsupported
+	}
+
 	return e, nil
+}
+
+// errRegexpUnsupported rejects field:/pattern/. No driver can render a
+// regexp, and each one used to match the pattern as literal text (#301).
+// An unquoted / in a value such as a date also starts a regexp.
+var errRegexpUnsupported = errors.New(`regexp queries (field:/pattern/) are not supported; use wildcards instead (for example field:ro?m*), and quote a value that contains / (for example field:"a/b")`)
+
+// containsRegexp reports whether any node of e is a regexp. go-lucene nests
+// it as the value of a Like node: name:/x/ is LIKE(name, REGEXP("/x/")).
+func containsRegexp(v any) bool {
+	switch n := v.(type) {
+	case *expr.Expression:
+		return n != nil && (n.Op == expr.Regexp || containsRegexp(n.Left) || containsRegexp(n.Right))
+	case []*expr.Expression:
+		for _, child := range n {
+			if containsRegexp(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ParseToSQL parses a Lucene query and converts it to SQL with parameters for the specified provider.

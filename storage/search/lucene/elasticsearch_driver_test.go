@@ -238,8 +238,9 @@ func TestElasticsearchUserTextStaysAValue(t *testing.T) {
 		`script`,
 	}
 	withPattern := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc"}})
+	withText := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc", Text: "title.text"}})
 	for _, q := range queries {
-		for _, opts := range [][]ElasticsearchOption{nil, {withPattern}} {
+		for _, opts := range [][]ElasticsearchOption{nil, {withPattern}, {withText}} {
 			t.Run(q, func(t *testing.T) {
 				got, err := p.ParseToElasticsearch(q, opts...)
 				if err != nil {
@@ -261,10 +262,11 @@ func TestElasticsearchUserTextStaysAValue(t *testing.T) {
 						}
 					case string:
 						switch {
-						case key == "value":
+						case key == "value", key == "query":
 						case key == "field" && fields[n]:
+						case key == "fuzziness" && n == "AUTO", key == "operator" && n == "and":
 						default:
-							t.Errorf("ParseToElasticsearch(%q): string %q under key %q, want only under \"value\"", q, n, key)
+							t.Errorf("ParseToElasticsearch(%q): string %q under key %q, want only under \"value\" or \"query\"", q, n, key)
 						}
 					}
 				}
@@ -321,5 +323,33 @@ func TestElasticsearchFieldOptions(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), wantErr.err) {
 			t.Errorf("%s: error = %v, want it to contain %q", opts, err, wantErr.err)
 		}
+	}
+}
+
+// With Text, a word typed without a field is ranked full text: a match query
+// in bool.must. A field without Text keeps its *word* wildcard. A quoted
+// phrase and a typed wildcard stay exact, as without the option.
+func TestElasticsearchTextFields(t *testing.T) {
+	p := newESParser(t)
+	opt := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc", Text: "title.text"}})
+	word := `{"bool":{"should":[{"wildcard":{"id":{"value":"*тръби*","case_insensitive":true}}},{"match":{"title.text":{"query":"тръби","fuzziness":"AUTO","operator":"and"}}}],"minimum_should_match":1}}`
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{`тръби`, word},
+		{`тръби AND status:open`, `{"bool":{"filter":[{"term":{"status":{"value":"open"}}}],"must":[` + word + `]}}`},
+		{`status:open тръби`, `{"bool":{"filter":[{"term":{"status":{"value":"open"}}}],"must":[` + word + `]}}`},
+		{`-тръби`, `{"bool":{"must_not":[` + word + `]}}`},
+		{`"тръба pvc"`, `{"bool":{"should":[{"term":{"id":{"value":"тръба pvc"}}},{"term":{"title":{"value":"тръба pvc"}}}],"minimum_should_match":1}}`},
+		{`title:*тръби*`, `{"wildcard":{"title.lc":{"value":"*тръби*","case_insensitive":true}}}`},
+		{`тръб*`, `{"bool":{"should":[{"wildcard":{"id":{"value":"тръб*","case_insensitive":true}}},{"wildcard":{"title.lc":{"value":"тръб*","case_insensitive":true}}}],"minimum_should_match":1}}`},
+	}
+	for _, tt := range tests {
+		got, err := p.ParseToElasticsearch(tt.query, opt)
+		if err != nil {
+			t.Fatalf("ParseToElasticsearch(%q) error = %v", tt.query, err)
+		}
+		assertDSL(t, tt.query, got, tt.want)
 	}
 }

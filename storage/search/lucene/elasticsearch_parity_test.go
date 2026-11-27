@@ -107,6 +107,17 @@ var parityWithPattern = map[string][]string{
 	`tags:Golang`:   {},
 }
 
+// parityWithText runs with Text set on title: ranked full text with the
+// bulgarian analyzer. It finds typos and other word forms, which SQL does not,
+// so the ids are pinned.
+var parityWithText = map[string][]string{
+	`тръби`:             {"5"},
+	`тръвба`:            {"5"},
+	`room`:              {"1", "2"}, // roam is one edit away: fuzziness AUTO
+	`тръби -pvc`:        {},
+	`status:open тръби`: {"5"},
+}
+
 var parityDivergence = map[string][]string{
 	`tags:*`: {"1", "2"},
 }
@@ -145,6 +156,18 @@ func TestElasticsearchParity(t *testing.T) {
 		ran = true
 		t.Run(name, func(t *testing.T) {
 			index := newParityIndex(t, strings.TrimRight(url, "/"))
+			t.Run("with Text", func(t *testing.T) {
+				opt := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc", Text: "title.text"}})
+				for q, expected := range parityWithText {
+					if got := index.ids(t, p, q, opt); !reflect.DeepEqual(got, expected) {
+						t.Errorf("%s %s matched %v, want %v", name, q, got, expected)
+					}
+				}
+				// Ranked: the exact word comes before the one-edit match.
+				if got := index.ranked(t, p, `roam`, opt); len(got) != 2 || got[0] != "2" {
+					t.Errorf("%s roam ranked %v, want [2 1]", name, got)
+				}
+			})
 			t.Run("with Pattern", func(t *testing.T) {
 				opt := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc"}})
 				for q, expected := range parityWithPattern {
@@ -257,7 +280,8 @@ func newParityIndex(t *testing.T, server string) parityIndex {
 	return idx
 }
 
-func (idx parityIndex) ids(t *testing.T, p *Parser, q string, opts ...ElasticsearchOption) []string {
+// ranked returns the ids in the order the server scores them.
+func (idx parityIndex) ranked(t *testing.T, p *Parser, q string, opts ...ElasticsearchOption) []string {
 	t.Helper()
 	dsl, err := p.ParseToElasticsearch(q, opts...)
 	if err != nil {
@@ -278,6 +302,12 @@ func (idx parityIndex) ids(t *testing.T, p *Parser, q string, opts ...Elasticsea
 	for _, h := range res.Hits.Hits {
 		ids = append(ids, h.ID)
 	}
+	return ids
+}
+
+func (idx parityIndex) ids(t *testing.T, p *Parser, q string, opts ...ElasticsearchOption) []string {
+	t.Helper()
+	ids := idx.ranked(t, p, q, opts...)
 	slices.Sort(ids)
 	return ids
 }

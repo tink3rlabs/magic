@@ -15,8 +15,9 @@ import (
 // The output is structured data: user text only ever becomes the value of a
 // term, wildcard, range or fuzzy clause, never part of a query string.
 type ElasticsearchDriver struct {
-	fields map[string]FieldInfo
-	index  map[string]ElasticsearchField
+	fields   map[string]FieldInfo
+	implicit []FieldInfo
+	index    map[string]ElasticsearchField
 }
 
 // ElasticsearchField names the sub-fields of one string field in the index.
@@ -25,6 +26,11 @@ type ElasticsearchDriver struct {
 // fuzzy queries go there, so case folds in every language: the server's
 // case_insensitive flag folds ASCII letters only. A term stays on the field
 // itself and matches exactly, as on SQL.
+//
+// Text is an analyzed sub-field. A word typed without a field renders as a
+// ranked match query on it (fuzziness AUTO, all words required), in place of
+// the *word* wildcard. This finds typos and other word forms, which SQL does
+// not, so the two backends match different documents for such a word.
 type ElasticsearchField struct {
 	Pattern string
 	Text    string
@@ -60,7 +66,43 @@ func NewElasticsearchDriver(fields []FieldInfo, opts ...ElasticsearchOption) (*E
 			return nil, fmt.Errorf("field '%s' is not a string; Pattern and Text apply to string fields only", name)
 		}
 	}
-	return &ElasticsearchDriver{fields: fieldMap, index: index}, nil
+	var implicit []FieldInfo
+	for _, f := range fields {
+		if f.ImplicitSearch {
+			implicit = append(implicit, f)
+		}
+	}
+	return &ElasticsearchDriver{fields: fieldMap, implicit: implicit, index: index}, nil
+}
+
+func (d *ElasticsearchDriver) hasText() bool {
+	for _, f := range d.index {
+		if f.Text != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// renderText renders a word typed without a field: a match query on each
+// implicit field with Text, and the *word* wildcard on the others.
+func (d *ElasticsearchDriver) renderText(word string) map[string]any {
+	clauses := make([]map[string]any, 0, len(d.implicit))
+	for _, f := range d.implicit {
+		if text := d.index[f.Name].Text; text != "" {
+			clauses = append(clauses, map[string]any{"match": map[string]any{
+				text: map[string]any{"query": word, "fuzziness": "AUTO", "operator": "and"},
+			}})
+			continue
+		}
+		clauses = append(clauses, map[string]any{"wildcard": map[string]any{
+			d.patternField(f.Name): map[string]any{"value": "*" + word + "*", "case_insensitive": true},
+		}})
+	}
+	if len(clauses) == 1 {
+		return clauses[0]
+	}
+	return esShould(clauses...)
 }
 
 // isStringField reports whether t, after pointers, is a string or a slice of
@@ -104,7 +146,7 @@ func (d *ElasticsearchDriver) render(e *expr.Expression) (map[string]any, error)
 			return nil, err
 		}
 		if e.Op == expr.And {
-			return esBool("filter", append(chain(left, "filter"), chain(right, "filter")...)...), nil
+			return esAnd(append(andClauses(left), andClauses(right)...)), nil
 		}
 		return esShould(append(chain(left, "should"), chain(right, "should")...)...), nil
 	case expr.Not, expr.MustNot:
@@ -160,6 +202,67 @@ func chain(q map[string]any, occur string) []map[string]any {
 	return []map[string]any{q}
 }
 
+// andClauses returns the clauses that q adds to a parent AND: the clauses of
+// a bool that only holds must and filter, or q itself.
+func andClauses(q map[string]any) []map[string]any {
+	b, ok := q["bool"].(map[string]any)
+	if !ok {
+		return []map[string]any{q}
+	}
+	for k := range b {
+		if k != "must" && k != "filter" {
+			return []map[string]any{q}
+		}
+	}
+	filter, _ := b["filter"].([]map[string]any)
+	must, _ := b["must"].([]map[string]any)
+	return append(append([]map[string]any{}, filter...), must...)
+}
+
+// esAnd puts each clause that scores (holds a match query) in must, so the
+// result is ranked, and every other clause in filter.
+func esAnd(clauses []map[string]any) map[string]any {
+	var must, filter []map[string]any
+	for _, c := range clauses {
+		if scores(c) {
+			must = append(must, c)
+		} else {
+			filter = append(filter, c)
+		}
+	}
+	b := map[string]any{}
+	if len(filter) > 0 {
+		b["filter"] = filter
+	}
+	if len(must) > 0 {
+		b["must"] = must
+	}
+	return map[string]any{"bool": b}
+}
+
+// scores reports whether q holds a match query outside must_not and filter,
+// the two contexts that do not score.
+func scores(q any) bool {
+	switch n := q.(type) {
+	case map[string]any:
+		for k, v := range n {
+			if k == "match" {
+				return true
+			}
+			if k != "must_not" && k != "filter" && scores(v) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, c := range n {
+			if scores(c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (d *ElasticsearchDriver) renderChild(parent *expr.Expression, child any) (map[string]any, error) {
 	e, ok := child.(*expr.Expression)
 	if !ok || e == nil {
@@ -169,6 +272,9 @@ func (d *ElasticsearchDriver) renderChild(parent *expr.Expression, child any) (m
 }
 
 func (d *ElasticsearchDriver) renderEquals(e *expr.Expression) (map[string]any, error) {
+	if name, ok := columnName(e.Left); ok && name == textField {
+		return d.renderText(extractLiteralValue(e.Right)), nil
+	}
 	name, t, err := d.field(e.Left)
 	if err != nil {
 		return nil, err

@@ -378,11 +378,53 @@ func (p *Parser) ParseToElasticsearch(query string, opts ...ElasticsearchOption)
 	if err != nil {
 		return nil, err
 	}
-	e, err := p.parseQueryCommon(query, "Elasticsearch")
+	parser := p
+	if driver.hasText() {
+		query = markTextTerms(query)
+		parser = p.withTextField()
+	}
+	e, err := parser.parseQueryCommon(query, "Elasticsearch")
 	if err != nil {
 		return nil, err
 	}
 	return driver.Render(e)
+}
+
+// textField marks a word typed without a field on the Elasticsearch path
+// with Text fields, so the driver renders it as full text. It is not a model
+// field: only withTextField's copy of the parser accepts it.
+const textField = "__text__"
+
+// markTextTerms rewrites each plain word without a field to textField:word.
+// A quoted phrase, a wildcard, a fuzzy, boost or regexp term and an escape
+// keep their meaning, so they go through the usual expansion.
+func markTextTerms(query string) string {
+	tokens := tokenizeQuery(query)
+	for i, token := range tokens {
+		if !isImplicitTerm(token) {
+			continue
+		}
+		prefix, term := "", token
+		if hasPrefixOperator(token) {
+			prefix, term = token[:1], token[1:]
+		}
+		if term == "" || strings.ContainsAny(term, `"*?~^/\`) {
+			continue
+		}
+		tokens[i] = prefix + textField + ":" + term
+	}
+	return strings.Join(tokens, " ")
+}
+
+// withTextField returns a copy of p that also accepts textField.
+func (p *Parser) withTextField() *Parser {
+	tp := *p
+	tp.Fields = append(append([]FieldInfo{}, p.Fields...), FieldInfo{Name: textField, Type: reflect.TypeOf("")})
+	tp.fieldMap = make(map[string]FieldInfo, len(tp.Fields))
+	for _, f := range tp.Fields {
+		tp.fieldMap[f.Name] = f
+	}
+	return &tp
 }
 
 func (p *Parser) validateQuery(query string) error {

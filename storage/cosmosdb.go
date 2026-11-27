@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"reflect"
@@ -515,6 +516,14 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 		return fmt.Errorf("failed to create container client: %v", err)
 	}
 	itemMap := s.itemToMap(item)
+
+	// The item's id addresses the document, and the filter is a condition on
+	// it. Without the id, the first document the filter matches would be
+	// overwritten. An item with no id is addressed by the filter alone.
+	if id, hasID := itemMap["id"]; hasID && id != "" {
+		filter = maps.Clone(filter)
+		filter["id"] = id
+	}
 
 	// Read, apply, and replace only if the document is still the one read. When
 	// another write lands in between, the If-Match fails with 412 and the change

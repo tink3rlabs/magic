@@ -336,3 +336,39 @@ func TestCosmosDBConcurrentUpdatesWithFieldsAllLand(t *testing.T) {
 		t.Fatalf("got %+v; want both fields written", got)
 	}
 }
+
+// Update addresses the item by its id; the filter is a condition on that item,
+// never a way to pick another document.
+func TestCosmosDBUpdateTargetsTheItemNotTheFirstFilterMatch(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	for _, item := range []*cosmosItem{{Id: "a", Name: "A", Color: "red"}, {Id: "b", Name: "B", Color: "blue"}} {
+		if err := s.Create(item); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+	err := s.Update(&cosmosItem{Id: "b", Name: "B2", Color: "red"}, map[string]any{"color": "red"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update of b filtered on a color b lacks = %v; want ErrNotFound", err)
+	}
+	var a cosmosItem
+	if err := s.Get(&a, map[string]any{"id": "a"}); err != nil {
+		t.Fatalf("Get a: %v", err)
+	}
+	if a.Name != "A" {
+		t.Fatalf("a = %+v; want it untouched", a)
+	}
+}
+
+func TestCosmosDBUpdateWithoutIdIsAddressedByTheFilter(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	if err := s.Create(&cosmosItem{Id: "a", Name: "A"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.Update(&cosmosItem{Name: "A2"}, map[string]any{"id": "a"}, WithFields("name")); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	var got cosmosItem
+	if err := s.Get(&got, map[string]any{"id": "a"}); err != nil || got.Name != "A2" {
+		t.Fatalf("got %+v, %v; want A2", got, err)
+	}
+}

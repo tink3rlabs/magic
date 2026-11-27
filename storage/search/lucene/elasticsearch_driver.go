@@ -1,6 +1,7 @@
 package lucene
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -73,6 +74,10 @@ func (d *ElasticsearchDriver) render(e *expr.Expression) (map[string]any, error)
 		return d.renderRange(e)
 	case expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
 		return d.renderComparison(e)
+	case expr.Fuzzy:
+		return d.renderFuzzy(e)
+	case expr.Boost:
+		return nil, fmt.Errorf("boost operator (^) is not supported in Elasticsearch filtering; it only affects ranking/scoring")
 	}
 	return nil, fmt.Errorf("operator %s is not supported for Elasticsearch", e.Op)
 }
@@ -121,11 +126,48 @@ func (d *ElasticsearchDriver) renderWildcard(e *expr.Expression) (map[string]any
 		if !isStringArray(t) {
 			return nil, fmt.Errorf("wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)", name, name)
 		}
-	} else if !acceptsWildcard(t) {
+	} else if !isKeywordLike(t) {
 		return nil, fmt.Errorf("wildcard matching is not supported on non-string field '%s'; use %s:value or a range", name, name)
 	}
 	return map[string]any{"wildcard": map[string]any{
 		name: map[string]any{"value": pattern, "case_insensitive": true},
+	}}, nil
+}
+
+// renderFuzzy renders field:term~N as a native fuzzy query. go-lucene keeps
+// the distance unexported; its JSON form is the only public view of it, and
+// leaves it out when it is the default of 1.
+func (d *ElasticsearchDriver) renderFuzzy(e *expr.Expression) (map[string]any, error) {
+	eq, ok := e.Left.(*expr.Expression)
+	if !ok || eq.Op != expr.Equals {
+		return nil, fmt.Errorf("fuzzy operator requires field:value syntax (e.g., name:roam~2)")
+	}
+	name, t, err := d.field(eq.Left)
+	if err != nil {
+		return nil, err
+	}
+	if isArrayField(t) {
+		return nil, fmt.Errorf("fuzzy matching is not supported on array field '%s'; use containment (%s:value) or a wildcard", name, name)
+	}
+	if !isKeywordLike(t) {
+		return nil, fmt.Errorf("fuzzy matching is not supported on non-string field '%s'; use %s:value or a range", name, name)
+	}
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	distance := struct {
+		Distance *int `json:"distance"`
+	}{}
+	if err := json.Unmarshal(raw, &distance); err != nil {
+		return nil, err
+	}
+	fuzziness := 1
+	if distance.Distance != nil {
+		fuzziness = *distance.Distance
+	}
+	return map[string]any{"fuzzy": map[string]any{
+		name: map[string]any{"value": extractLiteralValue(eq.Right), "fuzziness": fuzziness},
 	}}, nil
 }
 
@@ -191,11 +233,11 @@ func (d *ElasticsearchDriver) renderRange(e *expr.Expression) (map[string]any, e
 	return esRange(name, r), nil
 }
 
-// acceptsWildcard reports whether a field of type t is indexed as text that a
-// wildcard can match. Elasticsearch refuses a wildcard on a numeric, boolean
-// or date field with a server error. A uuid or other string-like value is a
-// keyword and matches.
-func acceptsWildcard(t reflect.Type) bool {
+// isKeywordLike reports whether a field of type t is indexed as a keyword that
+// a wildcard or fuzzy query can match. Elasticsearch refuses both on a numeric,
+// boolean or date field with a server error. A uuid or other string-like value
+// is a keyword and matches.
+func isKeywordLike(t reflect.Type) bool {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

@@ -86,6 +86,8 @@ func TestElasticsearchGolden(t *testing.T) {
 		{`meta.k:a`, `{"term":{"meta.k":{"value":"a"}}}`},
 		{`meta.k:null`, `{"bool":{"must_not":[{"exists":{"field":"meta.k"}}]}}`},
 		{`meta.k:a*`, `{"wildcard":{"meta.k":{"value":"a*","case_insensitive":true}}}`},
+		{`title:roam~2`, `{"fuzzy":{"title":{"value":"roam","fuzziness":2}}}`},
+		{`title:roam~`, `{"fuzzy":{"title":{"value":"roam","fuzziness":1}}}`},
 		{`status:open OR status:closed`, `{"bool":{"should":[{"term":{"status":{"value":"open"}}},{"term":{"status":{"value":"closed"}}}],"minimum_should_match":1}}`},
 	}
 	for _, tt := range tests {
@@ -167,6 +169,9 @@ func TestElasticsearchErrors(t *testing.T) {
 		{`tags:[a TO b]`, `range queries are not supported on array field 'tags'`},
 		{`tags:>a`, `operator GREATER is not supported on array field 'tags'`},
 		{`nums:abc`, `invalid value "abc" for integer array field 'nums'`},
+		{`title:x^2`, `boost operator (^) is not supported in Elasticsearch filtering`},
+		{`tags:go~1`, `fuzzy matching is not supported on array field 'tags'`},
+		{`year:2020~1`, `fuzzy matching is not supported on non-string field 'year'`},
 		{`nums:1*`, `wildcard matching is not supported on non-string array field 'nums'; use containment (nums:value)`},
 		{`year:20*`, `wildcard matching is not supported on non-string field 'year'`},
 		{`title:/ro.m/`, `regexp queries (field:/pattern/) are not supported`},

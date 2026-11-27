@@ -108,6 +108,56 @@ func TestElasticsearchGolden(t *testing.T) {
 	}
 }
 
+// Elasticsearch refuses a query nested deeper than 30 levels. go-lucene builds
+// AND and OR as binary trees, so a chain of one operator must render as one
+// flat clause list, or 31 ANDed terms fail on the server.
+func TestElasticsearchFlattensChains(t *testing.T) {
+	type wide struct {
+		A string `json:"a"`
+		B string `json:"b"`
+		C string `json:"c"`
+		D string `json:"d"`
+	}
+	p, err := NewParser(wide{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		query string
+		occur string
+		count int
+	}{
+		{`a:1 AND b:2 AND c:3 AND d:4`, "filter", 4},
+		{`a:1 OR b:2 OR c:3 OR d:4`, "should", 4},
+		{`room`, "should", 4},
+		{strings.Repeat(`a:1 AND `, 39) + `a:1`, "filter", 40},
+	}
+	for _, tt := range tests {
+		got, err := p.ParseToElasticsearch(tt.query)
+		if err != nil {
+			t.Fatalf("ParseToElasticsearch(%.40q) error = %v", tt.query, err)
+		}
+		clauses, _ := got["bool"].(map[string]any)[tt.occur].([]map[string]any)
+		if len(clauses) != tt.count {
+			b, _ := json.Marshal(got)
+			t.Errorf("ParseToElasticsearch(%.40q) = %.300s, want one bool.%s of %d clauses", tt.query, b, tt.occur, tt.count)
+		}
+	}
+
+	// An OR inside an AND keeps its own bool: flattening never changes meaning.
+	got, err := p.ParseToElasticsearch(`a:1 AND (b:2 OR c:3)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"bool":{"filter":[{"term":{"a":{"value":"1"}}},{"bool":{"should":[{"term":{"b":{"value":"2"}}},{"term":{"c":{"value":"3"}}}],"minimum_should_match":1}}]}}`
+	var w any
+	_ = json.Unmarshal([]byte(want), &w)
+	if !reflect.DeepEqual(jsonValue(t, got), w) {
+		b, _ := json.Marshal(got)
+		t.Errorf("a:1 AND (b:2 OR c:3)\n got: %s\nwant: %s", b, want)
+	}
+}
+
 // A uuid is stored as a keyword, so a wildcard on it is valid. A number, a
 // boolean or a date is not, and Elasticsearch would refuse it with a server
 // error, so the renderer refuses it first.

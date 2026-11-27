@@ -73,11 +73,25 @@ var parityQueries = []string{
 	`meta.k:a`,
 	`status:open AND year:[2020 TO *]`,
 
+	`tags:*`,
+
+	// Elasticsearch refuses a query nested deeper than 30 levels.
+	strings.Repeat(`status:open AND `, 39) + `status:open`,
+	strings.Repeat(`status:open OR `, 39) + `status:open`,
+	strings.TrimSpace(strings.Repeat(`room `, 35)),
+
 	`title:"x\"}},{\"script\":{\"source\":\"1\"}}"`,
 	`title:query_string*`,
 	`title:"a\\b"`,
 	`title:*`,
 	`script`,
+}
+
+// parityDivergence holds the search-server ids where they knowingly differ
+// from SQLite. SQL matches tags:* on an empty array (IS NOT NULL); a search
+// server indexes [] as no value, so exists skips document 3.
+var parityDivergence = map[string][]string{
+	`tags:*`: {"1", "2"},
 }
 
 // TestElasticsearchParity runs each query on SQLite through ParseToSQL and on
@@ -116,9 +130,13 @@ func TestElasticsearchParity(t *testing.T) {
 			index := newParityIndex(t, strings.TrimRight(url, "/"))
 			for _, q := range parityQueries {
 				t.Run(q, func(t *testing.T) {
+					expected, diverges := parityDivergence[q]
+					if !diverges {
+						expected = want[q]
+					}
 					got := index.ids(t, p, q)
-					if !reflect.DeepEqual(got, want[q]) {
-						t.Errorf("%s matched %v, SQLite matched %v", name, got, want[q])
+					if !reflect.DeepEqual(got, expected) {
+						t.Errorf("%s matched %v, want %v (SQLite matched %v)", name, got, expected, want[q])
 					}
 				})
 			}

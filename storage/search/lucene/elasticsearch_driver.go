@@ -47,9 +47,9 @@ func (d *ElasticsearchDriver) render(e *expr.Expression) (map[string]any, error)
 			return nil, err
 		}
 		if e.Op == expr.And {
-			return esBool("filter", left, right), nil
+			return esBool("filter", append(chain(left, "filter"), chain(right, "filter")...)...), nil
 		}
-		return esShould(left, right), nil
+		return esShould(append(chain(left, "should"), chain(right, "should")...)...), nil
 	case expr.Not, expr.MustNot:
 		// NOT field:null is "field has a value", not a double negation.
 		if eq, ok := nullEqualsOperand(e.Left); ok {
@@ -80,6 +80,27 @@ func (d *ElasticsearchDriver) render(e *expr.Expression) (map[string]any, error)
 		return nil, fmt.Errorf("boost operator (^) is not supported in Elasticsearch filtering; it only affects ranking/scoring")
 	}
 	return nil, fmt.Errorf("operator %s is not supported for Elasticsearch", e.Op)
+}
+
+// chain returns the clauses that q adds to a parent bool of the same occur.
+// go-lucene builds a AND b AND c as a binary tree, and Elasticsearch refuses a
+// query nested deeper than 30 levels, so a chain of one operator renders as
+// one flat list. Only a bool with this occur as its single role is merged: a
+// should list merges only when it also requires one match, as esShould does.
+func chain(q map[string]any, occur string) []map[string]any {
+	b, ok := q["bool"].(map[string]any)
+	if !ok {
+		return []map[string]any{q}
+	}
+	clauses, ok := b[occur].([]map[string]any)
+	switch {
+	case !ok:
+	case occur == "filter" && len(b) == 1:
+		return clauses
+	case occur == "should" && len(b) == 2 && b["minimum_should_match"] == 1:
+		return clauses
+	}
+	return []map[string]any{q}
 }
 
 func (d *ElasticsearchDriver) renderChild(parent *expr.Expression, child any) (map[string]any, error) {

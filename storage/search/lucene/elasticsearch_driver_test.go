@@ -71,6 +71,14 @@ func TestElasticsearchGolden(t *testing.T) {
 		{`tags:go*`, `{"wildcard":{"tags":{"value":"go*","case_insensitive":true}}}`},
 		{`title:*`, `{"exists":{"field":"title"}}`},
 		{`year:*`, `{"exists":{"field":"year"}}`},
+		{`year:[2020 TO 2024]`, `{"range":{"year":{"gte":2020,"lte":2024}}}`},
+		{`year:{2019 TO 2024}`, `{"range":{"year":{"gt":2019,"lt":2024}}}`},
+		{`year:[* TO 2020]`, `{"range":{"year":{"lte":2020}}}`},
+		{`year:{2019 TO *}`, `{"range":{"year":{"gt":2019}}}`},
+		{`year:>2020`, `{"range":{"year":{"gt":2020}}}`},
+		{`year:>=2020`, `{"range":{"year":{"gte":2020}}}`},
+		{`year:<2020`, `{"range":{"year":{"lt":2020}}}`},
+		{`year:<=2020`, `{"range":{"year":{"lte":2020}}}`},
 		{`status:open OR status:closed`, `{"bool":{"should":[{"term":{"status":{"value":"open"}}},{"term":{"status":{"value":"closed"}}}],"minimum_should_match":1}}`},
 	}
 	for _, tt := range tests {
@@ -144,6 +152,11 @@ func TestElasticsearchErrors(t *testing.T) {
 		wantErr string
 	}{
 		{`year:abc`, `invalid value "abc" for integer field 'year'`},
+		{`year:[* TO *]`, `both range bounds cannot be wildcards`},
+		{`year:[a TO 5]`, `invalid value "a" for integer field 'year'`},
+		{`year:>abc`, `invalid value "abc" for integer field 'year'`},
+		{`tags:[a TO b]`, `range queries are not supported on array field 'tags'`},
+		{`tags:>a`, `operator GREATER is not supported on array field 'tags'`},
 		{`nums:1*`, `wildcard matching is not supported on non-string array field 'nums'; use containment (nums:value)`},
 		{`year:20*`, `wildcard matching is not supported on non-string field 'year'`},
 		{`title:/ro.m/`, `regexp queries (field:/pattern/) are not supported`},

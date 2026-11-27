@@ -68,6 +68,10 @@ func (d *ElasticsearchDriver) render(e *expr.Expression) (map[string]any, error)
 		return d.renderEquals(e)
 	case expr.Like, expr.Wild:
 		return d.renderWildcard(e)
+	case expr.Range:
+		return d.renderRange(e)
+	case expr.Greater, expr.GreaterEq, expr.Less, expr.LessEq:
+		return d.renderComparison(e)
 	}
 	return nil, fmt.Errorf("operator %s is not supported for Elasticsearch", e.Op)
 }
@@ -112,7 +116,7 @@ func (d *ElasticsearchDriver) renderWildcard(e *expr.Expression) (map[string]any
 	if pattern == "*" {
 		return esExists(name), nil
 	}
-	if t := d.fields[name].Type; t != nil && t.Kind() == reflect.Slice {
+	if t := d.fields[name].Type; isArrayField(t) {
 		if !isStringArray(t) {
 			return nil, fmt.Errorf("wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)", name, name)
 		}
@@ -122,6 +126,68 @@ func (d *ElasticsearchDriver) renderWildcard(e *expr.Expression) (map[string]any
 	return map[string]any{"wildcard": map[string]any{
 		name: map[string]any{"value": pattern, "case_insensitive": true},
 	}}, nil
+}
+
+var esComparisons = map[expr.Operator]string{
+	expr.Greater:   "gt",
+	expr.GreaterEq: "gte",
+	expr.Less:      "lt",
+	expr.LessEq:    "lte",
+}
+
+// renderComparison renders field:>v, field:>=v, field:<v and field:<=v.
+func (d *ElasticsearchDriver) renderComparison(e *expr.Expression) (map[string]any, error) {
+	name, err := d.fieldName(e.Left)
+	if err != nil {
+		return nil, err
+	}
+	if isArrayField(d.fields[name].Type) {
+		return nil, fmt.Errorf("operator %s is not supported on array field '%s'; array fields support containment (%s:value) and null checks", e.Op, name, name)
+	}
+	v, err := normalizeScalarValue(name, d.fields[name].Type, extractLiteralValue(e.Right))
+	if err != nil {
+		return nil, err
+	}
+	return esRange(name, map[string]any{esComparisons[e.Op]: v.Val}), nil
+}
+
+// renderRange renders field:[a TO b] (inclusive) and field:{a TO b}
+// (exclusive). A * bound is open and leaves that side out.
+func (d *ElasticsearchDriver) renderRange(e *expr.Expression) (map[string]any, error) {
+	name, err := d.fieldName(e.Left)
+	if err != nil {
+		return nil, err
+	}
+	if isArrayField(d.fields[name].Type) {
+		return nil, fmt.Errorf("range queries are not supported on array field '%s'; array fields support containment (%s:value) and null checks", name, name)
+	}
+	bounds, ok := e.Right.(*expr.RangeBoundary)
+	if !ok {
+		return nil, fmt.Errorf("invalid range expression structure: expected *expr.RangeBoundary, got %T", e.Right)
+	}
+	lower, upper := "gt", "lt"
+	if bounds.Inclusive {
+		lower, upper = "gte", "lte"
+	}
+	r := map[string]any{}
+	for key, bound := range map[string]any{lower: bounds.Min, upper: bounds.Max} {
+		raw := "*"
+		if bound != nil {
+			raw = extractLiteralValue(bound)
+		}
+		if raw == "*" {
+			continue
+		}
+		v, err := normalizeScalarValue(name, d.fields[name].Type, raw)
+		if err != nil {
+			return nil, err
+		}
+		r[key] = v.Val
+	}
+	if len(r) == 0 {
+		return nil, fmt.Errorf("both range bounds cannot be wildcards")
+	}
+	return esRange(name, r), nil
 }
 
 // acceptsWildcard reports whether a field of type t is indexed as text that a
@@ -188,6 +254,10 @@ func (d *ElasticsearchDriver) fieldName(v any) (string, error) {
 
 func esTerm(field string, value any) map[string]any {
 	return map[string]any{"term": map[string]any{field: map[string]any{"value": value}}}
+}
+
+func esRange(field string, bounds map[string]any) map[string]any {
+	return map[string]any{"range": map[string]any{field: bounds}}
 }
 
 func esExists(field string) map[string]any {

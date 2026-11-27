@@ -229,32 +229,45 @@ func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	names := map[string]string{}
 	values := map[string]types.AttributeValue{}
 
-	// UpdateItem rejects a SET on a key attribute, so those are skipped rather
-	// than rejected: with no WithFields the write set is every attribute of the
-	// item, and the key is always among them.
+	// The write set comes from the struct, not the marshalled map: an omitempty
+	// field holding its zero value is missing from the map, and must be removed
+	// from the entry. UpdateItem rejects a SET on a key attribute, so those are
+	// skipped rather than rejected: with no WithFields the write set is every
+	// field of the item, and the key is always among them.
+	fields := dynamoFieldNames(reflect.TypeOf(item))
 	write := options.Fields
 	if !options.FieldsSet {
-		write = make([]string, 0, len(attributes))
-		for name := range attributes {
-			write = append(write, name)
-		}
-		sort.Strings(write) // a map range would vary the expression per call
+		write = fields
 	}
-	assignments := []string{}
+	assignments, removals := []string{}, []string{}
 	for _, field := range write {
 		if slices.Contains(keyNames, field) {
 			continue
 		}
-		value, present := attributes[field]
-		if !present {
+		if !slices.Contains(fields, field) {
 			return fmt.Errorf("unknown field %q on %s", field, table)
 		}
-		name, placeholder := fmt.Sprintf("#s%d", len(assignments)), fmt.Sprintf(":s%d", len(assignments))
-		names[name], values[placeholder] = field, value
+		n := len(assignments) + len(removals)
+		name := fmt.Sprintf("#s%d", n)
+		names[name] = field
+		value, present := attributes[field]
+		if !present {
+			removals = append(removals, name)
+			continue
+		}
+		placeholder := fmt.Sprintf(":s%d", n)
+		values[placeholder] = value
 		assignments = append(assignments, fmt.Sprintf("%s = %s", name, placeholder))
 	}
-	if len(assignments) == 0 {
+	if len(assignments)+len(removals) == 0 {
 		return errors.New("nothing to update: every field named is a key attribute")
+	}
+	update := []string{}
+	if len(assignments) > 0 {
+		update = append(update, "SET "+strings.Join(assignments, ", "))
+	}
+	if len(removals) > 0 {
+		update = append(update, "REMOVE "+strings.Join(removals, ", "))
 	}
 
 	// The entry must already exist -- UpdateItem would otherwise create it --
@@ -275,7 +288,7 @@ func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	_, err = s.DB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(table),
 		Key:                       key,
-		UpdateExpression:          aws.String("SET " + strings.Join(assignments, ", ")),
+		UpdateExpression:          aws.String(strings.Join(update, " ")),
 		ConditionExpression:       aws.String(strings.Join(conditions, " AND ")),
 		ExpressionAttributeNames:  names,
 		ExpressionAttributeValues: values,
@@ -292,6 +305,40 @@ func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	}
 	return nil
 }
+
+// dynamoFieldNames lists the attribute names t marshals to with the json tag,
+// in a stable order, including fields that omitempty may leave out.
+func dynamoFieldNames(t reflect.Type) []string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	names := []string{}
+	for i := range t.NumField() {
+		field := t.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		// An untagged embedded struct is flattened into its parent.
+		if field.Anonymous && name == "" {
+			names = append(names, dynamoFieldNames(field.Type)...)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 
 // keyAttributeNames returns the table's key attribute names, hash key first.
 // The schema is fixed for the life of a table, so it is fetched once per table

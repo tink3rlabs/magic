@@ -2,6 +2,8 @@ package storage
 
 import (
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -263,5 +265,22 @@ func TestDynamoDBBuildFilterMarshalsIntoMemberAttributeValue(t *testing.T) {
 	// Integer scalars marshal to AttributeValueMemberN.
 	if _, ok := values[0].(*types.AttributeValueMemberN); !ok {
 		t.Fatalf("values[0] = %T; want *AttributeValueMemberN", values[0])
+	}
+}
+
+func TestDynamoDBFieldNamesFollowJSONTags(t *testing.T) {
+	type audit struct {
+		CreatedBy string `json:"created_by,omitempty"`
+	}
+	type item struct {
+		audit
+		Id      string `json:"id"`
+		Note    string `json:"note,omitempty"`
+		Plain   string
+		Skipped string `json:"-"`
+	}
+	got := strings.Join(dynamoFieldNames(reflect.TypeOf(&item{})), ",")
+	if want := "Plain,created_by,id,note"; got != want {
+		t.Fatalf("dynamoFieldNames = %s; want %s", got, want)
 	}
 }

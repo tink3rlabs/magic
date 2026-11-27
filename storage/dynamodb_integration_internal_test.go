@@ -41,6 +41,7 @@ type dynamoItem struct {
 	Id    string `json:"id"`
 	Name  string `json:"name"`
 	Color string `json:"color"`
+	Note  string `json:"note,omitempty"`
 }
 
 func newDynamoTestAdapter(t *testing.T) *DynamoDBAdapter {
@@ -215,6 +216,44 @@ func TestDynamoDBUpdateHonoursWithFields(t *testing.T) {
 // the adapter appended ORDER BY regardless, so every unfiltered List with a
 // sort key came back as an opaque ValidationException from inside
 // ExecuteStatement. Fail with something that names the cause instead.
+// An omitempty field that is cleared is missing from the marshalled item, so
+// it must be removed from the entry, not skipped or reported as unknown.
+func TestDynamoDBUpdateClearsOmitemptyField(t *testing.T) {
+	cases := map[string][]Option{
+		"without WithFields": nil,
+		"with WithFields":    {WithFields("note")},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			adapter := newDynamoTestAdapter(t)
+			if err := adapter.Create(&dynamoItem{Id: "d1", Name: "n", Note: "keep me"}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := adapter.Update(&dynamoItem{Id: "d1", Name: "n"}, map[string]any{"id": "d1"}, opts...); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			var got dynamoItem
+			if err := adapter.Get(&got, map[string]any{"id": "d1"}); err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Note != "" || got.Name != "n" {
+				t.Fatalf("got %+v; want the note cleared and the name kept", got)
+			}
+		})
+	}
+}
+
+func TestDynamoDBUpdateRejectsUnknownField(t *testing.T) {
+	adapter := newDynamoTestAdapter(t)
+	if err := adapter.Create(&dynamoItem{Id: "d1", Name: "n"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	err := adapter.Update(&dynamoItem{Id: "d1"}, map[string]any{"id": "d1"}, WithFields("nmae"))
+	if err == nil || !strings.Contains(err.Error(), `unknown field "nmae"`) {
+		t.Fatalf("err = %v; want unknown field", err)
+	}
+}
+
 func TestDynamoDBListWithoutFilterRejectsOrdering(t *testing.T) {
 	adapter := newDynamoTestAdapter(t)
 

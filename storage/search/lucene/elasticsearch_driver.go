@@ -3,6 +3,7 @@ package lucene
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
@@ -51,7 +52,7 @@ func (d *ElasticsearchDriver) render(e *expr.Expression) (map[string]any, error)
 	case expr.Not, expr.MustNot:
 		// NOT field:null is "field has a value", not a double negation.
 		if eq, ok := nullEqualsOperand(e.Left); ok {
-			name, err := d.fieldName(eq.Left)
+			name, _, err := d.field(eq.Left)
 			if err != nil {
 				return nil, err
 			}
@@ -85,7 +86,7 @@ func (d *ElasticsearchDriver) renderChild(parent *expr.Expression, child any) (m
 }
 
 func (d *ElasticsearchDriver) renderEquals(e *expr.Expression) (map[string]any, error) {
-	name, err := d.fieldName(e.Left)
+	name, t, err := d.field(e.Left)
 	if err != nil {
 		return nil, err
 	}
@@ -95,17 +96,17 @@ func (d *ElasticsearchDriver) renderEquals(e *expr.Expression) (map[string]any, 
 	if group, ok := e.Right.(*expr.Expression); ok && isGroup(group) {
 		return d.render(onField(name, group))
 	}
-	v, err := normalizeScalarValue(name, d.fields[name].Type, extractLiteralValue(e.Right))
+	v, err := value(name, t, extractLiteralValue(e.Right))
 	if err != nil {
 		return nil, err
 	}
-	return esTerm(name, v.Val), nil
+	return esTerm(name, v), nil
 }
 
 // renderWildcard renders field:pattern. A bare * means "has a value", which
 // is also the only wildcard a non-string field accepts.
 func (d *ElasticsearchDriver) renderWildcard(e *expr.Expression) (map[string]any, error) {
-	name, err := d.fieldName(e.Left)
+	name, t, err := d.field(e.Left)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +117,7 @@ func (d *ElasticsearchDriver) renderWildcard(e *expr.Expression) (map[string]any
 	if pattern == "*" {
 		return esExists(name), nil
 	}
-	if t := d.fields[name].Type; isArrayField(t) {
+	if isArrayField(t) {
 		if !isStringArray(t) {
 			return nil, fmt.Errorf("wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)", name, name)
 		}
@@ -137,28 +138,28 @@ var esComparisons = map[expr.Operator]string{
 
 // renderComparison renders field:>v, field:>=v, field:<v and field:<=v.
 func (d *ElasticsearchDriver) renderComparison(e *expr.Expression) (map[string]any, error) {
-	name, err := d.fieldName(e.Left)
+	name, t, err := d.field(e.Left)
 	if err != nil {
 		return nil, err
 	}
-	if isArrayField(d.fields[name].Type) {
+	if isArrayField(t) {
 		return nil, fmt.Errorf("operator %s is not supported on array field '%s'; array fields support containment (%s:value) and null checks", e.Op, name, name)
 	}
-	v, err := normalizeScalarValue(name, d.fields[name].Type, extractLiteralValue(e.Right))
+	v, err := value(name, t, extractLiteralValue(e.Right))
 	if err != nil {
 		return nil, err
 	}
-	return esRange(name, map[string]any{esComparisons[e.Op]: v.Val}), nil
+	return esRange(name, map[string]any{esComparisons[e.Op]: v}), nil
 }
 
 // renderRange renders field:[a TO b] (inclusive) and field:{a TO b}
 // (exclusive). A * bound is open and leaves that side out.
 func (d *ElasticsearchDriver) renderRange(e *expr.Expression) (map[string]any, error) {
-	name, err := d.fieldName(e.Left)
+	name, t, err := d.field(e.Left)
 	if err != nil {
 		return nil, err
 	}
-	if isArrayField(d.fields[name].Type) {
+	if isArrayField(t) {
 		return nil, fmt.Errorf("range queries are not supported on array field '%s'; array fields support containment (%s:value) and null checks", name, name)
 	}
 	bounds, ok := e.Right.(*expr.RangeBoundary)
@@ -178,11 +179,11 @@ func (d *ElasticsearchDriver) renderRange(e *expr.Expression) (map[string]any, e
 		if raw == "*" {
 			continue
 		}
-		v, err := normalizeScalarValue(name, d.fields[name].Type, raw)
+		v, err := value(name, t, raw)
 		if err != nil {
 			return nil, err
 		}
-		r[key] = v.Val
+		r[key] = v
 	}
 	if len(r) == 0 {
 		return nil, fmt.Errorf("both range bounds cannot be wildcards")
@@ -239,17 +240,35 @@ func onField(name string, v any) *expr.Expression {
 	return &c
 }
 
-// fieldName resolves the field a leaf refers to. Validation has already
-// rejected unknown fields, so a miss here means an unexpected tree shape.
-func (d *ElasticsearchDriver) fieldName(v any) (string, error) {
+// field resolves the field a leaf refers to and its Go type. A JSON
+// sub-field (meta.k) has no Go type: its values stay strings. Validation has
+// already rejected unknown fields, so a miss here means an unexpected tree
+// shape.
+func (d *ElasticsearchDriver) field(v any) (string, reflect.Type, error) {
 	name, ok := columnName(v)
 	if !ok {
-		return "", fmt.Errorf("unexpected field reference %T in query", v)
+		return "", nil, fmt.Errorf("unexpected field reference %T in query", v)
 	}
-	if _, ok := d.fields[name]; !ok {
-		return "", fmt.Errorf("unknown field '%s' in query", name)
+	if info, ok := d.fields[name]; ok {
+		return name, info.Type, nil
 	}
-	return name, nil
+	if base, _, ok := strings.Cut(name, "."); ok {
+		if info, ok := d.fields[base]; ok && canUseNestedAccess(info.Type) {
+			return name, nil, nil
+		}
+	}
+	return "", nil, fmt.Errorf("unknown field '%s' in query", name)
+}
+
+// value types raw against a field: an array field checks it against the
+// element type, a single-valued field against its own type.
+func value(name string, t reflect.Type, raw string) (any, error) {
+	normalize := normalizeScalarValue
+	if isArrayField(t) {
+		normalize = normalizeArrayElemValue
+	}
+	v, err := normalize(name, t, raw)
+	return v.Val, err
 }
 
 func esTerm(field string, value any) map[string]any {

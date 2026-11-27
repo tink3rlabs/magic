@@ -79,6 +79,13 @@ func TestElasticsearchGolden(t *testing.T) {
 		{`year:>=2020`, `{"range":{"year":{"gte":2020}}}`},
 		{`year:<2020`, `{"range":{"year":{"lt":2020}}}`},
 		{`year:<=2020`, `{"range":{"year":{"lte":2020}}}`},
+		{`tags:golang`, `{"term":{"tags":{"value":"golang"}}}`},
+		{`NOT tags:golang`, `{"bool":{"must_not":[{"term":{"tags":{"value":"golang"}}}]}}`},
+		{`nums:5`, `{"term":{"nums":{"value":5}}}`},
+		{`tags:null`, `{"bool":{"must_not":[{"exists":{"field":"tags"}}]}}`},
+		{`meta.k:a`, `{"term":{"meta.k":{"value":"a"}}}`},
+		{`meta.k:null`, `{"bool":{"must_not":[{"exists":{"field":"meta.k"}}]}}`},
+		{`meta.k:a*`, `{"wildcard":{"meta.k":{"value":"a*","case_insensitive":true}}}`},
 		{`status:open OR status:closed`, `{"bool":{"should":[{"term":{"status":{"value":"open"}}},{"term":{"status":{"value":"closed"}}}],"minimum_should_match":1}}`},
 	}
 	for _, tt := range tests {
@@ -141,10 +148,12 @@ func TestElasticsearchWildcardByFieldType(t *testing.T) {
 func TestElasticsearchErrors(t *testing.T) {
 	p := newESParser(t)
 
-	_, err := p.ParseToElasticsearch(`nope:x`)
-	var invalid *InvalidFieldError
-	if !errors.As(err, &invalid) {
-		t.Errorf("nope:x error = %v, want *InvalidFieldError", err)
+	for _, q := range []string{`nope:x`, `nope.k:a`} {
+		_, err := p.ParseToElasticsearch(q)
+		var invalid *InvalidFieldError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s error = %v, want *InvalidFieldError", q, err)
+		}
 	}
 
 	tests := []struct {
@@ -157,6 +166,7 @@ func TestElasticsearchErrors(t *testing.T) {
 		{`year:>abc`, `invalid value "abc" for integer field 'year'`},
 		{`tags:[a TO b]`, `range queries are not supported on array field 'tags'`},
 		{`tags:>a`, `operator GREATER is not supported on array field 'tags'`},
+		{`nums:abc`, `invalid value "abc" for integer array field 'nums'`},
 		{`nums:1*`, `wildcard matching is not supported on non-string array field 'nums'; use containment (nums:value)`},
 		{`year:20*`, `wildcard matching is not supported on non-string field 'year'`},
 		{`title:/ro.m/`, `regexp queries (field:/pattern/) are not supported`},

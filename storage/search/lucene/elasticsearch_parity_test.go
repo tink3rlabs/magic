@@ -165,7 +165,7 @@ func sqliteIDs(t *testing.T, p *Parser, db *sql.DB, q string) []string {
 	if err != nil {
 		t.Fatalf("SQLite query for %q: %v", q, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := []string{}
 	for rows.Next() {
 		var id string
@@ -253,7 +253,7 @@ func esCall(t *testing.T, method, url, contentType, body string) []byte {
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	out, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
 		t.Fatalf("%s %s: %s: %s", method, url, resp.Status, out)

@@ -105,6 +105,8 @@ adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.DYNAMODB, conf
 
 When `access_key` / `secret_key` are empty, the adapter uses the standard AWS credential provider chain (env vars, IRSA, instance role).
 
+`Update` reads the table's key schema once per table with `DescribeTable`, so the credentials need `dynamodb:DescribeTable` as well as `dynamodb:UpdateItem`.
+
 DynamoDB reads these [options](#options):
 
 | Option | Applies to | Meaning |
@@ -200,6 +202,9 @@ off the item; the field defaults to `"pk"` when neither is given. With the field
 alone, `Get`, `List`, `Search` and `Update` look in every partition, `Delete`
 reads the value from its filter, and `Count` returns an error, because it needs
 a value.
+
+!!! warning "List and Search need the partition key on large containers"
+    Without a partition key, `List` and `Search` run a cross-partition query with `ORDER BY`. The Go SDK sends it through the gateway, and the gateway rejects a cross-partition `ORDER BY` once a container spans more than one physical partition. The call then returns that error. Pass `WithPartitionKey` to `List` and `Search` on such containers. `Get`, `Update` and `Query` without an `ORDER BY` are not affected.
 
 #### Read-your-writes
 
@@ -320,7 +325,10 @@ whether or not they hold a zero value. An unknown field name, or no field at
 all, is an error rather than a silently wider write.
 
 On DynamoDB and CosmosDB, `Update` also keeps attributes the item's struct does
-not declare, and removes an `omitempty` field that holds its zero value.
+not declare, and removes a declared field that the item leaves out of its JSON:
+an `omitempty` field that holds its zero value, or the fields of a nil embedded
+pointer. On CosmosDB the item's id addresses the document, and the filter is a
+condition on it.
 
 CosmosDB has no partial update, so `Update` reads the document, applies the
 fields and replaces it on the condition that its ETag has not changed. When

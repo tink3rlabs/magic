@@ -524,8 +524,13 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 
 	// The item's id addresses the document, and the filter is a condition on
 	// it. Without the id, the first document the filter matches would be
-	// overwritten. An item with no id is addressed by the filter alone.
+	// overwritten. An item with no id is addressed by the filter alone. An id
+	// in the filter is a condition too: one that differs from the item's
+	// matches nothing, so a caller that authorized that id never writes another.
 	if id, hasID := itemMap["id"]; hasID && id != "" {
+		if filterID, inFilter := filter["id"]; inFilter && filterID != id {
+			return ErrNotFound
+		}
 		filter = maps.Clone(filter)
 		filter["id"] = id
 	}

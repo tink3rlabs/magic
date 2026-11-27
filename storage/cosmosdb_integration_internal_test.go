@@ -372,3 +372,25 @@ func TestCosmosDBUpdateWithoutIdIsAddressedByTheFilter(t *testing.T) {
 		t.Fatalf("got %+v, %v; want A2", got, err)
 	}
 }
+
+// A service may authorize by the filter's id and take the item from a request
+// body. An item id that differs from the filter's must match nothing, never
+// retarget the write to the body's id.
+func TestCosmosDBUpdateWithMismatchedIdsMatchesNothing(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	for _, item := range []*cosmosItem{{Id: "mine", Name: "M"}, {Id: "theirs", Name: "T"}} {
+		if err := s.Create(item); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+	err := s.Update(&cosmosItem{Id: "theirs", Name: "hijacked"}, map[string]any{"id": "mine"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update = %v; want ErrNotFound", err)
+	}
+	for id, want := range map[string]string{"mine": "M", "theirs": "T"} {
+		var got cosmosItem
+		if err := s.Get(&got, map[string]any{"id": id}); err != nil || got.Name != want {
+			t.Fatalf("%s = %+v, %v; want name %s untouched", id, got, err, want)
+		}
+	}
+}

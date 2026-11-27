@@ -59,6 +59,9 @@ func TestElasticsearchGolden(t *testing.T) {
 		{`NOT status:closed`, notClosed},
 		{`-status:closed`, notClosed},
 		{`status:open AND year:2021`, `{"bool":{"filter":[{"term":{"status":{"value":"open"}}},{"term":{"year":{"value":2021}}}]}}`},
+		{`status:(open OR null)`, `{"bool":{"should":[{"term":{"status":{"value":"open"}}},{"bool":{"must_not":[{"exists":{"field":"status"}}]}}],"minimum_should_match":1}}`},
+		{`status:(open AND closed)`, `{"bool":{"filter":[{"term":{"status":{"value":"open"}}},{"term":{"status":{"value":"closed"}}}]}}`},
+		{`tags:(go OR rust)`, `{"bool":{"should":[{"term":{"tags":{"value":"go"}}},{"term":{"tags":{"value":"rust"}}}],"minimum_should_match":1}}`},
 		{`status:open OR status:closed`, `{"bool":{"should":[{"term":{"status":{"value":"open"}}},{"term":{"status":{"value":"closed"}}}],"minimum_should_match":1}}`},
 	}
 	for _, tt := range tests {
@@ -76,6 +79,22 @@ func TestElasticsearchGolden(t *testing.T) {
 				t.Errorf("ParseToElasticsearch(%q)\n got: %s\nwant: %s", tt.query, gb, tt.want)
 			}
 		})
+	}
+}
+
+// go-lucene parses field:(a OR b) with each value on its default field ("id"
+// for esDoc). Each value must apply to the outer field instead.
+func TestElasticsearchGroupUsesOuterField(t *testing.T) {
+	p := newESParser(t)
+	for _, q := range []string{`status:(open OR null)`, `status:(open AND closed)`, `tags:(go OR rust)`} {
+		got, err := p.ParseToElasticsearch(q)
+		if err != nil {
+			t.Fatalf("ParseToElasticsearch(%q) error = %v", q, err)
+		}
+		b, _ := json.Marshal(got)
+		if strings.Contains(string(b), `"id"`) {
+			t.Errorf("ParseToElasticsearch(%q) = %s, names the default field", q, b)
+		}
 	}
 }
 

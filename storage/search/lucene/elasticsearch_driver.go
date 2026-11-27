@@ -84,11 +84,39 @@ func (d *ElasticsearchDriver) renderEquals(e *expr.Expression) (map[string]any, 
 	if isNullValue(e.Right) {
 		return esBool("must_not", esExists(name)), nil
 	}
+	if group, ok := e.Right.(*expr.Expression); ok && isGroup(group) {
+		return d.render(onField(name, group))
+	}
 	v, err := normalizeScalarValue(name, d.fields[name].Type, extractLiteralValue(e.Right))
 	if err != nil {
 		return nil, err
 	}
 	return esTerm(name, v.Val), nil
+}
+
+// onField returns a copy of the grouped value list v with each value bound to
+// field name. go-lucene parses field:(a OR b) as EQUALS(field, OR(a, b)), and
+// a value inside the group may carry the parser's default field instead of
+// the outer one. Each rebound leaf then renders like field:a.
+func onField(name string, v any) *expr.Expression {
+	e, ok := v.(*expr.Expression)
+	if !ok || e.Op == expr.Literal || e.Op == expr.Null {
+		return &expr.Expression{Op: expr.Equals, Left: expr.Column(name), Right: v}
+	}
+	c := *e
+	switch e.Op {
+	case expr.And, expr.Or:
+		c.Left = onField(name, e.Left)
+		c.Right = onField(name, e.Right)
+	case expr.Not, expr.MustNot, expr.Must, expr.Fuzzy, expr.Boost:
+		c.Left = onField(name, e.Left)
+	default:
+		if isGroup(e.Right) {
+			return onField(name, e.Right)
+		}
+		c.Left = expr.Column(name)
+	}
+	return &c
 }
 
 // fieldName resolves the field a leaf refers to. Validation has already

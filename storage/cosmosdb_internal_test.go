@@ -1474,3 +1474,13 @@ func TestCosmosDBGetAfterDeleteSendsDeleteSessionToken(t *testing.T) {
 		t.Fatalf("Get after Delete sent session token %q; want %q", got, "0:-1#43")
 	}
 }
+
+// A caller who names fields expects the others to be left alone. CosmosDB
+// replaces the whole document, so it must refuse rather than drop the option.
+func TestCosmosDBUpdateRejectsWithFields(t *testing.T) {
+	s := &CosmosDBAdapter{}
+	err := s.Update(&cosmosSampleItem{Id: "1"}, map[string]any{"id": "1"}, WithFields("status"))
+	if err == nil || !strings.Contains(err.Error(), "WithFields is not supported by the CosmosDB adapter") {
+		t.Fatalf("err = %v; want WithFields rejected", err)
+	}
+}

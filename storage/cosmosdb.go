@@ -478,6 +478,9 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	if err != nil {
 		return err
 	}
+	if options.FieldsSet {
+		return errors.New("WithFields is not supported by the CosmosDB adapter: Update replaces the whole document")
+	}
 
 	containerName := s.getContainerName(item)
 	containerClient, err := s.databaseClient.NewContainer(containerName)

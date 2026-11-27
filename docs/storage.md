@@ -316,6 +316,9 @@ err := adapter.Update(&task, filter, storage.WithFields("title", "modified_at"))
 whether or not they hold a zero value. An unknown field name, or no field at
 all, is an error rather than a silently wider write.
 
+CosmosDB replaces the whole document on `Update`, so it returns an error for
+`WithFields` instead of ignoring it.
+
 ### Not-found
 
 ```go

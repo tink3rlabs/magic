@@ -237,36 +237,89 @@ func TestElasticsearchUserTextStaysAValue(t *testing.T) {
 		`title:*`,
 		`script`,
 	}
+	withPattern := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc"}})
 	for _, q := range queries {
-		t.Run(q, func(t *testing.T) {
-			got, err := p.ParseToElasticsearch(q)
-			if err != nil {
-				t.Fatalf("ParseToElasticsearch(%q) error = %v", q, err)
-			}
-			var walk func(key string, v any)
-			walk = func(key string, v any) {
-				switch n := v.(type) {
-				case map[string]any:
-					for k, child := range n {
-						if forbidden[k] {
-							t.Errorf("ParseToElasticsearch(%q) has key %q", q, k)
+		for _, opts := range [][]ElasticsearchOption{nil, {withPattern}} {
+			t.Run(q, func(t *testing.T) {
+				got, err := p.ParseToElasticsearch(q, opts...)
+				if err != nil {
+					t.Fatalf("ParseToElasticsearch(%q) error = %v", q, err)
+				}
+				var walk func(key string, v any)
+				walk = func(key string, v any) {
+					switch n := v.(type) {
+					case map[string]any:
+						for k, child := range n {
+							if forbidden[k] {
+								t.Errorf("ParseToElasticsearch(%q) has key %q", q, k)
+							}
+							walk(k, child)
 						}
-						walk(k, child)
-					}
-				case []any:
-					for _, child := range n {
-						walk(key, child)
-					}
-				case string:
-					switch {
-					case key == "value":
-					case key == "field" && fields[n]:
-					default:
-						t.Errorf("ParseToElasticsearch(%q): string %q under key %q, want only under \"value\"", q, n, key)
+					case []any:
+						for _, child := range n {
+							walk(key, child)
+						}
+					case string:
+						switch {
+						case key == "value":
+						case key == "field" && fields[n]:
+						default:
+							t.Errorf("ParseToElasticsearch(%q): string %q under key %q, want only under \"value\"", q, n, key)
+						}
 					}
 				}
-			}
-			walk("", jsonValue(t, got))
-		})
+				walk("", jsonValue(t, got))
+			})
+		}
+	}
+}
+
+// assertDSL fails when got does not serialise to the same document as want.
+func assertDSL(t *testing.T, query string, got map[string]any, want string) {
+	t.Helper()
+	var w any
+	if err := json.Unmarshal([]byte(want), &w); err != nil {
+		t.Fatalf("bad want JSON for %q: %v", query, err)
+	}
+	if !reflect.DeepEqual(jsonValue(t, got), w) {
+		b, _ := json.Marshal(got)
+		t.Errorf("ParseToElasticsearch(%q)\n got: %s\nwant: %s", query, b, want)
+	}
+}
+
+// With Pattern, wildcards and fuzzy go to a lowercase-normalized sub-field, so
+// case folds in every language. A term stays on the exact field, as on SQL.
+func TestElasticsearchFieldOptions(t *testing.T) {
+	p := newESParser(t)
+	opt := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc"}})
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{`title:тръб*`, `{"wildcard":{"title.lc":{"value":"тръб*","case_insensitive":true}}}`},
+		{`title:тръба~1`, `{"fuzzy":{"title.lc":{"value":"тръба","fuzziness":1}}}`},
+		{`title:Тръба`, `{"term":{"title":{"value":"Тръба"}}}`},
+		{`title:*`, `{"exists":{"field":"title"}}`},
+		{`status:open`, `{"term":{"status":{"value":"open"}}}`},
+	}
+	for _, tt := range tests {
+		got, err := p.ParseToElasticsearch(tt.query, opt)
+		if err != nil {
+			t.Fatalf("ParseToElasticsearch(%q) error = %v", tt.query, err)
+		}
+		assertDSL(t, tt.query, got, tt.want)
+	}
+
+	for opts, wantErr := range map[string]struct {
+		fields map[string]ElasticsearchField
+		err    string
+	}{
+		"unknown": {map[string]ElasticsearchField{"nmae": {Pattern: "nmae.lc"}}, `unknown field 'nmae' in ElasticsearchField options; valid fields are:`},
+		"number":  {map[string]ElasticsearchField{"year": {Pattern: "year.lc"}}, `field 'year' is not a string; Pattern and Text apply to string fields only`},
+	} {
+		_, err := p.ParseToElasticsearch(`title:x`, WithElasticsearchFields(wantErr.fields))
+		if err == nil || !strings.Contains(err.Error(), wantErr.err) {
+			t.Errorf("%s: error = %v, want it to contain %q", opts, err, wantErr.err)
+		}
 	}
 }

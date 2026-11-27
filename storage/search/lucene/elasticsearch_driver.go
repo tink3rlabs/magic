@@ -16,14 +16,71 @@ import (
 // term, wildcard, range or fuzzy clause, never part of a query string.
 type ElasticsearchDriver struct {
 	fields map[string]FieldInfo
+	index  map[string]ElasticsearchField
 }
 
-func NewElasticsearchDriver(fields []FieldInfo) (*ElasticsearchDriver, error) {
+// ElasticsearchField names the sub-fields of one string field in the index.
+//
+// Pattern is a keyword sub-field with a lowercase normalizer. Wildcards and
+// fuzzy queries go there, so case folds in every language: the server's
+// case_insensitive flag folds ASCII letters only. A term stays on the field
+// itself and matches exactly, as on SQL.
+type ElasticsearchField struct {
+	Pattern string
+	Text    string
+}
+
+// ElasticsearchOption configures ParseToElasticsearch.
+type ElasticsearchOption func(*map[string]ElasticsearchField)
+
+// WithElasticsearchFields names the sub-fields of model fields, by json name.
+func WithElasticsearchFields(fields map[string]ElasticsearchField) ElasticsearchOption {
+	return func(m *map[string]ElasticsearchField) { *m = fields }
+}
+
+func NewElasticsearchDriver(fields []FieldInfo, opts ...ElasticsearchOption) (*ElasticsearchDriver, error) {
 	fieldMap, err := buildFieldMap(fields)
 	if err != nil {
 		return nil, err
 	}
-	return &ElasticsearchDriver{fields: fieldMap}, nil
+	var index map[string]ElasticsearchField
+	for _, opt := range opts {
+		opt(&index)
+	}
+	for name := range index {
+		info, ok := fieldMap[name]
+		if !ok {
+			valid := make([]string, 0, len(fields))
+			for _, f := range fields {
+				valid = append(valid, f.Name)
+			}
+			return nil, fmt.Errorf("unknown field '%s' in ElasticsearchField options; valid fields are: %s", name, strings.Join(valid, ", "))
+		}
+		if !isStringField(info.Type) {
+			return nil, fmt.Errorf("field '%s' is not a string; Pattern and Text apply to string fields only", name)
+		}
+	}
+	return &ElasticsearchDriver{fields: fieldMap, index: index}, nil
+}
+
+// isStringField reports whether t, after pointers, is a string or a slice of
+// strings.
+func isStringField(t reflect.Type) bool {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return false
+	}
+	return t.Kind() == reflect.String || (isArrayField(t) && isStringArray(t))
+}
+
+// patternField is the field a wildcard or fuzzy query on name targets.
+func (d *ElasticsearchDriver) patternField(name string) string {
+	if f := d.index[name].Pattern; f != "" {
+		return f
+	}
+	return name
 }
 
 // Render converts e to a Query DSL object. A nil expression (an empty query)
@@ -151,7 +208,7 @@ func (d *ElasticsearchDriver) renderWildcard(e *expr.Expression) (map[string]any
 		return nil, fmt.Errorf("wildcard matching is not supported on non-string field '%s'; use %s:value or a range", name, name)
 	}
 	return map[string]any{"wildcard": map[string]any{
-		name: map[string]any{"value": pattern, "case_insensitive": true},
+		d.patternField(name): map[string]any{"value": pattern, "case_insensitive": true},
 	}}, nil
 }
 
@@ -188,7 +245,7 @@ func (d *ElasticsearchDriver) renderFuzzy(e *expr.Expression) (map[string]any, e
 		fuzziness = *distance.Distance
 	}
 	return map[string]any{"fuzzy": map[string]any{
-		name: map[string]any{"value": extractLiteralValue(eq.Right), "fuzziness": fuzziness},
+		d.patternField(name): map[string]any{"value": extractLiteralValue(eq.Right), "fuzziness": fuzziness},
 	}}, nil
 }
 

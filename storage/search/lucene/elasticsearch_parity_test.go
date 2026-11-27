@@ -35,17 +35,23 @@ type parityDoc struct {
 //	 2 | closed | roam      | 2024 | [rust]            | {k: b}
 //	 3 | -      | Boardroom | 2019 | []                | {}
 //	 4 | open   | kitchen   | -    | -                 | {k: a}
+//	 5 | open   | ТРЪБА PVC Ф 63 | 2022 | -            | -
 var parityFixture = []map[string]any{
 	{"id": "1", "status": "open", "title": "Room 12", "year": 2021, "tags": []string{"golang", "gopher"}, "meta": map[string]any{"k": "a"}},
 	{"id": "2", "status": "closed", "title": "roam", "year": 2024, "tags": []string{"rust"}, "meta": map[string]any{"k": "b"}},
 	{"id": "3", "title": "Boardroom", "year": 2019, "tags": []string{}, "meta": map[string]any{}},
 	{"id": "4", "status": "open", "title": "kitchen", "meta": map[string]any{"k": "a"}},
+	{"id": "5", "status": "open", "title": "ТРЪБА PVC Ф 63", "year": 2022},
 }
 
-const parityMapping = `{"mappings":{"properties":{
+const parityMapping = `{
+"settings":{"analysis":{"normalizer":{"lc":{"type":"custom","filter":["lowercase"]}}}},
+"mappings":{"properties":{
 	"id":{"type":"keyword"},
 	"status":{"type":"keyword"},
-	"title":{"type":"keyword"},
+	"title":{"type":"keyword","fields":{
+		"lc":{"type":"keyword","normalizer":"lc"},
+		"text":{"type":"text","analyzer":"bulgarian"}}},
 	"year":{"type":"integer"},
 	"tags":{"type":"keyword"},
 	"meta":{"properties":{"k":{"type":"keyword"}}}
@@ -74,6 +80,7 @@ var parityQueries = []string{
 	`status:open AND year:[2020 TO *]`,
 
 	`tags:*`,
+	`tags:Golang`,
 
 	// Elasticsearch refuses a query nested deeper than 30 levels.
 	strings.Repeat(`status:open AND `, 39) + `status:open`,
@@ -90,6 +97,16 @@ var parityQueries = []string{
 // parityDivergence holds the search-server ids where they knowingly differ
 // from SQLite. SQL matches tags:* on an empty array (IS NOT NULL); a search
 // server indexes [] as no value, so exists skips document 3.
+// parityWithPattern runs with Pattern set on title. SQLite's LIKE folds
+// ASCII only, so the ids are pinned: PostgreSQL's ILIKE matches the same.
+var parityWithPattern = map[string][]string{
+	`title:*тръба*`: {"5"},
+	`title:*ТРЪБА*`: {"5"},
+	`title:тръба*`:  {"5"},
+	`title:*room*`:  {"1", "3"},
+	`tags:Golang`:   {},
+}
+
 var parityDivergence = map[string][]string{
 	`tags:*`: {"1", "2"},
 }
@@ -128,6 +145,14 @@ func TestElasticsearchParity(t *testing.T) {
 		ran = true
 		t.Run(name, func(t *testing.T) {
 			index := newParityIndex(t, strings.TrimRight(url, "/"))
+			t.Run("with Pattern", func(t *testing.T) {
+				opt := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Pattern: "title.lc"}})
+				for q, expected := range parityWithPattern {
+					if got := index.ids(t, p, q, opt); !reflect.DeepEqual(got, expected) {
+						t.Errorf("%s %s matched %v, want %v", name, q, got, expected)
+					}
+				}
+			})
 			for _, q := range parityQueries {
 				t.Run(q, func(t *testing.T) {
 					expected, diverges := parityDivergence[q]
@@ -163,8 +188,10 @@ func newParityDB(t *testing.T) *sql.DB {
 			b, _ := json.Marshal(v)
 			tags = string(b)
 		}
-		b, _ := json.Marshal(doc["meta"])
-		meta = string(b)
+		if v, ok := doc["meta"]; ok {
+			b, _ := json.Marshal(v)
+			meta = string(b)
+		}
 		if _, err := db.Exec(`INSERT INTO docs VALUES (?, ?, ?, ?, ?, ?)`,
 			doc["id"], doc["status"], doc["title"], doc["year"], tags, meta); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -230,9 +257,9 @@ func newParityIndex(t *testing.T, server string) parityIndex {
 	return idx
 }
 
-func (idx parityIndex) ids(t *testing.T, p *Parser, q string) []string {
+func (idx parityIndex) ids(t *testing.T, p *Parser, q string, opts ...ElasticsearchOption) []string {
 	t.Helper()
-	dsl, err := p.ParseToElasticsearch(q)
+	dsl, err := p.ParseToElasticsearch(q, opts...)
 	if err != nil {
 		t.Fatalf("ParseToElasticsearch(%q): %v", q, err)
 	}

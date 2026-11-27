@@ -373,12 +373,12 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 //
 // A cluster with search.allow_expensive_queries set to false refuses every
 // wildcard and fuzzy query, including the *word* expansion of a plain word.
-func (p *Parser) ParseToElasticsearch(query string) (map[string]any, error) {
-	e, err := p.parseQueryCommon(query, "Elasticsearch")
+func (p *Parser) ParseToElasticsearch(query string, opts ...ElasticsearchOption) (map[string]any, error) {
+	driver, err := NewElasticsearchDriver(p.Fields, opts...)
 	if err != nil {
 		return nil, err
 	}
-	driver, err := NewElasticsearchDriver(p.Fields)
+	e, err := p.parseQueryCommon(query, "Elasticsearch")
 	if err != nil {
 		return nil, err
 	}

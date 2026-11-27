@@ -353,3 +353,14 @@ func TestElasticsearchTextFields(t *testing.T) {
 		assertDSL(t, tt.query, got, tt.want)
 	}
 }
+
+// The text marker is internal: an unknown-field error never offers it.
+func TestElasticsearchTextMarkerStaysInternal(t *testing.T) {
+	p := newESParser(t)
+	opt := WithElasticsearchFields(map[string]ElasticsearchField{"title": {Text: "title.text"}})
+	_, err := p.ParseToElasticsearch(`nope:x`, opt)
+	var invalid *InvalidFieldError
+	if !errors.As(err, &invalid) || strings.Contains(err.Error(), textField) {
+		t.Errorf("nope:x error = %v, want *InvalidFieldError without %s", err, textField)
+	}
+}

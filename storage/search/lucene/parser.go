@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -392,6 +393,10 @@ func (p *Parser) ParseToElasticsearch(query string, opts ...ElasticsearchOption)
 		parser = p.withTextField()
 	}
 	e, err := parser.parseQueryCommon(query, "Elasticsearch")
+	var invalid *InvalidFieldError
+	if errors.As(err, &invalid) {
+		invalid.ValidFields = slices.DeleteFunc(invalid.ValidFields, func(f string) bool { return f == textField })
+	}
 	if err != nil {
 		return nil, err
 	}

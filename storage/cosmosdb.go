@@ -797,7 +797,7 @@ func (s *CosmosDBAdapter) QueryContext(ctx context.Context, dest any, statement 
 
 	// Execute the custom SQL statement
 	// Cross-partition is enabled by default for custom queries
-	pager := containerClient.NewQueryItemsPager(statement, azcosmos.NewPartitionKeyString(""), queryOptions)
+	pager := containerClient.NewQueryItemsPager(statement, azcosmos.NewPartitionKey(), queryOptions)
 
 	// Get first page
 	page, err := pager.NextPage(ctx)
@@ -1033,7 +1033,7 @@ func (s *CosmosDBAdapter) executeQuery(
 		// Cross-partition query
 		enableCrossPartition := true
 		queryOptions.EnableCrossPartitionQuery = &enableCrossPartition
-		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(""), queryOptions)
+		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKey(), queryOptions)
 		page, err = pager.NextPage(ctx)
 	}
 

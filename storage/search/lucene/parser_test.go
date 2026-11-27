@@ -992,6 +992,56 @@ func TestBoostOperatorError(t *testing.T) {
 	}
 }
 
+// A regexp has no rendering in any driver. Each driver used to drop the
+// /.../ marker and match the pattern as literal text, with no error (#301).
+func TestRegexpQueryError(t *testing.T) {
+	parser, err := NewParser(BasicModel{})
+	if err != nil {
+		t.Fatalf("NewParser() error = %v", err)
+	}
+
+	queries := []string{
+		"name:/ro.m/",
+		"/ro.m/",
+		"NOT name:/ro.m/",
+		"-name:/ro.m/",
+		"name:(/ro.m/ OR bob)",
+		"email:a* AND name:/ro.m/",
+	}
+
+	for _, query := range queries {
+		t.Run(query, func(t *testing.T) {
+			for _, provider := range []string{"postgresql", "mysql", "sqlite"} {
+				sql, _, err := parser.ParseToSQL(query, provider)
+				if err == nil || !strings.Contains(err.Error(), "regexp") {
+					t.Errorf("ParseToSQL(%q, %s) = %q, err %v; want a regexp error", query, provider, sql, err)
+				}
+			}
+			partiql, _, err := parser.ParseToDynamoDBPartiQL(query)
+			if err == nil || !strings.Contains(err.Error(), "regexp") {
+				t.Errorf("ParseToDynamoDBPartiQL(%q) = %q, err %v; want a regexp error", query, partiql, err)
+			}
+		})
+	}
+}
+
+// A quoted or escaped slash is text, not a regexp.
+func TestSlashLiteralIsNotRegexp(t *testing.T) {
+	parser, err := NewParser(BasicModel{})
+	if err != nil {
+		t.Fatalf("NewParser() error = %v", err)
+	}
+
+	for _, query := range []string{`name:"/ro.m/"`, `name:ro\/m`} {
+		if _, _, err := parser.ParseToSQL(query, "postgresql"); err != nil {
+			t.Errorf("ParseToSQL(%q) error = %v, want none", query, err)
+		}
+		if _, _, err := parser.ParseToDynamoDBPartiQL(query); err != nil {
+			t.Errorf("ParseToDynamoDBPartiQL(%q) error = %v, want none", query, err)
+		}
+	}
+}
+
 // TestNewParser tests parser creation and configuration
 func TestNewParser(t *testing.T) {
 	tests := []struct {

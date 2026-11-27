@@ -501,12 +501,10 @@ func (s *SQLAdapter) SearchContext(ctx context.Context, dest any, sortKey string
 	// Pass the SQL provider to generate provider-specific SQL syntax
 	whereClause, queryParams, err := parser.ParseToSQL(query, string(s.provider))
 	if err != nil {
+		// The provider is checked when the adapter opens, so every error
+		// here comes from the query text: report it as a client error.
 		slog.Error("Filter parsing failed", "error", err)
-		// Wrap InvalidFieldError as BadRequest for proper HTTP 400 response
-		if _, ok := err.(*lucene.InvalidFieldError); ok {
-			return "", &serviceErrors.BadRequest{Message: err.Error()}
-		}
-		return "", err
+		return "", &serviceErrors.BadRequest{Message: err.Error()}
 	}
 
 	slog.Debug(fmt.Sprintf(`Where clause: %s, with params %s`, whereClause, queryParams))
@@ -549,7 +547,6 @@ func (s *SQLAdapter) Query(dest any, statement string, limit int, cursor string,
 func (s *SQLAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
 	return "", fmt.Errorf("not implemented yet")
 }
-
 
 // buildQuery rejects keys that aren't plain column names: keys are written
 // into the SQL as-is, only values are bound.

@@ -355,6 +355,20 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 	return partiql, attrs, nil
 }
 
+// ParseToElasticsearch parses a Lucene query and converts it to an
+// Elasticsearch or OpenSearch Query DSL object.
+func (p *Parser) ParseToElasticsearch(query string) (map[string]any, error) {
+	e, err := p.parseQueryCommon(query, "Elasticsearch")
+	if err != nil {
+		return nil, err
+	}
+	driver, err := NewElasticsearchDriver(p.Fields)
+	if err != nil {
+		return nil, err
+	}
+	return driver.Render(e)
+}
+
 func (p *Parser) validateQuery(query string) error {
 	var errs []error
 

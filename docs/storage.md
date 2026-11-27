@@ -196,7 +196,10 @@ err  = adapter.Get(&user, map[string]any{"id": "user-123"}, pk)
 ```
 
 `WithPartitionKeyField` names the field and leaves the adapter to read the value
-off the item; the field defaults to `"pk"` when neither is given.
+off the item; the field defaults to `"pk"` when neither is given. With the field
+alone, `Get`, `List`, `Search` and `Update` look in every partition, `Delete`
+reads the value from its filter, and `Count` returns an error, because it needs
+a value.
 
 #### Read-your-writes
 

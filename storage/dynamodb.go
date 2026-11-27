@@ -339,7 +339,6 @@ func dynamoFieldNames(t reflect.Type) []string {
 	return names
 }
 
-
 // keyAttributeNames returns the table's key attribute names, hash key first.
 // The schema is fixed for the life of a table, so it is fetched once per table
 // and cached.

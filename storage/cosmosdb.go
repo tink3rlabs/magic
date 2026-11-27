@@ -333,17 +333,14 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, opts ...O
 		return fmt.Errorf("failed to create container client: %v", err)
 	}
 
-	// Build partition key from params if provided
-	if pk, err := s.buildPartitionKey(options); err != nil {
-		return fmt.Errorf("failed to build partition key: %v", err)
-	} else if pk != "" {
-		// Set the partition key value in the item
-		pkFieldName := s.getPartitionKeyFieldName(options)
+	// A partition key value from the options wins. Otherwise the item holds it,
+	// and an item with neither its field nor "pk" is partitioned by its id.
+	pkFieldName := s.getPartitionKeyFieldName(options)
+	if pk := s.buildPartitionKey(options); pk != "" {
 		itemMap[pkFieldName] = pk
-	} else if _, exists := itemMap["pk"]; !exists {
-		// If no partition key is provided and item doesn't have pk, use id as partition key
-		if id, exists := itemMap["id"]; exists {
-			itemMap["pk"] = id
+	} else if _, exists := itemMap[pkFieldName]; !exists {
+		if _, exists := itemMap["pk"]; !exists {
+			itemMap["pk"] = idVal
 		}
 	}
 
@@ -354,7 +351,6 @@ func (s *CosmosDBAdapter) CreateContext(ctx context.Context, item any, opts ...O
 	}
 
 	// Get the partition key value from the item
-	pkFieldName := s.getPartitionKeyFieldName(options)
 	pk, exists := itemMap[pkFieldName]
 	if !exists {
 		// Fallback to "pk" field if custom field doesn't exist
@@ -418,10 +414,7 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	}
 
 	// Add partition key condition if provided in params
-	pk, err := s.buildPartitionKey(options)
-	if err != nil {
-		return fmt.Errorf("failed to build partition key: %v", err)
-	}
+	pk := s.buildPartitionKey(options)
 	if pk != "" {
 		pkRef, err := s.partitionKeyRef(options)
 		if err != nil {
@@ -525,9 +518,7 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	pk, exists := existingItemMap[pkFieldName]
 	if !exists {
 		// Check if partition key is provided in params
-		if paramPk, err := s.buildPartitionKey(options); err != nil {
-			return fmt.Errorf("failed to build partition key: %v", err)
-		} else if paramPk != "" {
+		if paramPk := s.buildPartitionKey(options); paramPk != "" {
 			pk = paramPk
 			existingItemMap[pkFieldName] = pk
 		} else {
@@ -591,12 +582,13 @@ func (s *CosmosDBAdapter) DeleteContext(ctx context.Context, item any, filter ma
 
 	// Resolve partition key before touching the client so bad filters
 	// fail without a network round-trip.
-	pk, err := s.buildPartitionKey(options)
-	if err != nil {
-		return fmt.Errorf("failed to build partition key: %v", err)
-	}
+	pk := s.buildPartitionKey(options)
 	if pk == "" {
-		if filterPk, exists := filter["pk"]; exists {
+		filterPk, exists := filter[s.getPartitionKeyFieldName(options)]
+		if !exists {
+			filterPk, exists = filter["pk"]
+		}
+		if exists {
 			pkStr, ok := filterPk.(string)
 			if !ok {
 				return errors.New("delete filter pk must be a string")
@@ -724,10 +716,7 @@ func sumCountPages(ctx context.Context, pager *runtime.Pager[azcosmos.QueryItems
 // to the partition given by WithPartitionKey, and returns the partition key
 // value to run it against.
 func (s *CosmosDBAdapter) buildCountQuery(filter map[string]any, options Options) (string, []azcosmos.QueryParameter, string, error) {
-	pk, err := s.buildPartitionKey(options)
-	if err != nil {
-		return "", nil, "", fmt.Errorf("failed to build partition key: %w", err)
-	}
+	pk := s.buildPartitionKey(options)
 	if pk == "" {
 		return "", nil, "", fmt.Errorf("cosmosdb count requires a partition key: use WithPartitionKey")
 	}
@@ -881,10 +870,7 @@ func (s *CosmosDBAdapter) executePaginatedQuery(
 	}
 
 	// Add partition key condition if provided in params
-	pk, err := s.buildPartitionKey(options)
-	if err != nil {
-		return "", fmt.Errorf("failed to build partition key: %v", err)
-	}
+	pk := s.buildPartitionKey(options)
 	if pk != "" {
 		pkRef, err := s.partitionKeyRef(options)
 		if err != nil {
@@ -987,17 +973,14 @@ func (s *CosmosDBAdapter) itemToMap(item any) map[string]interface{} {
 	return itemMap
 }
 
-// buildPartitionKey constructs a partition key from the resolved options.
-// Only an explicitly addressed partition key counts, i.e. WithPartitionKey.
-// An empty string means no partition key was specified.
-func (s *CosmosDBAdapter) buildPartitionKey(options Options) (string, error) {
-	if options.PartitionKeyField == "" {
-		return "", nil
+// buildPartitionKey returns the partition key value that WithPartitionKey
+// addressed. An empty string means no value was given: WithPartitionKeyField
+// alone names the field and leaves the value on the item.
+func (s *CosmosDBAdapter) buildPartitionKey(options Options) string {
+	if options.PartitionKeyField == "" || options.PartitionKeyValue == nil {
+		return ""
 	}
-	if options.PartitionKeyValue == nil {
-		return "", fmt.Errorf("partition key field %q specified without a value: use WithPartitionKey", options.PartitionKeyField)
-	}
-	return fmt.Sprintf("%v", options.PartitionKeyValue), nil
+	return fmt.Sprintf("%v", options.PartitionKeyValue)
 }
 
 // getPartitionKeyFieldName returns the item field holding the partition key,
@@ -1018,26 +1001,14 @@ func (s *CosmosDBAdapter) executeQuery(
 	queryOptions *azcosmos.QueryOptions,
 ) (azcosmos.QueryItemsResponse, error) {
 	// Determine if we need cross-partition query
-	pk, err := s.buildPartitionKey(options)
-	if err != nil {
-		return azcosmos.QueryItemsResponse{}, fmt.Errorf("failed to build partition key: %v", err)
-	}
+	pk := s.buildPartitionKey(options)
 
-	// Get first page
-	var page azcosmos.QueryItemsResponse
 	if pk != "" {
-		// Single partition query - use the partition key
-		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions)
-		page, err = pager.NextPage(ctx)
-	} else {
-		// Cross-partition query
-		enableCrossPartition := true
-		queryOptions.EnableCrossPartitionQuery = &enableCrossPartition
-		pager := containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKey(), queryOptions)
-		page, err = pager.NextPage(ctx)
+		return containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions).NextPage(ctx)
 	}
-
-	return page, err
+	enableCrossPartition := true
+	queryOptions.EnableCrossPartitionQuery = &enableCrossPartition
+	return containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKey(), queryOptions).NextPage(ctx)
 }
 
 // validCosmosFieldPath matches a plain identifier or a dotted path of them

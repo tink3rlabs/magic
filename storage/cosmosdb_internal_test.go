@@ -85,10 +85,7 @@ func TestCosmosDBItemToMapReturnsEmptyForUnmarshalableInput(t *testing.T) {
 
 func TestCosmosDBBuildPartitionKeyAbsentReturnsEmpty(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got, err := s.buildPartitionKey(Options{})
-	if err != nil {
-		t.Fatalf("buildPartitionKey: %v", err)
-	}
+	got := s.buildPartitionKey(Options{})
 	if got != "" {
 		t.Fatalf("expected empty pk when no partition key field is given, got %q", got)
 	}
@@ -96,32 +93,26 @@ func TestCosmosDBBuildPartitionKeyAbsentReturnsEmpty(t *testing.T) {
 
 func TestCosmosDBBuildPartitionKeyPresentReturnsValueString(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got, err := s.buildPartitionKey(Options{PartitionKeyField: "tenant", PartitionKeyValue: 42})
-	if err != nil {
-		t.Fatalf("buildPartitionKey: %v", err)
-	}
+	got := s.buildPartitionKey(Options{PartitionKeyField: "tenant", PartitionKeyValue: 42})
 	if got != "42" {
 		t.Fatalf("pk = %q; want %q", got, "42")
 	}
 }
 
-func TestCosmosDBBuildPartitionKeyFieldWithoutValueIsError(t *testing.T) {
+// WithPartitionKeyField alone names the field and leaves the value on the item.
+func TestCosmosDBBuildPartitionKeyFieldWithoutValueIsEmpty(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, err := s.buildPartitionKey(Options{PartitionKeyField: "tenant"})
-	if err == nil {
-		t.Fatalf("expected error when a partition key field has no value")
+	if got := s.buildPartitionKey(Options{PartitionKeyField: "tenant"}); got != "" {
+		t.Fatalf("pk = %q; want empty", got)
 	}
 }
 
 // An empty field name is indistinguishable from naming no field at all, so it
-// reads as "no partition key" rather than as an error. A value without a field
+// reads as "no partition key". A value without a field
 // is still rejected -- by Options.validate, before any adapter sees it.
 func TestCosmosDBBuildPartitionKeyEmptyStringFieldMeansUnspecified(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got, err := s.buildPartitionKey(Options{PartitionKeyField: ""})
-	if err != nil {
-		t.Fatalf("buildPartitionKey: %v", err)
-	}
+	got := s.buildPartitionKey(Options{PartitionKeyField: ""})
 	if got != "" {
 		t.Fatalf("pk = %q; want empty", got)
 	}

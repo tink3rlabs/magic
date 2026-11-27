@@ -356,7 +356,17 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 }
 
 // ParseToElasticsearch parses a Lucene query and converts it to an
-// Elasticsearch or OpenSearch Query DSL object.
+// Elasticsearch (7.10+) or OpenSearch Query DSL object. It checks fields and
+// limits as ParseToSQL does, and returns the same errors.
+//
+//	q, err := parser.ParseToElasticsearch(`title:contract* AND year:[2020 TO 2024] AND NOT status:draft`)
+//	body := map[string]any{"query": q, "size": 20}
+//
+// Map each string field as a keyword ("type": "keyword"). On a text field a
+// term or wildcard on the full value matches nothing, with no error.
+//
+// A cluster with search.allow_expensive_queries set to false refuses every
+// wildcard and fuzzy query, including the *word* expansion of a plain word.
 func (p *Parser) ParseToElasticsearch(query string) (map[string]any, error) {
 	e, err := p.parseQueryCommon(query, "Elasticsearch")
 	if err != nil {

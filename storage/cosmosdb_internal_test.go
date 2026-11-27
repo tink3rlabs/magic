@@ -1541,3 +1541,28 @@ func TestCosmosDBUpdateStopsRetryingWhenTheContextEnds(t *testing.T) {
 		t.Fatalf("replaced %d times after the context ended; want at most 1", len(*ifMatch))
 	}
 }
+
+// A cross-partition query can answer with an empty page and a continuation
+// token. Get must read on rather than report the document as missing.
+func TestCosmosDBGetReadsPastEmptyPages(t *testing.T) {
+	queries := 0
+	s := newFakeCosmosAdapter(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/" {
+			return fakeCosmosJSON(req, `{"id":"fake","writableLocations":[],"readableLocations":[]}`), nil
+		}
+		queries++
+		if queries == 1 {
+			resp := fakeCosmosJSON(req, `{"_rid":"x","Documents":[],"_count":0}`)
+			resp.Header.Set("x-ms-continuation", "next")
+			return resp, nil
+		}
+		return fakeCosmosJSON(req, `{"_rid":"x","Documents":[{"id":"1","name":"found"}],"_count":1}`), nil
+	})
+	var got cosmosSampleItem
+	if err := s.Get(&got, map[string]any{"id": "1"}); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "found" || queries != 2 {
+		t.Fatalf("got %+v after %d queries; want the document from the second page", got, queries)
+	}
+}

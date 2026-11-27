@@ -454,14 +454,19 @@ func (s *CosmosDBAdapter) getDocument(ctx context.Context, containerName string,
 	s.applySessionToken(containerName, pk, queryOptions)
 
 	// Execute query
-	page, err := s.executeQuery(ctx, containerClient, query, options, queryOptions)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute query: %w", err)
+	// A cross-partition query can answer with empty pages before the one that
+	// holds the match, so an empty page is not yet "not found".
+	pager := s.queryPager(containerClient, query, options, queryOptions)
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute query: %w", err)
+		}
+		if len(page.Items) > 0 {
+			return page.Items[0], nil
+		}
 	}
-	if len(page.Items) == 0 {
-		return nil, ErrNotFound
-	}
-	return page.Items[0], nil
+	return nil, ErrNotFound
 }
 
 // cosmosUpdateAttempts bounds how often Update re-reads and re-applies its
@@ -1043,15 +1048,23 @@ func (s *CosmosDBAdapter) executeQuery(
 	options Options,
 	queryOptions *azcosmos.QueryOptions,
 ) (azcosmos.QueryItemsResponse, error) {
-	// Determine if we need cross-partition query
-	pk := s.buildPartitionKey(options)
+	return s.queryPager(containerClient, query, options, queryOptions).NextPage(ctx)
+}
 
-	if pk != "" {
-		return containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions).NextPage(ctx)
+// queryPager scopes query to the partition the options address, or runs it
+// across every partition when they address none.
+func (s *CosmosDBAdapter) queryPager(
+	containerClient *azcosmos.ContainerClient,
+	query string,
+	options Options,
+	queryOptions *azcosmos.QueryOptions,
+) *runtime.Pager[azcosmos.QueryItemsResponse] {
+	if pk := s.buildPartitionKey(options); pk != "" {
+		return containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKeyString(pk), queryOptions)
 	}
 	enableCrossPartition := true
 	queryOptions.EnableCrossPartitionQuery = &enableCrossPartition
-	return containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKey(), queryOptions).NextPage(ctx)
+	return containerClient.NewQueryItemsPager(query, azcosmos.NewPartitionKey(), queryOptions)
 }
 
 // validCosmosFieldPath matches a plain identifier or a dotted path of them

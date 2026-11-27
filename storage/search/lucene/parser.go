@@ -357,7 +357,13 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 
 // ParseToElasticsearch parses a Lucene query and converts it to an
 // Elasticsearch (7.10+) or OpenSearch Query DSL object. It checks fields and
-// limits as ParseToSQL does, and returns the same errors.
+// limits as ParseToSQL does, with the same errors for an unknown field, a
+// mistyped value, boost, regexp and a range open at both ends. It also refuses
+// a wildcard or fuzzy query on a number, boolean or time.Time field, which the
+// server would refuse, and it renders fuzzy where SQLite cannot.
+//
+// On an array field, field:* matches documents with at least one value. SQL
+// also matches an empty array there.
 //
 //	q, err := parser.ParseToElasticsearch(`title:contract* AND year:[2020 TO 2024] AND NOT status:draft`)
 //	body := map[string]any{"query": q, "size": 20}

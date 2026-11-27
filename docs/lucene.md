@@ -366,7 +366,7 @@ Wildcards work on string fields only, and only in the two forms PartiQL can expr
 
 ## Elasticsearch and OpenSearch
 
-`ParseToElasticsearch` turns a query into a Query DSL object. It uses the same field checks, limits and errors as `ParseToSQL`, and returns a plain `map[string]any`: send it with the client of your choice, and add paging, sorting and aggregations around it.
+`ParseToElasticsearch` turns a query into a Query DSL object. It uses the same field checks and limits as `ParseToSQL`, and returns a plain `map[string]any`: send it with the client of your choice, and add paging, sorting and aggregations around it.
 
 ```go title="handler.go"
 q, err := parser.ParseToElasticsearch(`title:contract* AND year:[2020 TO 2024] AND NOT status:draft`)
@@ -402,7 +402,7 @@ The output works on Elasticsearch 7.10 and later (the first version with `case_i
 | `a:1 AND b:2`, `a:1 OR b:2` | `bool.filter`, `bool.should` with `minimum_should_match: 1` |
 | `status:(open OR null)` | `bool.should`, each value on `status` |
 | `title:room*`, `title:ro?m*` | `wildcard` with `case_insensitive: true` |
-| `title:*` | `exists` |
+| `title:*` | `exists` — on an array field, an empty array has no value, so it does not match; SQL matches it ([see above](#array-multi-valued-fields)) |
 | `room` (no field) | `bool.should` with a `*room*` wildcard on each `ImplicitSearch=true` field |
 | `year:[2020 TO 2024]`, `year:{2019 TO 2024}` | `range` with `gte`/`lte` or `gt`/`lt`; a `*` bound is left out |
 | `year:>2020` | `range` with `gt` (also `>=`, `<`, `<=`) |
@@ -412,7 +412,7 @@ The output works on Elasticsearch 7.10 and later (the first version with `case_i
 | `title:roam~2` | `fuzzy` with `fuzziness: 2` |
 | `""` (empty) | `match_all` |
 
-Values are typed by the Go field: `year:2021` on an `int` becomes the number `2021`, and `year:abc` is a parse error. Wildcards and fuzzy work on string-like fields only: on a number, a boolean or a `time.Time`, they are a parse error, because the server refuses them. Boost (`^`), regexp (`/re/`) and a range with `*` at both ends are also parse errors. The renderer never drops a part of the query in silence.
+Values are typed by the Go field: `year:2021` on an `int` becomes the number `2021`, and `year:abc` is a parse error, as on SQL. Wildcards and fuzzy work on string-like fields only: on a number, a boolean or a `time.Time`, they are a parse error, because the server refuses them. Boost (`^`), regexp (`/re/`) and a range with `*` at both ends are also parse errors. The renderer never drops a part of the query in silence.
 
 A cluster with `search.allow_expensive_queries: false` refuses every `wildcard` and `fuzzy` query with a server error. This includes a plain word such as `room`, which expands to wildcards. The default is `true`. On such a cluster, accept only fielded queries without wildcards.
 

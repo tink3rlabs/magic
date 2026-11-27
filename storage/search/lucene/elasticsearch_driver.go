@@ -2,6 +2,8 @@ package lucene
 
 import (
 	"fmt"
+	"reflect"
+	"time"
 
 	"github.com/grindlemire/go-lucene/pkg/lucene/expr"
 )
@@ -64,6 +66,8 @@ func (d *ElasticsearchDriver) render(e *expr.Expression) (map[string]any, error)
 		return d.renderChild(e, e.Left)
 	case expr.Equals:
 		return d.renderEquals(e)
+	case expr.Like, expr.Wild:
+		return d.renderWildcard(e)
 	}
 	return nil, fmt.Errorf("operator %s is not supported for Elasticsearch", e.Op)
 }
@@ -92,6 +96,56 @@ func (d *ElasticsearchDriver) renderEquals(e *expr.Expression) (map[string]any, 
 		return nil, err
 	}
 	return esTerm(name, v.Val), nil
+}
+
+// renderWildcard renders field:pattern. A bare * means "has a value", which
+// is also the only wildcard a non-string field accepts.
+func (d *ElasticsearchDriver) renderWildcard(e *expr.Expression) (map[string]any, error) {
+	name, err := d.fieldName(e.Left)
+	if err != nil {
+		return nil, err
+	}
+	if r, ok := e.Right.(*expr.Expression); ok && r.Op == expr.Regexp {
+		return nil, fmt.Errorf("regexp queries (field:/pattern/) are not supported; use wildcards instead (for example %s:ro?m*), and quote a value that contains / (for example %s:\"a/b\")", name, name)
+	}
+	pattern := extractLiteralValue(e.Right)
+	if pattern == "*" {
+		return esExists(name), nil
+	}
+	if t := d.fields[name].Type; t != nil && t.Kind() == reflect.Slice {
+		if !isStringArray(t) {
+			return nil, fmt.Errorf("wildcard matching is not supported on non-string array field '%s'; use containment (%s:value)", name, name)
+		}
+	} else if !acceptsWildcard(t) {
+		return nil, fmt.Errorf("wildcard matching is not supported on non-string field '%s'; use %s:value or a range", name, name)
+	}
+	return map[string]any{"wildcard": map[string]any{
+		name: map[string]any{"value": pattern, "case_insensitive": true},
+	}}, nil
+}
+
+// acceptsWildcard reports whether a field of type t is indexed as text that a
+// wildcard can match. Elasticsearch refuses a wildcard on a numeric, boolean
+// or date field with a server error. A uuid or other string-like value is a
+// keyword and matches.
+func acceptsWildcard(t reflect.Type) bool {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return true
+	}
+	if t == reflect.TypeOf(time.Time{}) {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return false
+	}
+	return true
 }
 
 // onField returns a copy of the grouped value list v with each value bound to

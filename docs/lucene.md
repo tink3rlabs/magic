@@ -391,6 +391,44 @@ Map each string field as `keyword`. On a `text` field the input is split into wo
 }
 ```
 
+### Other languages and ranked search
+
+`case_insensitive` folds ASCII letters only: on a plain `keyword`, `title:*тръба*` misses `ТРЪБА PVC`. And a wildcard finds no typo and no other word form. For both, add two sub-fields and name them with `WithElasticsearchFields`:
+
+```json title="mapping"
+{
+  "settings": {
+    "analysis": { "normalizer": { "lc": { "type": "custom", "filter": ["lowercase"] } } }
+  },
+  "mappings": {
+    "properties": {
+      "title": {
+        "type": "keyword",
+        "fields": {
+          "lc":   { "type": "keyword", "normalizer": "lc" },
+          "text": { "type": "text", "analyzer": "bulgarian" }
+        }
+      }
+    }
+  }
+}
+```
+
+```go title="handler.go"
+q, err := parser.ParseToElasticsearch(query, lucene.WithElasticsearchFields(map[string]lucene.ElasticsearchField{
+    "title": {Pattern: "title.lc", Text: "title.text"},
+}))
+```
+
+| Query | Without the option | With `Pattern: "title.lc"` | With `Text: "title.text"` too |
+|-------|--------------------|----------------------------|-------------------------------|
+| `title:тръб*`, `title:тръба~1` | `wildcard`, `fuzzy` on `title` (ASCII case only) | on `title.lc` (case folds in every language) | same |
+| `title:Тръба` | `term` on `title` (exact) | same | same |
+| `тръби` (no field) | `*тръби*` wildcard on each string field | on `title.lc` for `title` | `match` on `title.text` (`fuzziness: AUTO`, `operator: and`) in `bool.must`: ranked, finds `тръба` and typos |
+| `"тръба pvc"`, `тръб*` (no field) | exact term, wildcard | same | same |
+
+A term stays exact on the field itself, as on SQL, so `tags:Golang` never matches `golang`. With `Text`, a plain word matches what the analyzer and the fuzziness allow, which SQL does not: `room` also finds `roam`. An option on a field that is not in the model, or that is not a string, is an error.
+
 The output works on Elasticsearch 7.10 and later (the first version with `case_insensitive` on `wildcard`) and on OpenSearch. User text only becomes the value of a clause: the output never contains `query_string`, `simple_query_string` or `script`.
 
 | Query | Query DSL |

@@ -373,6 +373,14 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 //
 // A cluster with search.allow_expensive_queries set to false refuses every
 // wildcard and fuzzy query, including the *word* expansion of a plain word.
+//
+// The server's case_insensitive flag folds ASCII letters only, so for other
+// languages name a lowercase-normalized keyword sub-field as Pattern, and an
+// analyzed sub-field as Text for ranked, typo-tolerant search of plain words:
+//
+//	q, err := parser.ParseToElasticsearch(query, lucene.WithElasticsearchFields(map[string]lucene.ElasticsearchField{
+//	    "title": {Pattern: "title.lc", Text: "title.text"},
+//	}))
 func (p *Parser) ParseToElasticsearch(query string, opts ...ElasticsearchOption) (map[string]any, error) {
 	driver, err := NewElasticsearchDriver(p.Fields, opts...)
 	if err != nil {

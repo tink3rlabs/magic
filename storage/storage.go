@@ -4,8 +4,9 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"maps"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -22,22 +23,28 @@ type StorageAdapter interface {
 	CreateMigrationTable() error
 	UpdateMigrationTable(id int, name string, desc string) error
 	GetLatestMigration() (int, error)
-	Create(item any, params ...map[string]any) error
-	Get(dest any, filter map[string]any, params ...map[string]any) error
-	Update(item any, filter map[string]any, params ...map[string]any) error
-	Delete(item any, filter map[string]any, params ...map[string]any) error
+	Create(item any, opts ...Option) error
+	Get(dest any, filter map[string]any, opts ...Option) error
+	// Update writes item to the row its primary key identifies, and only if that
+	// row also matches filter. It never creates a row; use Create.
+	// By default every field is written. Pass WithFields to write only the fields
+	// that changed, which is what keeps two concurrent partial updates to
+	// different fields from reverting one another.
+	// Returns ErrNotFound when no row matched.
+	Update(item any, filter map[string]any, opts ...Option) error
+	Delete(item any, filter map[string]any, opts ...Option) error
 	// List returns a page of items matching filter, ordered by sortKey.
 	// sortKey must be the JSON/column name (e.g. "created_at"), not the Go struct field name.
-	// Pass SortDirectionKey via params to control order; defaults to Ascending.
+	// Pass WithSortDirection to control order; defaults to Ascending.
 	// Returns a cursor for the next page, or "" on the final page.
-	List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error)
+	List(dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error)
 	// Search returns a page of items matching a Lucene query string, ordered by sortKey.
 	// sortKey must be the JSON/column name (e.g. "created_at"), not the Go struct field name.
-	// Pass SortDirectionKey via params to control order; defaults to Ascending.
+	// Pass WithSortDirection to control order; defaults to Ascending.
 	// Returns a cursor for the next page, or "" on the final page.
-	Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error)
-	Count(dest any, filter map[string]any, params ...map[string]any) (int64, error)
-	Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error)
+	Search(dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error)
+	Count(dest any, filter map[string]any, opts ...Option) (int64, error)
+	Query(dest any, statement string, limit int, cursor string, opts ...Option) (string, error)
 }
 
 type StorageAdapterType string
@@ -65,45 +72,6 @@ const (
 	Ascending  SortingDirection = "ASC"
 	Descending SortingDirection = "DESC"
 )
-
-const SortDirectionKey = "sort_direction"
-
-// QueryParametersKey passes the values for the "?" placeholders in a Query
-// statement, as a slice in placeholder order. DynamoDB only.
-const QueryParametersKey = "parameters"
-
-// IndexKey names a secondary index for List and Search to read from.
-// DynamoDB only; other adapters ignore it, since their databases choose
-// indexes themselves.
-const IndexKey = "index"
-
-// extractParams merges all provided parameter maps into a single flat map.
-// When keys collide, later maps win.
-func extractParams(params ...map[string]any) map[string]any {
-	flatParams := make(map[string]any)
-	for _, param := range params {
-		maps.Copy(flatParams, param)
-	}
-	return flatParams
-}
-
-// extractSortDirection reads SortDirectionKey from paramMap and returns the corresponding SortingDirection.
-// Defaults to Ascending when the key is absent.
-// Returns an error if the value is present but not a valid SortingDirection ("ASC" or "DESC", case-insensitive).
-func extractSortDirection(paramMap map[string]any) (SortingDirection, error) {
-	if dir, exists := paramMap[SortDirectionKey]; exists {
-		if dirStr, ok := dir.(string); ok {
-			switch SortingDirection(strings.ToUpper(dirStr)) {
-			case Ascending:
-				return Ascending, nil
-			case Descending:
-				return Descending, nil
-			}
-		}
-		return "", fmt.Errorf("invalid sort direction: %v", dir)
-	}
-	return Ascending, nil
-}
 
 // validColumnName matches identifiers safe to interpolate as SQL/NoSQL column names.
 // Allows letters, digits, and underscores; may start with a letter or underscore.
@@ -154,4 +122,37 @@ func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, confi
 	// and still produces ContextualStorageAdapter-compatible
 	// methods for callers that want to propagate a context.
 	return wrapForTelemetry(inner), nil
+}
+
+// jsonFieldNames lists the names t marshals to under its json tags, in a
+// stable order, including fields that omitempty may leave out.
+func jsonFieldNames(t reflect.Type) []string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	names := []string{}
+	for i := range t.NumField() {
+		field := t.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		// An untagged embedded struct is flattened into its parent.
+		if field.Anonymous && name == "" {
+			names = append(names, jsonFieldNames(field.Type)...)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

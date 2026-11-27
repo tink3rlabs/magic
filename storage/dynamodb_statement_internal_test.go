@@ -112,9 +112,7 @@ func TestDynamoDBQueryBindsParametersInOrder(t *testing.T) {
 
 	var dest []dynamoSampleItem
 	stmt := `SELECT * FROM "dynamo_sample_items" WHERE "id" = ? AND "name" = ?`
-	_, err := s.Query(&dest, stmt, 10, "", map[string]any{
-		QueryParametersKey: []any{"1", "O'Brien"},
-	})
+	_, err := s.Query(&dest, stmt, 10, "", WithQueryParameters("1", "O'Brien"))
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -137,9 +135,7 @@ func TestDynamoDBQueryBindsParametersInOrder(t *testing.T) {
 func TestDynamoDBQueryAcceptsTypedSlices(t *testing.T) {
 	s, rec := newRecordingDynamoAdapter(t, "")
 	var dest []dynamoSampleItem
-	if _, err := s.Query(&dest, `SELECT * FROM "t" WHERE "id" IN (?, ?)`, 10, "", map[string]any{
-		QueryParametersKey: []string{"a", "b"},
-	}); err != nil {
+	if _, err := s.Query(&dest, `SELECT * FROM "t" WHERE "id" IN (?, ?)`, 10, "", WithQueryParameters("a", "b")); err != nil {
 		t.Fatalf("Query: %v", err)
 	}
 	if n := len(rec.last(t).Parameters); n != 2 {
@@ -171,7 +167,7 @@ func TestDynamoDBStatementsWithoutPlaceholdersOmitParameters(t *testing.T) {
 			return err
 		},
 		"Query with an empty parameter slice": func(s *DynamoDBAdapter, dest *[]dynamoSampleItem) error {
-			_, err := s.Query(dest, `SELECT * FROM "t"`, 10, "", map[string]any{QueryParametersKey: []any{}})
+			_, err := s.Query(dest, `SELECT * FROM "t"`, 10, "", WithQueryParameters())
 			return err
 		},
 	}
@@ -186,21 +182,6 @@ func TestDynamoDBStatementsWithoutPlaceholdersOmitParameters(t *testing.T) {
 				t.Fatalf("statement %q sent Parameters %v; want the key omitted", got.Statement, got.Parameters)
 			}
 		})
-	}
-}
-
-func TestDynamoDBQueryRejectsNonSliceParameters(t *testing.T) {
-	s, rec := newRecordingDynamoAdapter(t, "")
-	var dest []dynamoSampleItem
-	for _, bad := range []any{"1", 1, map[string]any{"id": "1"}, []byte("1")} {
-		if _, err := s.Query(&dest, `SELECT * FROM "t" WHERE "id" = ?`, 10, "", map[string]any{
-			QueryParametersKey: bad,
-		}); err == nil {
-			t.Errorf("Query with %s=%T returned no error", QueryParametersKey, bad)
-		}
-	}
-	if rec.count() != 0 {
-		t.Fatalf("a rejected Query must not reach DynamoDB, sent %d requests", rec.count())
 	}
 }
 
@@ -222,7 +203,7 @@ func TestDynamoDBListSendsOrderedFilterStatement(t *testing.T) {
 
 func TestDynamoDBListAndSearchReadFromIndex(t *testing.T) {
 	s, rec := newRecordingDynamoAdapter(t, "")
-	params := map[string]any{IndexKey: "name_index"}
+	params := WithIndex("name_index")
 
 	var dest []dynamoSampleItem
 	if _, err := s.List(&dest, "id", map[string]any{"name": "bob"}, 10, "", params); err != nil {
@@ -243,7 +224,7 @@ func TestDynamoDBListAndSearchReadFromIndex(t *testing.T) {
 func TestDynamoDBListAndSearchHonourSortDirection(t *testing.T) {
 	s, rec := newRecordingDynamoAdapter(t, "")
 	var dest []dynamoSampleItem
-	params := map[string]any{SortDirectionKey: "desc"}
+	params := WithSortDirection(Descending)
 
 	if _, err := s.List(&dest, "id", map[string]any{"name": "bob"}, 10, "", params); err != nil {
 		t.Fatalf("List: %v", err)
@@ -259,10 +240,10 @@ func TestDynamoDBListAndSearchHonourSortDirection(t *testing.T) {
 		t.Fatalf("Search Statement = %q; want ORDER BY \"id\" DESC", got)
 	}
 
-	if _, err := s.List(&dest, "name", nil, 10, ""); err != nil {
+	if _, err := s.List(&dest, "name", map[string]any{"id": "1"}, 10, ""); err != nil {
 		t.Fatalf("List by reserved sort key: %v", err)
 	}
-	if want := `SELECT * FROM "dynamo_sample_items" ORDER BY "name" ASC`; rec.last(t).Statement != want {
+	if want := `SELECT * FROM "dynamo_sample_items" WHERE "id" = ? ORDER BY "name" ASC`; rec.last(t).Statement != want {
 		t.Fatalf("List Statement = %q; want %q", rec.last(t).Statement, want)
 	}
 }
@@ -270,7 +251,7 @@ func TestDynamoDBListAndSearchHonourSortDirection(t *testing.T) {
 func TestDynamoDBRejectsInvalidSortDirectionBeforeQuerying(t *testing.T) {
 	s, rec := newRecordingDynamoAdapter(t, "")
 	var dest []dynamoSampleItem
-	params := map[string]any{SortDirectionKey: "sideways"}
+	params := WithSortDirection("sideways")
 	if _, err := s.List(&dest, "id", nil, 10, "", params); err == nil {
 		t.Fatal("List with an invalid sort direction returned no error")
 	}
@@ -285,13 +266,13 @@ func TestDynamoDBRejectsInvalidSortDirectionBeforeQuerying(t *testing.T) {
 func TestDynamoDBRejectsInvalidIndexBeforeQuerying(t *testing.T) {
 	s, rec := newRecordingDynamoAdapter(t, "")
 	var dest []dynamoSampleItem
-	for _, bad := range []any{`x" WHERE "1"="1`, "ab", "name index", strings.Repeat("a", 256), 42, nil} {
-		params := map[string]any{IndexKey: bad}
-		if _, err := s.List(&dest, "id", nil, 10, "", params); err == nil {
-			t.Errorf("List with %s=%v returned no error", IndexKey, bad)
+	for _, bad := range []string{`x" WHERE "1"="1`, "ab", "name index", strings.Repeat("a", 256)} {
+		params := WithIndex(bad)
+		if _, err := s.List(&dest, "", nil, 10, "", params); err == nil {
+			t.Errorf("List with index %q returned no error", bad)
 		}
-		if _, err := s.Search(&dest, "id", "", 10, "", params); err == nil {
-			t.Errorf("Search with %s=%v returned no error", IndexKey, bad)
+		if _, err := s.Search(&dest, "", "", 10, "", params); err == nil {
+			t.Errorf("Search with index %q returned no error", bad)
 		}
 	}
 	if rec.count() != 0 {
@@ -323,14 +304,12 @@ func TestDynamoDBSearchReportsInvalidQueriesAsBadRequest(t *testing.T) {
 	}
 }
 
-// GetInstance wraps adapters for telemetry; the wrapper must pass params on.
+// GetInstance wraps adapters for telemetry; the wrapper must pass options on.
 func TestDynamoDBQueryParametersPassThroughTelemetryWrapper(t *testing.T) {
 	inner, rec := newRecordingDynamoAdapter(t, "")
 	s := wrapForTelemetry(inner)
 	var dest []dynamoSampleItem
-	if _, err := s.Query(&dest, `SELECT * FROM "t" WHERE "id" = ?`, 10, "", map[string]any{
-		QueryParametersKey: []any{"1"},
-	}); err != nil {
+	if _, err := s.Query(&dest, `SELECT * FROM "t" WHERE "id" = ?`, 10, "", WithQueryParameters("1")); err != nil {
 		t.Fatalf("Query: %v", err)
 	}
 	if n := len(rec.last(t).Parameters); n != 1 {

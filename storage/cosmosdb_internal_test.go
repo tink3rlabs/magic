@@ -85,73 +85,54 @@ func TestCosmosDBItemToMapReturnsEmptyForUnmarshalableInput(t *testing.T) {
 
 func TestCosmosDBBuildPartitionKeyAbsentReturnsEmpty(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got, err := s.buildPartitionKey(map[string]any{})
-	if err != nil {
-		t.Fatalf("buildPartitionKey: %v", err)
-	}
+	got := s.buildPartitionKey(Options{})
 	if got != "" {
-		t.Fatalf("expected empty pk when no pk_field specified, got %q", got)
+		t.Fatalf("expected empty pk when no partition key field is given, got %q", got)
 	}
 }
 
 func TestCosmosDBBuildPartitionKeyPresentReturnsValueString(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got, err := s.buildPartitionKey(map[string]any{
-		"pk_field": "tenant",
-		"pk_value": 42,
-	})
-	if err != nil {
-		t.Fatalf("buildPartitionKey: %v", err)
-	}
+	got := s.buildPartitionKey(Options{PartitionKeyField: "tenant", PartitionKeyValue: 42})
 	if got != "42" {
 		t.Fatalf("pk = %q; want %q", got, "42")
 	}
 }
 
-func TestCosmosDBBuildPartitionKeyFieldWithoutValueIsError(t *testing.T) {
+// WithPartitionKeyField alone names the field and leaves the value on the item.
+func TestCosmosDBBuildPartitionKeyFieldWithoutValueIsEmpty(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, err := s.buildPartitionKey(map[string]any{"pk_field": "tenant"})
-	if err == nil {
-		t.Fatalf("expected error when pk_field is set without pk_value")
+	if got := s.buildPartitionKey(Options{PartitionKeyField: "tenant"}); got != "" {
+		t.Fatalf("pk = %q; want empty", got)
 	}
 }
 
-func TestCosmosDBBuildPartitionKeyNonStringFieldIsError(t *testing.T) {
+// An empty field name is indistinguishable from naming no field at all, so it
+// reads as "no partition key". A value without a field
+// is still rejected -- by Options.validate, before any adapter sees it.
+func TestCosmosDBBuildPartitionKeyEmptyStringFieldMeansUnspecified(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, err := s.buildPartitionKey(map[string]any{"pk_field": 5})
-	if err == nil {
-		t.Fatalf("expected error when pk_field is not a string")
+	got := s.buildPartitionKey(Options{PartitionKeyField: ""})
+	if got != "" {
+		t.Fatalf("pk = %q; want empty", got)
 	}
-}
-
-func TestCosmosDBBuildPartitionKeyEmptyStringFieldIsError(t *testing.T) {
-	s := &CosmosDBAdapter{}
-	_, err := s.buildPartitionKey(map[string]any{"pk_field": ""})
-	if err == nil {
-		t.Fatalf("expected error when pk_field is an empty string")
+	if _, err := ResolveOptions(WithPartitionKey("", "v")); err == nil {
+		t.Fatalf("ResolveOptions = nil error; want a value without a field rejected")
 	}
 }
 
 func TestCosmosDBGetPartitionKeyFieldNameDefaultsToPk(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	if got := s.getPartitionKeyFieldName(map[string]any{}); got != "pk" {
+	if got := s.getPartitionKeyFieldName(Options{}); got != "pk" {
 		t.Fatalf("default pk field = %q; want %q", got, "pk")
 	}
 }
 
 func TestCosmosDBGetPartitionKeyFieldNameUsesCustomField(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	got := s.getPartitionKeyFieldName(map[string]any{"pk_field": "tenant_id"})
+	got := s.getPartitionKeyFieldName(Options{PartitionKeyField: "tenant_id"})
 	if got != "tenant_id" {
 		t.Fatalf("pk field = %q; want %q", got, "tenant_id")
-	}
-}
-
-func TestCosmosDBGetPartitionKeyFieldNameFallsBackForNonStringField(t *testing.T) {
-	s := &CosmosDBAdapter{}
-	got := s.getPartitionKeyFieldName(map[string]any{"pk_field": 12})
-	if got != "pk" {
-		t.Fatalf("pk field = %q; want fallback %q", got, "pk")
 	}
 }
 
@@ -251,24 +232,24 @@ func TestCosmosDBBuildFilterMixedConditionsAreAndJoined(t *testing.T) {
 	}
 }
 
-var cosmosCountPartition = map[string]any{"pk_field": "pk", "pk_value": "tenant-1"}
+var cosmosCountPartition = Options{PartitionKeyField: "pk", PartitionKeyValue: "tenant-1"}
 
 func TestCosmosDBBuildCountQueryRequiresPartitionKey(t *testing.T) {
 	s := &CosmosDBAdapter{}
 	cases := []struct {
 		name   string
 		filter map[string]any
-		params map[string]any
+		params Options
 	}{
-		{"no filter, no params", nil, map[string]any{}},
-		{"filter, no params", map[string]any{"status": "active"}, map[string]any{}},
-		{"pk_value without pk_field", nil, map[string]any{"pk_value": "tenant-1"}},
-		{"empty pk_value", nil, map[string]any{"pk_field": "tenant", "pk_value": ""}},
+		{"no filter, no params", nil, Options{}},
+		{"filter, no params", map[string]any{"status": "active"}, Options{}},
+		{"a partition key value without a field", nil, Options{PartitionKeyValue: "tenant-1"}},
+		{"an empty partition key value", nil, Options{PartitionKeyField: "tenant", PartitionKeyValue: ""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := s.buildCountQuery(tc.filter, tc.params)
-			if err == nil || !strings.Contains(err.Error(), "requires a non-empty pk_field and pk_value") {
+			if err == nil || !strings.Contains(err.Error(), "requires a partition key") {
 				t.Fatalf("err = %v; want a partition key required error", err)
 			}
 		})
@@ -277,7 +258,7 @@ func TestCosmosDBBuildCountQueryRequiresPartitionKey(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryPartitionOnlyCountsPartition(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	query, params, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant", "pk_value": "t1"})
+	query, params, _, err := s.buildCountQuery(nil, Options{PartitionKeyField: "tenant", PartitionKeyValue: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -360,20 +341,20 @@ func TestCosmosDBBuildCountQueryRejectsUnsafeFilterKeys(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryRejectsUnsafePartitionField(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	// A dotted pk_field is rejected too: Create stores the partition value
+	// A dotted partition key field is rejected too: Create stores the partition value
 	// under the literal top-level key, so a nested lookup would count 0.
 	for _, field := range []string{"a b", `a"]`, "meta.tenant"} {
-		_, _, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": field, "pk_value": "x"})
+		_, _, _, err := s.buildCountQuery(nil, Options{PartitionKeyField: field, PartitionKeyValue: "x"})
 		if err == nil || !strings.Contains(err.Error(), "invalid partition key field") {
-			t.Fatalf("pk_field %q: err = %v; want an invalid partition key field error", field, err)
+			t.Fatalf("partition key field %q: err = %v; want an invalid partition key field error", field, err)
 		}
 	}
 }
 
 func TestCosmosDBBuildCountQueryPartitionFieldWithoutValueIsError(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	if _, _, _, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant"}); err == nil {
-		t.Fatalf("expected an error when pk_field has no pk_value")
+	if _, _, _, err := s.buildCountQuery(nil, Options{PartitionKeyField: "tenant"}); err == nil {
+		t.Fatalf("expected an error when a partition key field has no value")
 	}
 }
 
@@ -385,16 +366,16 @@ func TestCosmosDBCountContextReturnsErrorsInsteadOfZero(t *testing.T) {
 		name   string
 		dest   any
 		filter map[string]any
-		params []map[string]any
+		opts   []Option
 	}{
-		{"nil destination", nil, nil, []map[string]any{cosmosCountPartition}},
+		{"nil destination", nil, nil, []Option{WithPartitionKey("pk", "tenant-1")}},
 		{"missing partition key", &cosmosSampleItem{}, nil, nil},
-		{"invalid filter key", &cosmosSampleItem{}, map[string]any{"a b": 1}, []map[string]any{cosmosCountPartition}},
-		{"pk_field without pk_value", &cosmosSampleItem{}, nil, []map[string]any{{"pk_field": "tenant"}}},
+		{"invalid filter key", &cosmosSampleItem{}, map[string]any{"a b": 1}, []Option{WithPartitionKey("pk", "tenant-1")}},
+		{"partition key field without a value", &cosmosSampleItem{}, nil, []Option{WithPartitionKeyField("tenant")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			n, err := s.CountContext(ctx, tc.dest, tc.filter, tc.params...)
+			n, err := s.CountContext(ctx, tc.dest, tc.filter, tc.opts...)
 			if err == nil {
 				t.Fatalf("CountContext returned (%d, nil); want an error", n)
 			}
@@ -407,7 +388,7 @@ func TestCosmosDBCountContextReturnsErrorsInsteadOfZero(t *testing.T) {
 
 func TestCosmosDBBuildCountQueryReturnsPartitionKey(t *testing.T) {
 	s := &CosmosDBAdapter{}
-	_, _, pk, err := s.buildCountQuery(nil, map[string]any{"pk_field": "tenant", "pk_value": 7})
+	_, _, pk, err := s.buildCountQuery(nil, Options{PartitionKeyField: "tenant", PartitionKeyValue: 7})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -420,7 +401,7 @@ func TestCosmosDBBuildCountQueryAllowsNestedFilterPaths(t *testing.T) {
 	s := &CosmosDBAdapter{}
 	query, _, _, err := s.buildCountQuery(
 		map[string]any{"address.city": "Paris"},
-		map[string]any{"pk_field": "tenant", "pk_value": "t1"},
+		Options{PartitionKeyField: "tenant", PartitionKeyValue: "t1"},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -640,7 +621,7 @@ func TestCosmosDBCountContextSendsScopedQuery(t *testing.T) {
 		return fakeCosmosJSON(req, `{"_rid":"x","Documents":[7],"_count":1}`), nil
 	})
 
-	n, err := s.CountContext(context.Background(), &cosmosSampleItem{}, map[string]any{"status": "active"}, cosmosCountPartition)
+	n, err := s.CountContext(context.Background(), &cosmosSampleItem{}, map[string]any{"status": "active"}, WithPartitionKey("pk", "tenant-1"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1029,8 +1010,8 @@ func TestCosmosDBReadsSendSessionTokenFromWrite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			transport := &sessionTokenTransport{createStatus: tc.createStatus, writeToken: "0:-1#42"}
 			s := newSessionTokenAdapter(t, transport)
-			pkA := map[string]any{"pk_field": "pk", "pk_value": "a"}
-			pkB := map[string]any{"pk_field": "pk", "pk_value": "b"}
+			pkA := WithPartitionKey("pk", "a")
+			pkB := WithPartitionKey("pk", "b")
 
 			if err := s.Create(cosmosSampleItem{Id: "1"}, pkA); (err != nil) != tc.wantErr {
 				t.Fatalf("Create err = %v; want error: %v", err, tc.wantErr)
@@ -1065,7 +1046,7 @@ func TestCosmosDBReadsSendSessionTokenFromWrite(t *testing.T) {
 func TestCosmosDBCountSendsSessionTokenFromWrite(t *testing.T) {
 	transport := &sessionTokenTransport{createStatus: http.StatusCreated, writeToken: "0:-1#44", queryDocuments: `[1]`}
 	s := newSessionTokenAdapter(t, transport)
-	params := map[string]any{"pk_field": "pk", "pk_value": "a"}
+	params := WithPartitionKey("pk", "a")
 
 	if err := s.Create(cosmosSampleItem{Id: "1"}, params); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -1204,7 +1185,7 @@ func TestCosmosDBPreferredRegionsRouteRequests(t *testing.T) {
 			if err := s.Ping(); err != nil {
 				t.Fatalf("Ping: %v", err)
 			}
-			if err := s.Create(cosmosSampleItem{Id: "1"}, map[string]any{"pk_field": "pk", "pk_value": "a"}); err != nil {
+			if err := s.Create(cosmosSampleItem{Id: "1"}, WithPartitionKey("pk", "a")); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 
@@ -1297,7 +1278,7 @@ func TestCosmosDBReadSessionNotAvailable(t *testing.T) {
 			s.setSessionToken("cosmos_sample_items", "a", &token)
 
 			var got cosmosSampleItem
-			err = s.Get(&got, map[string]any{"id": "1"}, map[string]any{"pk_field": "pk", "pk_value": "a"})
+			err = s.Get(&got, map[string]any{"id": "1"}, WithPartitionKey("pk", "a"))
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Get err = %v; want error: %v", err, tc.wantErr)
 			}
@@ -1421,7 +1402,7 @@ func TestCosmosDBSessionTokensConfigTurnsTrackingOff(t *testing.T) {
 	transport := &sessionTokenTransport{createStatus: http.StatusCreated, writeToken: "0:-1#42"}
 	s := newSessionTokenAdapter(t, transport)
 	s.sessionTokens = nil
-	params := map[string]any{"pk_field": "pk", "pk_value": "a"}
+	params := WithPartitionKey("pk", "a")
 	if err := s.Create(cosmosSampleItem{Id: "1"}, params); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -1471,7 +1452,7 @@ func TestSessionTokenStoreRangeTokensDroppedWithContainer(t *testing.T) {
 func TestCosmosDBGetAfterDeleteSendsDeleteSessionToken(t *testing.T) {
 	transport := &sessionTokenTransport{writeToken: "0:-1#43"}
 	s := newSessionTokenAdapter(t, transport)
-	params := map[string]any{"pk_field": "pk", "pk_value": "a"}
+	params := WithPartitionKey("pk", "a")
 
 	if err := s.Delete(cosmosSampleItem{}, map[string]any{"id": "1"}, params); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -1482,5 +1463,106 @@ func TestCosmosDBGetAfterDeleteSendsDeleteSessionToken(t *testing.T) {
 	}
 	if got := transport.lastQuerySession(t); got != "0:-1#43" {
 		t.Fatalf("Get after Delete sent session token %q; want %q", got, "0:-1#43")
+	}
+}
+
+// cosmosUpdateFake serves Update's read and replace. Each read returns the
+// next document in docs; each replace is answered with the next status.
+func cosmosUpdateFake(t *testing.T, docs []string, statuses []int) (*CosmosDBAdapter, *[]string, *[]map[string]any) {
+	t.Helper()
+	var ifMatch []string
+	var bodies []map[string]any
+	reads := 0
+	s := newFakeCosmosAdapter(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/" {
+			// The SDK reads account properties before its first operation.
+			return fakeCosmosJSON(req, `{"id":"fake","writableLocations":[],"readableLocations":[]}`), nil
+		}
+		if req.Method == http.MethodPost {
+			doc := docs[min(reads, len(docs)-1)]
+			reads++
+			return fakeCosmosJSON(req, `{"_rid":"x","Documents":[`+doc+`],"_count":1}`), nil
+		}
+		ifMatch = append(ifMatch, req.Header.Get("If-Match"))
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("replace body: %v", err)
+		}
+		bodies = append(bodies, body)
+		resp := fakeCosmosJSON(req, `{}`)
+		resp.StatusCode = statuses[min(len(ifMatch)-1, len(statuses)-1)]
+		return resp, nil
+	})
+	return s, &ifMatch, &bodies
+}
+
+// Another write between Update's read and its replace changes the ETag. The
+// replace must then fail its If-Match, and Update must apply the named fields
+// again on top of that write instead of overwriting it.
+func TestCosmosDBUpdateRetriesWhenTheItemChanged(t *testing.T) {
+	s, ifMatch, bodies := cosmosUpdateFake(t, []string{
+		`{"id":"1","pk":"1","name":"open","owner":"ann","_etag":"e1"}`,
+		`{"id":"1","pk":"1","name":"open","owner":"bob","_etag":"e2"}`,
+	}, []int{http.StatusPreconditionFailed, http.StatusOK})
+
+	err := s.Update(&cosmosSampleItem{Id: "1", Name: "closed"}, map[string]any{"id": "1"}, WithFields("name"))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got := strings.Join(*ifMatch, ","); got != "e1,e2" {
+		t.Fatalf("If-Match = %s; want e1,e2", got)
+	}
+	last := (*bodies)[len(*bodies)-1]
+	if last["name"] != "closed" || last["owner"] != "bob" {
+		t.Fatalf("replaced with %v; want name closed and the concurrent owner kept", last)
+	}
+}
+
+func TestCosmosDBUpdateGivesUpAfterRepeatedConflicts(t *testing.T) {
+	s, ifMatch, _ := cosmosUpdateFake(t, []string{`{"id":"1","pk":"1","_etag":"e1"}`}, []int{http.StatusPreconditionFailed})
+	err := s.Update(&cosmosSampleItem{Id: "1", Name: "closed"}, map[string]any{"id": "1"}, WithFields("name"))
+	if err == nil || !strings.Contains(err.Error(), "changed by another write") {
+		t.Fatalf("err = %v; want a conflict error", err)
+	}
+	if len(*ifMatch) != cosmosUpdateAttempts {
+		t.Fatalf("replaced %d times; want %d attempts", len(*ifMatch), cosmosUpdateAttempts)
+	}
+}
+
+func TestCosmosDBUpdateStopsRetryingWhenTheContextEnds(t *testing.T) {
+	s, ifMatch, _ := cosmosUpdateFake(t, []string{`{"id":"1","pk":"1","_etag":"e1"}`}, []int{http.StatusPreconditionFailed})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := s.UpdateContext(ctx, &cosmosSampleItem{Id: "1", Name: "closed"}, map[string]any{"id": "1"}, WithFields("name"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v; want context.Canceled", err)
+	}
+	if len(*ifMatch) > 1 {
+		t.Fatalf("replaced %d times after the context ended; want at most 1", len(*ifMatch))
+	}
+}
+
+// A cross-partition query can answer with an empty page and a continuation
+// token. Get must read on rather than report the document as missing.
+func TestCosmosDBGetReadsPastEmptyPages(t *testing.T) {
+	queries := 0
+	s := newFakeCosmosAdapter(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/" {
+			return fakeCosmosJSON(req, `{"id":"fake","writableLocations":[],"readableLocations":[]}`), nil
+		}
+		queries++
+		if queries == 1 {
+			resp := fakeCosmosJSON(req, `{"_rid":"x","Documents":[],"_count":0}`)
+			resp.Header.Set("x-ms-continuation", "next")
+			return resp, nil
+		}
+		return fakeCosmosJSON(req, `{"_rid":"x","Documents":[{"id":"1","name":"found"}],"_count":1}`), nil
+	})
+	var got cosmosSampleItem
+	if err := s.Get(&got, map[string]any{"id": "1"}); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "found" || queries != 2 {
+		t.Fatalf("got %+v after %d queries; want the document from the second page", got, queries)
 	}
 }

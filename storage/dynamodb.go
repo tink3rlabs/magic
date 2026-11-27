@@ -27,6 +27,12 @@ import (
 type DynamoDBAdapter struct {
 	DB     *dynamodb.Client
 	config map[string]string
+
+	// keySchema caches each table's key attribute names, hash first. Update
+	// needs them to address the item and to keep key attributes out of the SET
+	// clause, and a table's key schema cannot change once it exists.
+	keySchemaMu sync.RWMutex
+	keySchema   map[string][]string
 }
 
 var dynamoDBAdapterLock = &sync.Mutex{}
@@ -124,11 +130,11 @@ func (s *DynamoDBAdapter) GetLatestMigration() (int, error) {
 	return -1, fmt.Errorf("DynamoDB GetLatestMigration is not supported")
 }
 
-func (s *DynamoDBAdapter) Create(item any, params ...map[string]any) error {
-	return s.CreateContext(context.Background(), item, params...)
+func (s *DynamoDBAdapter) Create(item any, opts ...Option) error {
+	return s.CreateContext(context.Background(), item, opts...)
 }
 
-func (s *DynamoDBAdapter) CreateContext(ctx context.Context, item any, params ...map[string]any) error {
+func (s *DynamoDBAdapter) CreateContext(ctx context.Context, item any, opts ...Option) error {
 	i, err := attributevalue.MarshalMapWithOptions(item, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal input item into dynamodb item, %v", err)
@@ -146,11 +152,11 @@ func (s *DynamoDBAdapter) CreateContext(ctx context.Context, item any, params ..
 	return nil
 }
 
-func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, params ...map[string]any) error {
-	return s.GetContext(context.Background(), dest, filter, params...)
+func (s *DynamoDBAdapter) Get(dest any, filter map[string]any, opts ...Option) error {
+	return s.GetContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *DynamoDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) error {
+func (s *DynamoDBAdapter) GetContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
@@ -177,19 +183,180 @@ func (s *DynamoDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	}
 }
 
-func (s *DynamoDBAdapter) Update(item any, filter map[string]any, params ...map[string]any) error {
-	return s.UpdateContext(context.Background(), item, filter, params...)
+func (s *DynamoDBAdapter) Update(item any, filter map[string]any, opts ...Option) error {
+	return s.UpdateContext(context.Background(), item, filter, opts...)
 }
 
-func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
-	return s.CreateContext(ctx, item)
+// UpdateContext writes item to the entry its key identifies, and only if that
+// entry also matches filter. It never creates one; use Create.
+//
+// This is an UpdateItem with an UpdateExpression rather than a PutItem, which
+// is what lets it write some attributes and leave the rest of the stored entry
+// alone. A PutItem cannot: it replaces the whole entry, so an attribute the
+// caller never mentioned is deleted rather than preserved (#263).
+//
+// Without WithFields every attribute of the item is written, which matches the
+// SQL adapter's default. With it, only the named ones are.
+func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
+	if len(filter) == 0 {
+		return errors.New("filtering is required when updating a resource")
+	}
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return fmt.Errorf("failed to update: %w", err)
+	}
+
+	table := s.getTableName(item)
+	keyNames, err := s.keyAttributeNames(ctx, table)
+	if err != nil {
+		return err
+	}
+	attributes, err := attributevalue.MarshalMapWithOptions(item, useJSONTag)
+	if err != nil {
+		return fmt.Errorf("failed to marshal input item into dynamodb item, %v", err)
+	}
+
+	key := make(map[string]types.AttributeValue, len(keyNames))
+	for _, name := range keyNames {
+		value, present := attributes[name]
+		if !present {
+			return fmt.Errorf("a key attribute is required when updating a resource: %q is missing from the item", name)
+		}
+		key[name] = value
+	}
+
+	names := map[string]string{}
+	values := map[string]types.AttributeValue{}
+
+	// The write set comes from the struct, not the marshalled map: an omitempty
+	// field holding its zero value is missing from the map, and must be removed
+	// from the entry. UpdateItem rejects a SET on a key attribute, so those are
+	// skipped rather than rejected: with no WithFields the write set is every
+	// field of the item, and the key is always among them.
+	fields := jsonFieldNames(reflect.TypeOf(item))
+	write := options.Fields
+	if !options.FieldsSet {
+		write = fields
+	}
+	assignments, removals := []string{}, []string{}
+	for _, field := range write {
+		if slices.Contains(keyNames, field) {
+			continue
+		}
+		if !slices.Contains(fields, field) {
+			return fmt.Errorf("unknown field %q on %s", field, table)
+		}
+		n := len(assignments) + len(removals)
+		name := fmt.Sprintf("#s%d", n)
+		names[name] = field
+		value, present := attributes[field]
+		if !present {
+			removals = append(removals, name)
+			continue
+		}
+		placeholder := fmt.Sprintf(":s%d", n)
+		values[placeholder] = value
+		assignments = append(assignments, fmt.Sprintf("%s = %s", name, placeholder))
+	}
+	if len(assignments)+len(removals) == 0 {
+		return errors.New("nothing to update: every field named is a key attribute")
+	}
+	update := []string{}
+	if len(assignments) > 0 {
+		update = append(update, "SET "+strings.Join(assignments, ", "))
+	}
+	if len(removals) > 0 {
+		update = append(update, "REMOVE "+strings.Join(removals, ", "))
+	}
+
+	// The entry must already exist -- UpdateItem would otherwise create it --
+	// and must match the filter. Key attributes may appear in a condition even
+	// though they may not be assigned, so the filter needs no special casing.
+	names["#exists"] = keyNames[0]
+	conditions := []string{"attribute_exists(#exists)"}
+	for field, want := range filter {
+		value, err := attributevalue.Marshal(want)
+		if err != nil {
+			return fmt.Errorf("failed to marshal filter value for %q, %v", field, err)
+		}
+		name, placeholder := fmt.Sprintf("#c%d", len(conditions)), fmt.Sprintf(":c%d", len(conditions))
+		names[name], values[placeholder] = field, value
+		conditions = append(conditions, fmt.Sprintf("%s = %s", name, placeholder))
+	}
+
+	_, err = s.DB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(table),
+		Key:                       key,
+		UpdateExpression:          aws.String(strings.Join(update, " ")),
+		ConditionExpression:       aws.String(strings.Join(conditions, " AND ")),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+	})
+	if err != nil {
+		// The condition covers both "no such entry" and "the filter did not
+		// match", and DynamoDB reports them identically. ErrNotFound is what
+		// the SQL adapter returns for either.
+		var unmet *types.ConditionalCheckFailedException
+		if errors.As(err, &unmet) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("failed to update item, %v", err)
+	}
+	return nil
 }
 
-func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, params ...map[string]any) error {
-	return s.DeleteContext(context.Background(), item, filter, params...)
+// keyAttributeNames returns the table's key attribute names, hash key first.
+// The schema is fixed for the life of a table, so it is fetched once per table
+// and cached.
+func (s *DynamoDBAdapter) keyAttributeNames(ctx context.Context, table string) ([]string, error) {
+	s.keySchemaMu.RLock()
+	cached, ok := s.keySchema[table]
+	s.keySchemaMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	described, err := s.DB.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(table)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe table %s: %v", table, err)
+	}
+	var hash, sortKey string
+	for _, element := range described.Table.KeySchema {
+		if element.AttributeName == nil {
+			continue
+		}
+		if element.KeyType == types.KeyTypeHash {
+			hash = *element.AttributeName
+		} else {
+			sortKey = *element.AttributeName
+		}
+	}
+	if hash == "" {
+		return nil, fmt.Errorf("table %s reports no hash key", table)
+	}
+	names := []string{hash}
+	if sortKey != "" {
+		names = append(names, sortKey)
+	}
+
+	s.keySchemaMu.Lock()
+	if s.keySchema == nil {
+		s.keySchema = map[string][]string{}
+	}
+	s.keySchema[table] = names
+	s.keySchemaMu.Unlock()
+	return names, nil
 }
 
-func (s *DynamoDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, params ...map[string]any) error {
+// useJSONTag makes the attributevalue codec read `json` tags, which is how
+// every other method in this adapter marshals.
+func useJSONTag(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" }
+
+func (s *DynamoDBAdapter) Delete(item any, filter map[string]any, opts ...Option) error {
+	return s.DeleteContext(context.Background(), item, filter, opts...)
+}
+
+func (s *DynamoDBAdapter) DeleteContext(ctx context.Context, item any, filter map[string]any, opts ...Option) error {
 	key, err := attributevalue.MarshalMapWithOptions(filter, func(eo *attributevalue.EncoderOptions) { eo.TagKey = "json" })
 	if err != nil {
 		return fmt.Errorf("failed to marshal item id into dynamodb attribute, %v", err)
@@ -252,19 +419,19 @@ func (s *DynamoDBAdapter) executePaginatedQuery(
 	return nextToken, nil
 }
 
-func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, params...)
+func (s *DynamoDBAdapter) List(dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
+	return s.ListContext(context.Background(), dest, sortKey, filter, limit, cursor, opts...)
 }
 
-func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey string, filter map[string]any, limit int, cursor string, opts ...Option) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
-	sortDirection, err := extractSortDirection(extractParams(params...))
+	options, err := ResolveOptions(opts...)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list: %w", err)
 	}
-	from, err := s.fromClause(dest, params...)
+	from, err := s.fromClause(dest, options)
 	if err != nil {
 		return "", err
 	}
@@ -276,6 +443,9 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 	if err != nil {
 		return "", err
 	}
+	if err := requireFilterWhenOrdering(sortKey, where != ""); err != nil {
+		return "", err
+	}
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		query := "SELECT * FROM " + from
 
@@ -284,27 +454,38 @@ func (s *DynamoDBAdapter) ListContext(ctx context.Context, dest any, sortKey str
 			query += fmt.Sprintf(` WHERE %s`, where)
 		}
 
-		query += dynamoOrderBy(sortKey, sortDirection)
+		query += dynamoOrderBy(sortKey, options.SortDirection)
 
 		input.Statement = aws.String(query)
 		return input
 	})
 }
 
-func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, params...)
+// requireFilterWhenOrdering rejects an ordered scan with nothing to scope it.
+// PartiQL on DynamoDB refuses ORDER BY unless the statement also carries a
+// WHERE, and the service reports that as an opaque ValidationException from
+// inside ExecuteStatement. Failing here names the caller's actual mistake.
+func requireFilterWhenOrdering(sortKey string, hasWhere bool) error {
+	if sortKey == "" || hasWhere {
+		return nil
+	}
+	return fmt.Errorf("ordering by %q requires a filter: DynamoDB rejects ORDER BY without a WHERE clause", sortKey)
 }
 
-func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, params ...map[string]any) (string, error) {
+func (s *DynamoDBAdapter) Search(dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.SearchContext(context.Background(), dest, sortKey, query, limit, cursor, opts...)
+}
+
+func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey string, query string, limit int, cursor string, opts ...Option) (string, error) {
 	if err := validateSortKey(sortKey); err != nil {
 		return "", err
 	}
-	sortDirection, err := extractSortDirection(extractParams(params...))
+	options, err := ResolveOptions(opts...)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to search: %w", err)
 	}
 
-	from, err := s.fromClause(dest, params...)
+	from, err := s.fromClause(dest, options)
 	if err != nil {
 		return "", err
 	}
@@ -322,6 +503,9 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 		slog.Error("Filter parsing failed", "error", err)
 		return "", &serviceErrors.BadRequest{Message: err.Error()}
 	}
+	if err := requireFilterWhenOrdering(sortKey, whereClause != ""); err != nil {
+		return "", err
+	}
 
 	return s.executePaginatedQuery(ctx, dest, limit, cursor, func(input *dynamodb.ExecuteStatementInput) *dynamodb.ExecuteStatementInput {
 		// Build query
@@ -329,7 +513,7 @@ func (s *DynamoDBAdapter) SearchContext(ctx context.Context, dest any, sortKey s
 		if whereClause != "" {
 			query += fmt.Sprintf(` WHERE %s`, whereClause)
 		}
-		query += dynamoOrderBy(sortKey, sortDirection)
+		query += dynamoOrderBy(sortKey, options.SortDirection)
 
 		input.Statement = aws.String(query)
 		input.Parameters = dynamoParams
@@ -346,25 +530,29 @@ func dynamoOrderBy(sortKey string, dir SortingDirection) string {
 	return fmt.Sprintf(` ORDER BY "%s" %s`, sortKey, dir)
 }
 
-func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, params ...map[string]any) (int64, error) {
-	return s.CountContext(context.Background(), dest, filter, params...)
+func (s *DynamoDBAdapter) Count(dest any, filter map[string]any, opts ...Option) (int64, error) {
+	return s.CountContext(context.Background(), dest, filter, opts...)
 }
 
-func (s *DynamoDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, params ...map[string]any) (int64, error) {
+func (s *DynamoDBAdapter) CountContext(ctx context.Context, dest any, filter map[string]any, opts ...Option) (int64, error) {
 	// TODO Implement
 	var total int64
 	return total, nil
 }
 
-func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	return s.QueryContext(context.Background(), dest, statement, limit, cursor, params...)
+func (s *DynamoDBAdapter) Query(dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
+	return s.QueryContext(context.Background(), dest, statement, limit, cursor, opts...)
 }
 
-// QueryContext runs a PartiQL statement. Values must be passed through
-// QueryParametersKey and referenced as "?" placeholders, never written into
+// QueryContext runs a PartiQL statement. Values must be passed with
+// WithQueryParameters and referenced as "?" placeholders, never written into
 // statement.
-func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, params ...map[string]any) (string, error) {
-	values, err := dynamoQueryParameters(params...)
+func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement string, limit int, cursor string, opts ...Option) (string, error) {
+	options, err := ResolveOptions(opts...)
+	if err != nil {
+		return "", fmt.Errorf("failed to query: %w", err)
+	}
+	values, err := dynamoQueryParameters(options.QueryParameters)
 	if err != nil {
 		return "", err
 	}
@@ -375,20 +563,15 @@ func (s *DynamoDBAdapter) QueryContext(ctx context.Context, dest any, statement 
 	})
 }
 
-// dynamoQueryParameters marshals the QueryParametersKey slice in order, since
-// PartiQL binds "?" placeholders by position.
-func dynamoQueryParameters(params ...map[string]any) ([]types.AttributeValue, error) {
-	raw, ok := extractParams(params...)[QueryParametersKey]
-	if !ok || raw == nil {
+// dynamoQueryParameters marshals the WithQueryParameters values in order,
+// since PartiQL binds "?" placeholders by position.
+func dynamoQueryParameters(raw []any) ([]types.AttributeValue, error) {
+	if len(raw) == 0 {
 		return nil, nil
 	}
-	rv := reflect.ValueOf(raw)
-	if rv.Kind() != reflect.Slice || rv.Type().Elem().Kind() == reflect.Uint8 {
-		return nil, fmt.Errorf("%s must be a slice of values, got %T", QueryParametersKey, raw)
-	}
-	values := make([]types.AttributeValue, rv.Len())
-	for i := range values {
-		v, err := attributevalue.Marshal(rv.Index(i).Interface())
+	values := make([]types.AttributeValue, len(raw))
+	for i, value := range raw {
+		v, err := attributevalue.Marshal(value)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal query parameter %d: %w", i, err)
 		}
@@ -418,18 +601,16 @@ func (s *DynamoDBAdapter) getTableName(obj any) string {
 var validDynamoIndexName = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,255}$`)
 
 // fromClause returns the quoted table for dest, or "table"."index" when
-// IndexKey names a secondary index to read from.
-func (s *DynamoDBAdapter) fromClause(dest any, params ...map[string]any) (string, error) {
+// WithIndex names a secondary index to read from.
+func (s *DynamoDBAdapter) fromClause(dest any, options Options) (string, error) {
 	from := fmt.Sprintf(`"%s"`, s.getTableName(dest))
-	raw, ok := extractParams(params...)[IndexKey]
-	if !ok {
+	if options.Index == "" {
 		return from, nil
 	}
-	index, isString := raw.(string)
-	if !isString || !validDynamoIndexName.MatchString(index) {
-		return "", fmt.Errorf("invalid %s %v: must be a string matching [A-Za-z0-9_.-]{3,255}", IndexKey, raw)
+	if !validDynamoIndexName.MatchString(options.Index) {
+		return "", fmt.Errorf("invalid index %q: must match [A-Za-z0-9_.-]{3,255}", options.Index)
 	}
-	return fmt.Sprintf(`%s."%s"`, from, index), nil
+	return fmt.Sprintf(`%s."%s"`, from, options.Index), nil
 }
 
 // errFilterMatchesNothing reports a filter that can't match any item, such as

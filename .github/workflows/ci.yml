@@ -63,6 +63,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     timeout-minutes: 10
+    services:
+      # The DynamoDB adapter tests talk to a real DynamoDB API. Without an
+      # endpoint they skip, so running them here is what keeps that skip from
+      # turning into a silent pass. DynamoDB Local is the lightest thing that
+      # speaks the API: a few seconds to start, no AWS account.
+      dynamodb:
+        image: amazon/dynamodb-local:2.5.2
+        ports:
+          - 8000:8000
     # services:
     #   cassandra:
     #     image: cassandra:5 # Use a specific version if needed
@@ -83,12 +92,29 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # The CosmosDB adapter tests skip without an endpoint, like the DynamoDB
+      # ones. The emulator needs a --protocol argument, which a service
+      # container cannot pass, so it starts here. Pinned by digest because
+      # vnext-preview is a moving tag.
+      - name: Start the CosmosDB emulator
+        run: |
+          docker run -d -p 8081:8081 \
+            mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator@sha256:db53613dae19d0a3d5ad50688d14aa6e957af082dafea56b52e1bd3a6b3f1406 \
+            --protocol http
+          for _ in $(seq 1 60); do
+            curl -sf -o /dev/null http://localhost:8081/ && exit 0
+            sleep 2
+          done
+          echo "the CosmosDB emulator did not start within 120s" >&2
+          exit 1
       - name: Run tests
         # The executed-SQL tests use github.com/mattn/go-sqlite3, which is cgo.
         # Runners default to CGO_ENABLED=1, but pinning it keeps those tests
         # from silently failing to build if that default ever changes.
         env:
           CGO_ENABLED: '1'
+          DYNAMODB_TEST_ENDPOINT: http://localhost:8000
+          COSMOSDB_TEST_ENDPOINT: http://localhost:8081
         run: go test -v -cover ./...
         # env:
         #   CASSANDRA_HOSTS: "localhost"

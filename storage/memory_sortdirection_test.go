@@ -15,7 +15,7 @@ type sortDirRow struct {
 func (sortDirRow) TableName() string { return "memtest_sortdir" }
 
 // The in-memory adapter delegates to an embedded SQLAdapter. It must forward
-// the variadic params (which carry SortDirectionKey) so that ordering and
+// the variadic options (which carry the sort direction) so that ordering and
 // validation behave the same as the SQL adapter — see storage/memory.go.
 func TestMemoryAdapterForwardsSortDirection(t *testing.T) {
 	adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, nil)
@@ -34,7 +34,7 @@ func TestMemoryAdapterForwardsSortDirection(t *testing.T) {
 	}
 
 	var desc []sortDirRow
-	if _, err := adapter.List(&desc, "id", nil, 10, "", map[string]any{storage.SortDirectionKey: "DESC"}); err != nil {
+	if _, err := adapter.List(&desc, "id", nil, 10, "", storage.WithSortDirection(storage.Descending)); err != nil {
 		t.Fatalf("list DESC: %v", err)
 	}
 	got := []string{}
@@ -47,13 +47,13 @@ func TestMemoryAdapterForwardsSortDirection(t *testing.T) {
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("DESC ordering = %v, want %v (SortDirectionKey was dropped?)", got, want)
+			t.Fatalf("DESC ordering = %v, want %v (WithSortDirection was dropped?)", got, want)
 		}
 	}
 
 	// An invalid direction must surface an error, not be silently ignored.
 	var bad []sortDirRow
-	if _, err := adapter.List(&bad, "id", nil, 10, "", map[string]any{storage.SortDirectionKey: "sideways"}); err == nil {
+	if _, err := adapter.List(&bad, "id", nil, 10, "", storage.WithSortDirection(storage.SortingDirection("sideways"))); err == nil {
 		t.Fatalf("invalid sort direction returned no error; want error")
 	}
 }
@@ -64,9 +64,9 @@ type indexKeyRow struct {
 
 func (indexKeyRow) TableName() string { return "memtest_indexkey" }
 
-// IndexKey is a DynamoDB hint. Other adapters must ignore it so the same
+// WithIndex is a DynamoDB hint. Other adapters must ignore it so the same
 // calling code works on every adapter.
-func TestMemoryAdapterIgnoresIndexKey(t *testing.T) {
+func TestMemoryAdapterIgnoresIndex(t *testing.T) {
 	adapter, err := storage.StorageAdapterFactory{}.GetInstance(storage.MEMORY, nil)
 	if err != nil {
 		t.Fatalf("GetInstance(MEMORY): %v", err)
@@ -79,18 +79,18 @@ func TestMemoryAdapterIgnoresIndexKey(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	params := map[string]any{storage.IndexKey: "any_index"}
+	params := storage.WithIndex("any_index")
 	var rows []indexKeyRow
 	if _, err := adapter.List(&rows, "id", map[string]any{"id": "1"}, 10, "", params); err != nil {
-		t.Fatalf("List with IndexKey: %v", err)
+		t.Fatalf("List with WithIndex: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Fatalf("List with IndexKey returned %d rows, want 1", len(rows))
+		t.Fatalf("List with WithIndex returned %d rows, want 1", len(rows))
 	}
 	if _, err := adapter.Search(&rows, "id", "id:1", 10, "", params); err != nil {
-		t.Fatalf("Search with IndexKey: %v", err)
+		t.Fatalf("Search with WithIndex: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Fatalf("Search with IndexKey returned %d rows, want 1", len(rows))
+		t.Fatalf("Search with WithIndex returned %d rows, want 1", len(rows))
 	}
 }

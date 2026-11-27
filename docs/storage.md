@@ -105,26 +105,28 @@ adapter, _ := storage.StorageAdapterFactory{}.GetInstance(storage.DYNAMODB, conf
 
 When `access_key` / `secret_key` are empty, the adapter uses the standard AWS credential provider chain (env vars, IRSA, instance role).
 
-DynamoDB takes these per-call params in the variadic `params ...map[string]any` argument:
+`Update` reads the table's key schema once per table with `DescribeTable`, so the credentials need `dynamodb:DescribeTable` as well as `dynamodb:UpdateItem`.
 
-| Param key | Constant | Applies to | Meaning |
-|-----------|----------|------------|---------|
-| `sort_direction` | `storage.SortDirectionKey` | `List`, `Search` | `"ASC"` (default) or `"DESC"`. Same key as the other adapters. PartiQL only honours `ORDER BY` on a Query (the `WHERE` equals the partition key) against the table or index sort key. |
-| `index` | `storage.IndexKey` | `List`, `Search` | Read from this global or local secondary index (`FROM "table"."index"`) instead of the base table. Must match `[A-Za-z0-9_.-]{3,255}`. Other adapters ignore it. |
-| `parameters` | `storage.QueryParametersKey` | `Query` | Values for the statement's `?` placeholders, as a slice in placeholder order. |
+DynamoDB reads these [options](#options):
+
+| Option | Applies to | Meaning |
+|--------|------------|---------|
+| `WithSortDirection(dir)` | `List`, `Search` | `storage.Ascending` (default) or `storage.Descending`. PartiQL only honours `ORDER BY` on a Query (the `WHERE` equals the partition key) against the table or index sort key, and rejects `ORDER BY` without a `WHERE`. |
+| `WithIndex(name)` | `List`, `Search` | Read from this global or local secondary index (`FROM "table"."index"`) instead of the base table. Must match `[A-Za-z0-9_.-]{3,255}`. Other adapters ignore it. |
+| `WithQueryParameters(v...)` | `Query` | Values for the statement's `?` placeholders, in placeholder order. |
 
 ```go title="index.go"
 var rules []Rule
 next, err := adapter.List(&rules, "id",
     map[string]any{"principal": principal},
     50, cursor,
-    map[string]any{storage.IndexKey: "principal_index"},
+    storage.WithIndex("principal_index"),
 )
 ```
 
 `List` filter keys are written into the statement, so each dot-separated part must match `[A-Za-z0-9_-]+`; anything else returns an error before a request is sent. Each part is quoted, so keys that are reserved words (`status`, `name`) or contain hyphens work, and `address.city` is a nested path (`"address"."city"`). The `sortKey` argument is quoted the same way (`ORDER BY "name" ASC`). A `nil` value renders `IS NULL`, a slice renders `IN (...)`, and an empty slice returns an empty page without querying.
 
-Invalid filter keys, `IndexKey`, and `SortDirectionKey` return a plain error, not `*errors.BadRequest`: those values come from application code. `Search` query text is user input, so every parse error from DynamoDB `Search` is a `BadRequest` (HTTP 400).
+Invalid filter keys, index names and sort directions return a plain error, not `*errors.BadRequest`: those values come from application code. `Search` query text is user input, so every parse error from DynamoDB `Search` is a `BadRequest` (HTTP 400).
 
 ### CosmosDB
 
@@ -184,30 +186,31 @@ Set `preferred_regions` to an ordered, comma-separated list of the regions the w
 - On an account with a single write region, writes always go to that region; preferred regions only route reads. Workloads that must write through a regional endpoint need an account that writes in that region.
 
 !!! warning "CosmosDB partition key is per-call, not global"
-    Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter exposes this via the variadic `params ...map[string]any` argument. If you forget, queries either fail or cross-partition-fan-out (slow and expensive). See the table and example below.
+    Azure CosmosDB requires you to pass the partition key on every operation, not just at adapter construction. The adapter takes it as an option. If you forget, queries either fail or cross-partition-fan-out (slow and expensive).
 
-CosmosDB takes per-call params for the partition key. Pass them in the variadic `params ...map[string]any` argument on `Create` / `Get` / `Update` / `Delete` / `List` / `Search`:
-
-| Param key      | Meaning                                                                |
-|----------------|------------------------------------------------------------------------|
-| `pk_field`     | Field name to use as the partition key in your document (default `"pk"`). |
-| `pk_value`     | Value for that partition key.                                          |
-| `sort_direction` | `"ASC"` (default) or `"DESC"` for `List` / `Search`. Same key as `storage.SortDirectionKey`. |
+Pass it on `Create` / `Get` / `Update` / `Delete` / `List` / `Search`:
 
 ```go title="storage.go"
-params := map[string]any{
-    "pk_field": "tenant",
-    "pk_value": "acme-corp",
-}
-err := adapter.Create(user, params)
-err  = adapter.Get(&user, map[string]any{"id": "user-123"}, params)
+pk := storage.WithPartitionKey("tenant", "acme-corp")
+
+err := adapter.Create(user, pk)
+err  = adapter.Get(&user, map[string]any{"id": "user-123"}, pk)
 ```
+
+`WithPartitionKeyField` names the field and leaves the adapter to read the value
+off the item; the field defaults to `"pk"` when neither is given. With the field
+alone, `Get`, `List`, `Search` and `Update` look in every partition, `Delete`
+reads the value from its filter, and `Count` returns an error, because it needs
+a value.
+
+!!! warning "List and Search need the partition key on large containers"
+    Without a partition key, `List` and `Search` run a cross-partition query with `ORDER BY`. The Go SDK sends it through the gateway, and the gateway rejects a cross-partition `ORDER BY` once a container spans more than one physical partition. The call then returns that error. Pass `WithPartitionKey` to `List` and `Search` on such containers. `Get`, `Update` and `Query` without an `ORDER BY` are not affected.
 
 #### Read-your-writes
 
 The adapter keeps the session token Cosmos DB returns from each `Create` / `Update` / `Delete`, per container and partition key, and sends it on later reads, so on an account with session consistency those reads see that write. A token is also taken from a failed write's response, so after a `409 Conflict` a `Get` sees the item that already exists.
 
-- Reads with `pk_field` / `pk_value` send the token for that partition only.
+- Reads with `WithPartitionKey` send the token for that partition only.
 - Reads without a partition key, and every `Query`, run across partitions and send one token for each partition range of the container.
 - Tokens for the same partition range are merged per region, as the Cosmos DB SDKs do, so on an account that writes in more than one region a read still sees writes accepted in any of them.
 - Tokens are held in memory and are not shared between processes.
@@ -225,6 +228,20 @@ A value that can't be parsed or isn't positive logs a warning and keeps the defa
 
 !!! note "Known limitation: partition splits"
     After Cosmos DB splits a partition range, a response for a write sent to the old range that arrives after one from the new range replaces the new range's token. The next read may then not see the newer write. Fixing this needs the partition-range layout, which the adapter doesn't track.
+
+## Options
+
+Every operation takes a variadic `...storage.Option`. Options are uniform across
+adapters: one an operation or adapter has no use for is accepted and ignored.
+
+| Option                      | Read by            | Meaning                                              |
+|-----------------------------|--------------------|------------------------------------------------------|
+| `WithSortDirection(dir)`    | `List`, `Search`   | `storage.Ascending` (default) or `storage.Descending`. |
+| `WithFields(fields...)`     | `Update`           | Write only these fields. Default is every field.      |
+| `WithPartitionKey(f, v)`    | CosmosDB           | Address a partition by field and value.               |
+| `WithPartitionKeyField(f)`  | CosmosDB           | Name the field; the value is read off the item.       |
+| `WithIndex(name)`           | DynamoDB `List`, `Search` | Read from this secondary index.               |
+| `WithQueryParameters(v...)` | DynamoDB `Query`   | Values for the statement's `?` placeholders, in order. |
 
 ## Common patterns
 
@@ -259,16 +276,16 @@ _, err = adapter.List(
     nil,
     100,
     "",
-    map[string]any{storage.SortDirectionKey: "DESC"},
+    storage.WithSortDirection(storage.Descending),
 )
 ```
 
-The value is case-insensitive (`"asc"` and `"ASC"` are equivalent). Anything other than asc/desc returns an error.
+Anything other than `storage.Ascending` or `storage.Descending` returns an error.
 
 ### Filter vs search
 
-- **`List(dest, sortKey, filter, limit, cursor, params...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed. A slice value matches any of its elements on DynamoDB and CosmosDB.
-- **`Search(dest, sortKey, query, limit, cursor, params...)`** — `query` is a Lucene query string. See [Search (Lucene)](./lucene.md).
+- **`List(dest, sortKey, filter, limit, cursor, opts...)`** — `filter` is a `map[string]any` of exact equalities. Multiple keys are ANDed. A slice value matches any of its elements on DynamoDB and CosmosDB.
+- **`Search(dest, sortKey, query, limit, cursor, opts...)`** — `query` is a Lucene query string. See [Search (Lucene)](./lucene.md).
 
 For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string straight to `Search`. magic handles validation, error reporting, and parameterization. On DynamoDB, `Search` reports those errors as `*errors.BadRequest`; invalid `List` filter keys do not, because the filter map is built by the service, not by the user.
 
@@ -278,7 +295,7 @@ For an HTTP `GET /tasks?filter=...` endpoint, pass the raw `filter` query string
 n, err := adapter.Count(&Task{}, map[string]any{"status": "in_progress"})
 ```
 
-An empty filter counts every item. On CosmosDB, `Count` runs a server-side `SELECT VALUE COUNT(1)` and requires `pk_field` and `pk_value` in `params`: the Go SDK cannot run cross-partition aggregates, so a count is always scoped to one partition and returns an error without them. On CosmosDB, `Get`, `List` and `Count` check filter keys before querying: each must be an identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) or a dotted path of them (`address.city`) for a nested property. Keys are written as quoted accessors (`c["order"]`), so property names that are Cosmos keywords, such as `value`, `order` or `top`, work. `pk_field` must be a plain identifier, because `Create` stores the partition value under that top-level key. A `nil` filter value matches documents where the property is null or missing, like SQL's `IS NULL`. An empty slice matches nothing, so the count is 0.
+An empty filter counts every item. On CosmosDB, `Count` runs a server-side `SELECT VALUE COUNT(1)` and requires `WithPartitionKey`: the Go SDK cannot run cross-partition aggregates, so a count is always scoped to one partition and returns an error without them. On CosmosDB, `Get`, `List` and `Count` check filter keys before querying: each must be an identifier (`[a-zA-Z_][a-zA-Z0-9_]*`) or a dotted path of them (`address.city`) for a nested property. Keys are written as quoted accessors (`c["order"]`), so property names that are Cosmos keywords, such as `value`, `order` or `top`, work. The partition key field must be a plain identifier, because `Create` stores the partition value under that top-level key. A `nil` filter value matches documents where the property is null or missing, like SQL's `IS NULL`. An empty slice matches nothing, so the count is 0.
 
 ### Update
 
@@ -292,6 +309,32 @@ if errors.Is(err, storage.ErrNotFound) {
 ```
 
 `Update` never creates a row (use `Create`) and returns an error when the item has no primary key value.
+
+By default it writes every field of the item. That is a problem whenever two
+callers read the same row and then change different fields: each writes back the
+values it read for the fields it never touched, so the second write silently
+reverts the first. Name the fields that actually changed and the two stop
+colliding:
+
+```go
+err := adapter.Update(&task, filter, storage.WithFields("title", "modified_at"))
+```
+
+`WithFields` also makes clearing a field work — the named fields are written
+whether or not they hold a zero value. An unknown field name, or no field at
+all, is an error rather than a silently wider write.
+
+On DynamoDB and CosmosDB, `Update` also keeps attributes the item's struct does
+not declare, and removes a declared field that the item leaves out of its JSON:
+an `omitempty` field that holds its zero value, or the fields of a nil embedded
+pointer. On CosmosDB the item's id addresses the document, and the filter is a
+condition on it.
+
+CosmosDB has no partial update, so `Update` reads the document, applies the
+fields and replaces it on the condition that its ETag has not changed. When
+another write lands in between, it reads again and re-applies the fields on top
+of that write, up to 10 times, then returns an error. A cancelled context stops
+it.
 
 ### Not-found
 
@@ -326,17 +369,17 @@ The SQL adapter wraps each migration in a transaction. DynamoDB and CosmosDB do 
 When you need a raw query that doesn't fit the interface, use:
 
 - `adapter.Execute(statement)` — fire-and-forget DDL/DML.
-- `adapter.Query(dest, statement, limit, cursor, params...)` — **not implemented on the SQL adapter** (returns a "not implemented yet" error today).
+- `adapter.Query(dest, statement, limit, cursor, opts...)` — **not implemented on the SQL adapter** (returns a "not implemented yet" error today).
 
 These bypass the Lucene layer entirely. **You are responsible for parameter binding.** Prefer `List` / `Search` whenever possible: `Query` statements are written in the adapter's own query language, so code that uses them doesn't port to other adapters.
 
-On DynamoDB, pass values for the statement's `?` placeholders under `storage.QueryParametersKey`, in order. Never write values into `statement`:
+On DynamoDB, pass values for the statement's `?` placeholders with `storage.WithQueryParameters`, in order. Never write values into `statement`:
 
 ```go title="query.go"
 next, err := adapter.Query(&rules,
     `SELECT * FROM "rules" WHERE "tenant" = ? AND ("principal" = ? OR "status" = ?)`,
     50, cursor,
-    map[string]any{storage.QueryParametersKey: []any{tenant, principal, "escalated"}},
+    storage.WithQueryParameters(tenant, principal, "escalated"),
 )
 ```
 

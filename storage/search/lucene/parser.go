@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -353,6 +354,90 @@ func (p *Parser) ParseToDynamoDBPartiQL(query string) (string, []types.Attribute
 	}
 
 	return partiql, attrs, nil
+}
+
+// ParseToElasticsearch parses a Lucene query and converts it to an
+// Elasticsearch (7.10+) or OpenSearch Query DSL object. It checks fields and
+// limits as ParseToSQL does, with the same errors for an unknown field, a
+// mistyped value, boost, regexp and a range open at both ends. It also refuses
+// a wildcard or fuzzy query on a number, boolean or time.Time field, which the
+// server would refuse, and it renders fuzzy where SQLite cannot.
+//
+// On an array field, field:* matches documents with at least one value. SQL
+// also matches an empty array there.
+//
+//	q, err := parser.ParseToElasticsearch(`title:contract* AND year:[2020 TO 2024] AND NOT status:draft`)
+//	body := map[string]any{"query": q, "size": 20}
+//
+// Map each string field as a keyword ("type": "keyword"). On a text field a
+// term or wildcard on the full value matches nothing, with no error.
+//
+// A cluster with search.allow_expensive_queries set to false refuses every
+// wildcard and fuzzy query, including the *word* expansion of a plain word.
+//
+// The server's case_insensitive flag folds ASCII letters only, so for other
+// languages name a lowercase-normalized keyword sub-field as Pattern, and an
+// analyzed sub-field as Text for ranked, typo-tolerant search of plain words:
+//
+//	q, err := parser.ParseToElasticsearch(query, lucene.WithElasticsearchFields(map[string]lucene.ElasticsearchField{
+//	    "title": {Pattern: "title.lc", Text: "title.text"},
+//	}))
+func (p *Parser) ParseToElasticsearch(query string, opts ...ElasticsearchOption) (map[string]any, error) {
+	driver, err := NewElasticsearchDriver(p.Fields, opts...)
+	if err != nil {
+		return nil, err
+	}
+	parser := p
+	if driver.hasText() {
+		query = markTextTerms(query)
+		parser = p.withTextField()
+	}
+	e, err := parser.parseQueryCommon(query, "Elasticsearch")
+	var invalid *InvalidFieldError
+	if errors.As(err, &invalid) {
+		invalid.ValidFields = slices.DeleteFunc(invalid.ValidFields, func(f string) bool { return f == textField })
+	}
+	if err != nil {
+		return nil, err
+	}
+	return driver.Render(e)
+}
+
+// textField marks a word typed without a field on the Elasticsearch path
+// with Text fields, so the driver renders it as full text. It is not a model
+// field: only withTextField's copy of the parser accepts it.
+const textField = "__text__"
+
+// markTextTerms rewrites each plain word without a field to textField:word.
+// A quoted phrase, a wildcard, a fuzzy, boost or regexp term and an escape
+// keep their meaning, so they go through the usual expansion.
+func markTextTerms(query string) string {
+	tokens := tokenizeQuery(query)
+	for i, token := range tokens {
+		if !isImplicitTerm(token) {
+			continue
+		}
+		prefix, term := "", token
+		if hasPrefixOperator(token) {
+			prefix, term = token[:1], token[1:]
+		}
+		if term == "" || strings.ContainsAny(term, `"*?~^/\`) {
+			continue
+		}
+		tokens[i] = prefix + textField + ":" + term
+	}
+	return strings.Join(tokens, " ")
+}
+
+// withTextField returns a copy of p that also accepts textField.
+func (p *Parser) withTextField() *Parser {
+	tp := *p
+	tp.Fields = append(append([]FieldInfo{}, p.Fields...), FieldInfo{Name: textField, Type: reflect.TypeOf("")})
+	tp.fieldMap = make(map[string]FieldInfo, len(tp.Fields))
+	for _, f := range tp.Fields {
+		tp.fieldMap[f.Name] = f
+	}
+	return &tp
 }
 
 func (p *Parser) validateQuery(query string) error {

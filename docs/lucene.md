@@ -364,6 +364,96 @@ Wildcards work on string fields only, and only in the two forms PartiQL can expr
 
 [Array fields](#array-multi-valued-fields) render as `contains(tags, ?)`, one per value, so `tags:(a OR b)` becomes `(contains(tags, ?) OR contains(tags, ?))` and `NOT tags:a` becomes `NOT (contains(tags, ?))`. Wildcards, ordering operators (`>`, `<`, `>=`, `<=`) and ranges on an array field are rejected with a parse error naming the field: PartiQL's `contains()` tests element membership rather than substrings, and a list attribute has no ordering.
 
+## Elasticsearch and OpenSearch
+
+`ParseToElasticsearch` turns a query into a Query DSL object. It uses the same field checks and limits as `ParseToSQL`, and returns a plain `map[string]any`: send it with the client of your choice, and add paging, sorting and aggregations around it.
+
+```go title="handler.go"
+q, err := parser.ParseToElasticsearch(`title:contract* AND year:[2020 TO 2024] AND NOT status:draft`)
+if err != nil {
+    return badRequest(err.Error())
+}
+body := map[string]any{"query": q, "size": 20}
+```
+
+Map each string field as `keyword`. On a `text` field the input is split into words, so a `term` or `wildcard` clause on the full value matches nothing, and no error tells you why:
+
+```json title="mapping"
+{
+  "mappings": {
+    "properties": {
+      "status": { "type": "keyword" },
+      "title":  { "type": "keyword" },
+      "tags":   { "type": "keyword" },
+      "year":   { "type": "integer" }
+    }
+  }
+}
+```
+
+### Other languages and ranked search
+
+`case_insensitive` folds ASCII letters only: on a plain `keyword`, `title:*тръба*` misses `ТРЪБА PVC`. And a wildcard finds no typo and no other word form. For both, add two sub-fields and name them with `WithElasticsearchFields`:
+
+```json title="mapping"
+{
+  "settings": {
+    "analysis": { "normalizer": { "lc": { "type": "custom", "filter": ["lowercase"] } } }
+  },
+  "mappings": {
+    "properties": {
+      "title": {
+        "type": "keyword",
+        "fields": {
+          "lc":   { "type": "keyword", "normalizer": "lc" },
+          "text": { "type": "text", "analyzer": "bulgarian" }
+        }
+      }
+    }
+  }
+}
+```
+
+```go title="handler.go"
+q, err := parser.ParseToElasticsearch(query, lucene.WithElasticsearchFields(map[string]lucene.ElasticsearchField{
+    "title": {Pattern: "title.lc", Text: "title.text"},
+}))
+```
+
+| Query | Without the option | With `Pattern: "title.lc"` | With `Text: "title.text"` too |
+|-------|--------------------|----------------------------|-------------------------------|
+| `title:тръб*`, `title:тръба~1` | `wildcard`, `fuzzy` on `title` (ASCII case only) | on `title.lc` (case folds in every language) | same |
+| `title:Тръба` | `term` on `title` (exact) | same | same |
+| `тръби` (no field) | `*тръби*` wildcard on each string field | on `title.lc` for `title` | `match` on `title.text` (`fuzziness: AUTO`, `operator: and`) in `bool.must`: ranked, finds `тръба` and typos |
+| `"тръба pvc"`, `тръб*` (no field) | exact term, wildcard | same | same |
+
+A term stays exact on the field itself, as on SQL, so `tags:Golang` never matches `golang`. With `Text`, a plain word matches what the analyzer and the fuzziness allow, which SQL does not: `room` also finds `roam`. An option on a field that is not in the model, or that is not a string, is an error.
+
+The output works on Elasticsearch 7.10 and later (the first version with `case_insensitive` on `wildcard`) and on OpenSearch. User text only becomes the value of a clause: the output never contains `query_string`, `simple_query_string` or `script`.
+
+| Query | Query DSL |
+|-------|-----------|
+| `status:open` | `term` |
+| `status:null` | `bool.must_not` with `exists` |
+| `NOT status:null` | `exists` |
+| `NOT status:closed`, `-status:closed` | `bool.must_not` with `term` — documents without `status` still match, as on SQL |
+| `a:1 AND b:2`, `a:1 OR b:2` | `bool.filter`, `bool.should` with `minimum_should_match: 1` |
+| `status:(open OR null)` | `bool.should`, each value on `status` |
+| `title:room*`, `title:ro?m*` | `wildcard` with `case_insensitive: true` |
+| `title:*` | `exists` — on an array field, an empty array has no value, so it does not match; SQL matches it ([see above](#array-multi-valued-fields)) |
+| `room` (no field) | `bool.should` with a `*room*` wildcard on each `ImplicitSearch=true` field |
+| `year:[2020 TO 2024]`, `year:{2019 TO 2024}` | `range` with `gte`/`lte` or `gt`/`lt`; a `*` bound is left out |
+| `year:>2020` | `range` with `gt` (also `>=`, `<`, `<=`) |
+| `tags:golang` | `term` — on a field with many values, this means "contains" |
+| `tags:go*` | `wildcard` — it matches inside one element, never across two |
+| `meta.k:a` | `term` on `meta.k` |
+| `title:roam~2` | `fuzzy` with `fuzziness: 2` |
+| `""` (empty) | `match_all` |
+
+Values are typed by the Go field: `year:2021` on an `int` becomes the number `2021`, and `year:abc` is a parse error, as on SQL. Wildcards and fuzzy work on string-like fields only: on a number, a boolean or a `time.Time`, they are a parse error, because the server refuses them. Boost (`^`), regexp (`/re/`) and a range with `*` at both ends are also parse errors. The renderer never drops a part of the query in silence.
+
+A cluster with `search.allow_expensive_queries: false` refuses every `wildcard` and `fuzzy` query with a server error. This includes a plain word such as `room`, which expands to wildcards. The default is `true`. On such a cluster, accept only fielded queries without wildcards.
+
 ## Full operator reference
 
 | Operator              | Example                          | Postgres                                   | MySQL                                                 | SQLite                                |

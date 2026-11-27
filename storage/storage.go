@@ -4,7 +4,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
+	"sort"
+	"strings"
 )
 
 var ConfigFs embed.FS
@@ -119,4 +122,37 @@ func (s StorageAdapterFactory) GetInstance(adapterType StorageAdapterType, confi
 	// and still produces ContextualStorageAdapter-compatible
 	// methods for callers that want to propagate a context.
 	return wrapForTelemetry(inner), nil
+}
+
+// jsonFieldNames lists the names t marshals to under its json tags, in a
+// stable order, including fields that omitempty may leave out.
+func jsonFieldNames(t reflect.Type) []string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	names := []string{}
+	for i := range t.NumField() {
+		field := t.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		// An untagged embedded struct is flattened into its parent.
+		if field.Anonymous && name == "" {
+			names = append(names, jsonFieldNames(field.Type)...)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

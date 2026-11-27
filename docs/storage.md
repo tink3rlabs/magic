@@ -232,7 +232,7 @@ adapters: one an operation or adapter has no use for is accepted and ignored.
 | Option                      | Read by            | Meaning                                              |
 |-----------------------------|--------------------|------------------------------------------------------|
 | `WithSortDirection(dir)`    | `List`, `Search`   | `storage.Ascending` (default) or `storage.Descending`. |
-| `WithFields(fields...)`     | `Update` (SQL, Memory, DynamoDB) | Write only these fields. Default is every field. CosmosDB rejects it. |
+| `WithFields(fields...)`     | `Update`           | Write only these fields. Default is every field.      |
 | `WithPartitionKey(f, v)`    | CosmosDB           | Address a partition by field and value.               |
 | `WithPartitionKeyField(f)`  | CosmosDB           | Name the field; the value is read off the item.       |
 | `WithIndex(name)`           | DynamoDB `List`, `Search` | Read from this secondary index.               |
@@ -319,8 +319,14 @@ err := adapter.Update(&task, filter, storage.WithFields("title", "modified_at"))
 whether or not they hold a zero value. An unknown field name, or no field at
 all, is an error rather than a silently wider write.
 
-CosmosDB replaces the whole document on `Update`, so it returns an error for
-`WithFields` instead of ignoring it.
+On DynamoDB and CosmosDB, `Update` also keeps attributes the item's struct does
+not declare, and removes an `omitempty` field that holds its zero value.
+
+CosmosDB has no partial update, so `Update` reads the document, applies the
+fields and replaces it on the condition that its ETag has not changed. When
+another write lands in between, it reads again and re-applies the fields on top
+of that write, up to 10 times, then returns an error. A cancelled context stops
+it.
 
 ### Not-found
 

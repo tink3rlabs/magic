@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 
@@ -234,7 +233,7 @@ func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	// from the entry. UpdateItem rejects a SET on a key attribute, so those are
 	// skipped rather than rejected: with no WithFields the write set is every
 	// field of the item, and the key is always among them.
-	fields := dynamoFieldNames(reflect.TypeOf(item))
+	fields := jsonFieldNames(reflect.TypeOf(item))
 	write := options.Fields
 	if !options.FieldsSet {
 		write = fields
@@ -304,39 +303,6 @@ func (s *DynamoDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 		return fmt.Errorf("failed to update item, %v", err)
 	}
 	return nil
-}
-
-// dynamoFieldNames lists the attribute names t marshals to with the json tag,
-// in a stable order, including fields that omitempty may leave out.
-func dynamoFieldNames(t reflect.Type) []string {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t.Kind() != reflect.Struct {
-		return nil
-	}
-	names := []string{}
-	for i := range t.NumField() {
-		field := t.Field(i)
-		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		if name == "-" {
-			continue
-		}
-		// An untagged embedded struct is flattened into its parent.
-		if field.Anonymous && name == "" {
-			names = append(names, dynamoFieldNames(field.Type)...)
-			continue
-		}
-		if !field.IsExported() {
-			continue
-		}
-		if name == "" {
-			name = field.Name
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // keyAttributeNames returns the table's key attribute names, hash key first.

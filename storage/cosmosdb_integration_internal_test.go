@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,5 +178,161 @@ func TestCosmosDBCountNeedsPartitionKeyValue(t *testing.T) {
 	_, err := s.Count(&cosmosTenantItem{}, nil, WithPartitionKeyField("tenant"))
 	if err == nil || !strings.Contains(err.Error(), "use WithPartitionKey") {
 		t.Fatalf("Count = %v; want an error naming WithPartitionKey", err)
+	}
+}
+
+// Two callers read the same item and each change a different field. With
+// WithFields, neither write reverts the other.
+func TestCosmosDBUpdateWithFieldsKeepsConcurrentEdit(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	if err := s.Create(&cosmosItem{Id: "c1", Name: "original", Color: "red"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var first, second cosmosItem
+	for _, read := range []*cosmosItem{&first, &second} {
+		if err := s.Get(read, map[string]any{"id": "c1"}); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+	}
+	first.Name = "renamed"
+	second.Color = "blue"
+	if err := s.Update(&first, map[string]any{"id": "c1"}, WithFields("name")); err != nil {
+		t.Fatalf("Update name: %v", err)
+	}
+	if err := s.Update(&second, map[string]any{"id": "c1"}, WithFields("color")); err != nil {
+		t.Fatalf("Update color: %v", err)
+	}
+	var got cosmosItem
+	if err := s.Get(&got, map[string]any{"id": "c1"}); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "renamed" || got.Color != "blue" {
+		t.Fatalf("got %+v; want both edits kept", got)
+	}
+}
+
+func TestCosmosDBUpdateWithoutFieldsWritesEveryField(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	if err := s.Create(&cosmosItem{Id: "c1", Name: "original", Color: "red"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.Update(&cosmosItem{Id: "c1", Name: "renamed"}, map[string]any{"id": "c1"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	var got cosmosItem
+	if err := s.Get(&got, map[string]any{"id": "c1"}); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "renamed" || got.Color != "" {
+		t.Fatalf("got %+v; want the zero color written, as on SQL and DynamoDB", got)
+	}
+}
+
+func TestCosmosDBUpdateClearsOmitemptyField(t *testing.T) {
+	for name, opts := range map[string][]Option{
+		"without WithFields": nil,
+		"with WithFields":    {WithFields("note")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newCosmosTestAdapter(t)
+			if err := s.Create(&cosmosItem{Id: "c1", Name: "n", Note: "keep me"}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := s.Update(&cosmosItem{Id: "c1", Name: "n"}, map[string]any{"id": "c1"}, opts...); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			var got cosmosItem
+			if err := s.Get(&got, map[string]any{"id": "c1"}); err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Note != "" || got.Name != "n" {
+				t.Fatalf("got %+v; want the note cleared and the name kept", got)
+			}
+		})
+	}
+}
+
+func TestCosmosDBUpdateRejectsUnknownField(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	if err := s.Create(&cosmosItem{Id: "c1", Name: "n"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	err := s.Update(&cosmosItem{Id: "c1"}, map[string]any{"id": "c1"}, WithFields("nmae"))
+	if err == nil || !strings.Contains(err.Error(), `unknown field "nmae"`) {
+		t.Fatalf("err = %v; want unknown field", err)
+	}
+}
+
+// A property the struct does not declare, written by another service or an
+// older version of this one, survives an Update.
+func TestCosmosDBUpdateKeepsPropertiesAbsentFromTheItem(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	ctx := context.Background()
+	container, err := s.databaseClient.NewContainer(s.getContainerName(&cosmosItem{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := []byte(`{"id":"c1","pk":"c1","name":"n","legacy":"still here"}`)
+	if _, err := container.CreateItem(ctx, azcosmos.NewPartitionKeyString("c1"), doc, nil); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	if err := s.Update(&cosmosItem{Id: "c1", Pk: "c1", Name: "renamed"}, map[string]any{"id": "c1"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	raw, err := container.ReadItem(ctx, azcosmos.NewPartitionKeyString("c1"), "c1", nil)
+	if err != nil {
+		t.Fatalf("ReadItem: %v", err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw.Value, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored["legacy"] != "still here" || stored["name"] != "renamed" {
+		t.Fatalf("stored %v; want legacy kept and name renamed", stored)
+	}
+}
+
+func TestCosmosDBUpdateDoesNotCreateMissingItem(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	err := s.Update(&cosmosItem{Id: "ghost", Name: "n"}, map[string]any{"id": "ghost"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update of a missing item = %v; want ErrNotFound", err)
+	}
+}
+
+// Writers that race on one item, each changing its own field, all succeed and
+// all land: each replace is conditioned on the ETag it read, and a writer that
+// lost the race applies its field again on top of the winner.
+func TestCosmosDBConcurrentUpdatesWithFieldsAllLand(t *testing.T) {
+	s := newCosmosTestAdapter(t)
+	if err := s.Create(&cosmosItem{Id: "c1", Name: "n", Color: "c"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 6)
+	for i := range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				errs <- s.Update(&cosmosItem{Id: "c1", Name: "renamed"}, map[string]any{"id": "c1"}, WithFields("name"))
+			} else {
+				errs <- s.Update(&cosmosItem{Id: "c1", Color: "blue"}, map[string]any{"id": "c1"}, WithFields("color"))
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("Update: %v", err)
+		}
+	}
+	var got cosmosItem
+	if err := s.Get(&got, map[string]any{"id": "c1"}); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "renamed" || got.Color != "blue" {
+		t.Fatalf("got %+v; want both fields written", got)
 	}
 }

@@ -140,7 +140,7 @@ adapter has no use for is accepted and ignored.
 - `storage.WithPartitionKeyField(field)`: the field to use as the partition key in your documents (defaults to `"pk"`)
 - `storage.WithPartitionKey(field, value)`: that field plus an explicit value
 - `storage.WithSortDirection(dir)`: `storage.Ascending` (default) or `storage.Descending`, for List and Search
-- `storage.WithFields(fields...)`: for Update, write only these fields instead of every field (SQL, Memory, DynamoDB; CosmosDB rejects it)
+- `storage.WithFields(fields...)`: for Update, write only these fields instead of every field
 
 **Example with Custom Partition Key:**
 

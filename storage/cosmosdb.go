@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -390,11 +392,22 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	if err != nil {
 		return err
 	}
+	doc, err := s.getDocument(ctx, s.getContainerName(dest), filter, options)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(doc, dest); err != nil {
+		return fmt.Errorf("failed to unmarshal result: %v", err)
+	}
+	return nil
+}
 
-	containerName := s.getContainerName(dest)
+// getDocument returns the first document in containerName that matches filter,
+// as stored, or ErrNotFound.
+func (s *CosmosDBAdapter) getDocument(ctx context.Context, containerName string, filter map[string]any, options Options) ([]byte, error) {
 	containerClient, err := s.databaseClient.NewContainer(containerName)
 	if err != nil {
-		return fmt.Errorf("failed to create container client: %v", err)
+		return nil, fmt.Errorf("failed to create container client: %v", err)
 	}
 
 	// Build query
@@ -406,7 +419,7 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	for key, value := range filter {
 		ref, err := cosmosFilterRef(key)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		condition, params := cosmosEquals(ref, value, &paramIndex)
 		conditions = append(conditions, condition)
@@ -418,7 +431,7 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	if pk != "" {
 		pkRef, err := s.partitionKeyRef(options)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		paramName := fmt.Sprintf("@param%d", paramIndex)
 		conditions = append(conditions, fmt.Sprintf("%s = %s", pkRef, paramName))
@@ -442,21 +455,22 @@ func (s *CosmosDBAdapter) GetContext(ctx context.Context, dest any, filter map[s
 	// Execute query
 	page, err := s.executeQuery(ctx, containerClient, query, options, queryOptions)
 	if err != nil {
-		return fmt.Errorf("failed to execute query: %v", err)
+		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-
 	if len(page.Items) == 0 {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-
-	// Unmarshal first result
-	err = json.Unmarshal(page.Items[0], dest)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal result: %v", err)
-	}
-
-	return nil
+	return page.Items[0], nil
 }
+
+// cosmosUpdateAttempts bounds how often Update re-reads and re-applies its
+// change when another write lands between its read and its replace. Between
+// attempts it waits a random time up to cosmosUpdateBackoff times the attempt
+// number, so writers that collided do not collide again in lockstep.
+const (
+	cosmosUpdateAttempts = 10
+	cosmosUpdateBackoff  = 20 * time.Millisecond
+)
 
 func (s *CosmosDBAdapter) Update(item any, filter map[string]any, opts ...Option) error {
 	return s.UpdateContext(context.Background(), item, filter, opts...)
@@ -466,98 +480,118 @@ func (s *CosmosDBAdapter) UpdateContext(ctx context.Context, item any, filter ma
 	if len(filter) == 0 {
 		return fmt.Errorf("filtering is required when updating a resource")
 	}
-
 	options, err := ResolveOptions(opts...)
 	if err != nil {
 		return err
 	}
-	if options.FieldsSet {
-		return errors.New("WithFields is not supported by the CosmosDB adapter: Update replaces the whole document")
-	}
 
 	containerName := s.getContainerName(item)
+	pkFieldName := s.getPartitionKeyFieldName(options)
+
+	// The write set comes from the struct, not the marshalled item: an
+	// omitempty field holding its zero value is missing from the item and must
+	// be removed from the document. The id and the partition key address the
+	// document, and a replace cannot change them, so they are never written.
+	fields := jsonFieldNames(reflect.TypeOf(item))
+	write := fields
+	if options.FieldsSet {
+		write = options.Fields
+	}
+	writable := 0
+	for _, field := range write {
+		if !slices.Contains(fields, field) {
+			return fmt.Errorf("unknown field %q on %s", field, containerName)
+		}
+		if field != "id" && field != pkFieldName {
+			writable++
+		}
+	}
+	if options.FieldsSet && writable == 0 {
+		return errors.New("nothing to update: every field named is the id or the partition key")
+	}
+
 	containerClient, err := s.databaseClient.NewContainer(containerName)
 	if err != nil {
 		return fmt.Errorf("failed to create container client: %v", err)
 	}
-
-	// First get the item to update
-	itemType := reflect.TypeOf(item)
-	if itemType.Kind() == reflect.Pointer {
-		itemType = itemType.Elem()
-	}
-	existingItem := reflect.New(itemType).Interface()
-
-	err = s.GetContext(ctx, existingItem, filter, opts...)
-	if err != nil {
-		return err
-	}
-
-	// Convert existing item to map for merging
-	existingItemMap := s.itemToMap(existingItem)
-
-	// Merge with new item
 	itemMap := s.itemToMap(item)
-	for key, value := range itemMap {
-		existingItemMap[key] = value
-	}
 
-	// Update timestamp
-	existingItemMap["_ts"] = time.Now().Unix()
-
-	// Ensure id and pk fields exist
-	id, exists := existingItemMap["id"]
-	if !exists {
-		return fmt.Errorf("item does not have an id field")
-	}
-
-	// Get the partition key field name
-	pkFieldName := s.getPartitionKeyFieldName(options)
-
-	// Get or set the partition key value
-	pk, exists := existingItemMap[pkFieldName]
-	if !exists {
-		// Check if partition key is provided in params
-		if paramPk := s.buildPartitionKey(options); paramPk != "" {
-			pk = paramPk
-			existingItemMap[pkFieldName] = pk
-		} else {
-			// Fallback to "pk" field or id
-			if fallbackPk, exists := existingItemMap["pk"]; exists {
-				pk = fallbackPk
-				existingItemMap[pkFieldName] = pk
+	// Read, apply, and replace only if the document is still the one read. When
+	// another write lands in between, the If-Match fails with 412 and the change
+	// is applied again on top of that write, so neither is lost.
+	for attempt := 1; ; attempt++ {
+		doc, err := s.getDocument(ctx, containerName, filter, options)
+		if err != nil {
+			return err
+		}
+		var existing map[string]any
+		if err := json.Unmarshal(doc, &existing); err != nil {
+			return fmt.Errorf("failed to read the existing item: %v", err)
+		}
+		for _, field := range write {
+			if field == "id" || field == pkFieldName {
+				continue
+			}
+			if value, present := itemMap[field]; present {
+				existing[field] = value
 			} else {
-				pk = id
-				existingItemMap[pkFieldName] = pk
+				delete(existing, field)
 			}
 		}
-	}
 
-	// Marshal updated item
-	itemBytes, err := json.Marshal(existingItemMap)
-	if err != nil {
-		return fmt.Errorf("failed to marshal item: %v", err)
+		err = s.replaceDocument(ctx, containerClient, containerName, existing, pkFieldName, options)
+		var respErr *azcore.ResponseError
+		if !errors.As(err, &respErr) || respErr.StatusCode != http.StatusPreconditionFailed {
+			return err
+		}
+		if attempt == cosmosUpdateAttempts {
+			return fmt.Errorf("failed to update item: it was changed by another write %d times in a row: %w", attempt, respErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(rand.N(cosmosUpdateBackoff * time.Duration(attempt))):
+		}
 	}
+}
 
-	idStr, err := nonEmptyString(id, "item id")
+// replaceDocument writes doc over the stored document, on the condition that
+// the stored one still carries doc's _etag.
+func (s *CosmosDBAdapter) replaceDocument(ctx context.Context, containerClient *azcosmos.ContainerClient, containerName string, doc map[string]any, pkFieldName string, options Options) error {
+	id, err := nonEmptyString(doc["id"], "item id")
 	if err != nil {
 		return err
+	}
+	pk, exists := doc[pkFieldName]
+	if !exists {
+		if value := s.buildPartitionKey(options); value != "" {
+			pk = value
+		} else if fallback, hasPk := doc["pk"]; hasPk {
+			pk = fallback
+		} else {
+			pk = id
+		}
+		doc[pkFieldName] = pk
 	}
 	pkStr, ok := pk.(string)
 	if !ok {
 		return fmt.Errorf("partition key must be a string")
 	}
 
-	// Create partition key
-	partitionKey := azcosmos.NewPartitionKeyString(pkStr)
-
-	// Update item
-	response, err := containerClient.ReplaceItem(ctx, partitionKey, idStr, itemBytes, nil)
+	body, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal item: %v", err)
+	}
+	itemOptions := &azcosmos.ItemOptions{}
+	if etag, ok := doc["_etag"].(string); ok && etag != "" {
+		match := azcore.ETag(etag)
+		itemOptions.IfMatchEtag = &match
+	}
+	response, err := containerClient.ReplaceItem(ctx, azcosmos.NewPartitionKeyString(pkStr), id, body, itemOptions)
 	s.recordSessionToken(containerName, pkStr, response.SessionToken, err)
 	if err != nil {
-		return fmt.Errorf("failed to update item: %v", err)
+		return fmt.Errorf("failed to update item: %w", err)
 	}
-
 	return nil
 }
 

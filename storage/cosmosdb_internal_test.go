@@ -1466,12 +1466,78 @@ func TestCosmosDBGetAfterDeleteSendsDeleteSessionToken(t *testing.T) {
 	}
 }
 
-// A caller who names fields expects the others to be left alone. CosmosDB
-// replaces the whole document, so it must refuse rather than drop the option.
-func TestCosmosDBUpdateRejectsWithFields(t *testing.T) {
-	s := &CosmosDBAdapter{}
-	err := s.Update(&cosmosSampleItem{Id: "1"}, map[string]any{"id": "1"}, WithFields("status"))
-	if err == nil || !strings.Contains(err.Error(), "WithFields is not supported by the CosmosDB adapter") {
-		t.Fatalf("err = %v; want WithFields rejected", err)
+// cosmosUpdateFake serves Update's read and replace. Each read returns the
+// next document in docs; each replace is answered with the next status.
+func cosmosUpdateFake(t *testing.T, docs []string, statuses []int) (*CosmosDBAdapter, *[]string, *[]map[string]any) {
+	t.Helper()
+	var ifMatch []string
+	var bodies []map[string]any
+	reads := 0
+	s := newFakeCosmosAdapter(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/" {
+			// The SDK reads account properties before its first operation.
+			return fakeCosmosJSON(req, `{"id":"fake","writableLocations":[],"readableLocations":[]}`), nil
+		}
+		if req.Method == http.MethodPost {
+			doc := docs[min(reads, len(docs)-1)]
+			reads++
+			return fakeCosmosJSON(req, `{"_rid":"x","Documents":[`+doc+`],"_count":1}`), nil
+		}
+		ifMatch = append(ifMatch, req.Header.Get("If-Match"))
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("replace body: %v", err)
+		}
+		bodies = append(bodies, body)
+		resp := fakeCosmosJSON(req, `{}`)
+		resp.StatusCode = statuses[min(len(ifMatch)-1, len(statuses)-1)]
+		return resp, nil
+	})
+	return s, &ifMatch, &bodies
+}
+
+// Another write between Update's read and its replace changes the ETag. The
+// replace must then fail its If-Match, and Update must apply the named fields
+// again on top of that write instead of overwriting it.
+func TestCosmosDBUpdateRetriesWhenTheItemChanged(t *testing.T) {
+	s, ifMatch, bodies := cosmosUpdateFake(t, []string{
+		`{"id":"1","pk":"1","name":"open","owner":"ann","_etag":"e1"}`,
+		`{"id":"1","pk":"1","name":"open","owner":"bob","_etag":"e2"}`,
+	}, []int{http.StatusPreconditionFailed, http.StatusOK})
+
+	err := s.Update(&cosmosSampleItem{Id: "1", Name: "closed"}, map[string]any{"id": "1"}, WithFields("name"))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got := strings.Join(*ifMatch, ","); got != "e1,e2" {
+		t.Fatalf("If-Match = %s; want e1,e2", got)
+	}
+	last := (*bodies)[len(*bodies)-1]
+	if last["name"] != "closed" || last["owner"] != "bob" {
+		t.Fatalf("replaced with %v; want name closed and the concurrent owner kept", last)
+	}
+}
+
+func TestCosmosDBUpdateGivesUpAfterRepeatedConflicts(t *testing.T) {
+	s, ifMatch, _ := cosmosUpdateFake(t, []string{`{"id":"1","pk":"1","_etag":"e1"}`}, []int{http.StatusPreconditionFailed})
+	err := s.Update(&cosmosSampleItem{Id: "1", Name: "closed"}, map[string]any{"id": "1"}, WithFields("name"))
+	if err == nil || !strings.Contains(err.Error(), "changed by another write") {
+		t.Fatalf("err = %v; want a conflict error", err)
+	}
+	if len(*ifMatch) != cosmosUpdateAttempts {
+		t.Fatalf("replaced %d times; want %d attempts", len(*ifMatch), cosmosUpdateAttempts)
+	}
+}
+
+func TestCosmosDBUpdateStopsRetryingWhenTheContextEnds(t *testing.T) {
+	s, ifMatch, _ := cosmosUpdateFake(t, []string{`{"id":"1","pk":"1","_etag":"e1"}`}, []int{http.StatusPreconditionFailed})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := s.UpdateContext(ctx, &cosmosSampleItem{Id: "1", Name: "closed"}, map[string]any{"id": "1"}, WithFields("name"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v; want context.Canceled", err)
+	}
+	if len(*ifMatch) > 1 {
+		t.Fatalf("replaced %d times after the context ended; want at most 1", len(*ifMatch))
 	}
 }

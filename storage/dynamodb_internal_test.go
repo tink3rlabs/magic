@@ -268,7 +268,7 @@ func TestDynamoDBBuildFilterMarshalsIntoMemberAttributeValue(t *testing.T) {
 	}
 }
 
-func TestDynamoDBFieldNamesFollowJSONTags(t *testing.T) {
+func TestJSONFieldNamesFollowTags(t *testing.T) {
 	type audit struct {
 		CreatedBy string `json:"created_by,omitempty"`
 	}
@@ -279,8 +279,8 @@ func TestDynamoDBFieldNamesFollowJSONTags(t *testing.T) {
 		Plain   string
 		Skipped string `json:"-"`
 	}
-	got := strings.Join(dynamoFieldNames(reflect.TypeOf(&item{})), ",")
+	got := strings.Join(jsonFieldNames(reflect.TypeOf(&item{})), ",")
 	if want := "Plain,created_by,id,note"; got != want {
-		t.Fatalf("dynamoFieldNames = %s; want %s", got, want)
+		t.Fatalf("jsonFieldNames = %s; want %s", got, want)
 	}
 }

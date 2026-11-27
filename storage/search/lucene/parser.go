@@ -297,7 +297,8 @@ func (p *Parser) parseQueryCommon(query string, queryType string) (*expr.Express
 
 // errRegexpUnsupported rejects field:/pattern/. No driver can render a
 // regexp, and each one used to match the pattern as literal text (#301).
-var errRegexpUnsupported = errors.New("regexp queries (field:/pattern/) are not supported; use wildcards instead (for example field:ro?m*)")
+// An unquoted / in a value such as a date also starts a regexp.
+var errRegexpUnsupported = errors.New(`regexp queries (field:/pattern/) are not supported; use wildcards instead (for example field:ro?m*), and quote a value that contains / (for example field:"a/b")`)
 
 // containsRegexp reports whether any node of e is a regexp. go-lucene nests
 // it as the value of a Like node: name:/x/ is LIKE(name, REGEXP("/x/")).

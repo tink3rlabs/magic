@@ -1007,14 +1007,16 @@ func TestRegexpQueryError(t *testing.T) {
 		"-name:/ro.m/",
 		"name:(/ro.m/ OR bob)",
 		"email:a* AND name:/ro.m/",
+		"name:2024/01/02",
+		"and/or",
 	}
 
 	for _, query := range queries {
 		t.Run(query, func(t *testing.T) {
 			for _, provider := range []string{"postgresql", "mysql", "sqlite"} {
 				sql, _, err := parser.ParseToSQL(query, provider)
-				if err == nil || !strings.Contains(err.Error(), "regexp") {
-					t.Errorf("ParseToSQL(%q, %s) = %q, err %v; want a regexp error", query, provider, sql, err)
+				if err == nil || !strings.Contains(err.Error(), "regexp") || !strings.Contains(err.Error(), `field:"a/b"`) {
+					t.Errorf("ParseToSQL(%q, %s) = %q, err %v; want a regexp error that names quoting", query, provider, sql, err)
 				}
 			}
 			partiql, _, err := parser.ParseToDynamoDBPartiQL(query)
